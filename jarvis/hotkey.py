@@ -18,12 +18,35 @@ WM_HOTKEY = 0x0312
 WM_QUIT = 0x0012
 
 
+# 원하는 조합을 다른 프로그램이 이미 쓰고 있을 때 차례로 시도할 대체 조합
+FALLBACKS = ("ctrl+alt+shift+j", "ctrl+shift+space", "win+alt+j")
+
+
+def parse_combo(combo: str) -> tuple[int, int]:
+    """'ctrl+alt+j' → (수식키 비트, 가상 키 코드). 형식이 틀리면 ValueError."""
+    mods, vk = MOD_NOREPEAT, 0
+    for part in combo.lower().replace(" ", "").split("+"):
+        if part in MODS:
+            mods |= MODS[part]
+        elif vk:
+            raise ValueError(f"키가 두 개 이상입니다: {combo}")
+        else:
+            vk = _vk(part)
+    if not vk:
+        raise ValueError(f"수식키만 있고 키가 없습니다: {combo}")
+    return mods, vk
+
+
 class GlobalHotkey:
-    def __init__(self, combo: str, callback: Callable[[], None]) -> None:
+    """combo 등록에 실패하면 FALLBACKS 를 차례로 시도한다. 실제로 등록된 조합은 .active."""
+
+    def __init__(self, combo: str, callback: Callable[[], None], fallback: bool = True) -> None:
         self.combo = combo
         self.callback = callback
+        self.fallback = fallback
         self._tid = 0
         self.ok = False
+        self.active = ""
 
     def start(self) -> None:
         ready = threading.Event()
@@ -32,18 +55,19 @@ class GlobalHotkey:
 
     def _run(self, ready: threading.Event) -> None:
         self._tid = kernel32.GetCurrentThreadId()
-        mods, vk = MOD_NOREPEAT, 0
-        try:
-            for part in self.combo.lower().replace(" ", "").split("+"):
-                if part in MODS:
-                    mods |= MODS[part]
-                else:
-                    vk = _vk(part)
-        except ValueError as e:
-            log.error("단축키 형식 오류: %s", e)
-        self.ok = bool(vk) and bool(user32.RegisterHotKey(None, 1, mods, vk))
-        if not self.ok:
-            log.warning("단축키 등록 실패(다른 프로그램이 사용 중일 수 있음): %s", self.combo)
+        tries = [self.combo] + ([c for c in FALLBACKS if c != self.combo.lower()] if self.fallback else [])
+        for combo in tries:
+            try:
+                mods, vk = parse_combo(combo)
+            except ValueError as e:
+                log.error("단축키 형식 오류: %s", e)
+                continue
+            if user32.RegisterHotKey(None, 1, mods, vk):
+                self.ok, self.active = True, combo
+                break
+            log.warning("단축키 등록 실패(다른 프로그램이 사용 중일 수 있음): %s", combo)
+        if self.ok and self.active != self.combo:
+            log.info("대체 단축키 사용: %s", self.active)
         ready.set()
         if not self.ok:
             return

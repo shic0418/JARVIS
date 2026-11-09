@@ -280,8 +280,11 @@ class Jarvis(QObject):
                 self.voiceid.start_loading()
 
         # ---- 전역 단축키 ----
+        # 개발용 화면 캡처·데모 실행은 이미 떠 있는 자비스의 단축키를 건드리지 않는다
         self.hotkey = GlobalHotkey(self.cfg["hotkey"], self.sig_hotkey.emit)
-        self.hotkey.start()
+        if not (getattr(args, "shot", None) or getattr(args, "demo", False)):
+            self.hotkey.start()
+            self._show_hotkey()
 
         # ---- 주기 작업 ----
         self._tick = QTimer(self)
@@ -300,13 +303,22 @@ class Jarvis(QObject):
 
         QTimer.singleShot(2300, self._boot_done)
 
+    def _hotkeyText(self) -> str:
+        return (self.hotkey.active or self.cfg["hotkey"]).upper()
+
+    def _show_hotkey(self) -> None:
+        self.bridge.set("hotkeyText", self._hotkeyText())
+
     # ================================================================== 부팅
     def _boot_done(self) -> None:
         self._to_idle()
         if not self.mic_ok and not self.args.no_mic:
             self.bridge.toast.emit("error", self.listener.error or "마이크를 사용할 수 없습니다")
-        if not self.hotkey.ok:
+        if self.hotkey._tid and not self.hotkey.ok:
             self.bridge.toast.emit("warn", f"단축키 {self.cfg['hotkey']} 등록 실패 — 다른 앱이 사용 중")
+        elif self.hotkey.ok and self.hotkey.active != self.cfg["hotkey"]:
+            self.bridge.toast.emit("warn", f"{self.cfg['hotkey'].upper()} 는 다른 앱이 사용 중이라 "
+                                           f"{self.hotkey.active.upper()} 로 대신 부릅니다")
         if self.args.no_greet:
             return
         hour = time.localtime().tm_hour
@@ -345,7 +357,7 @@ class Jarvis(QObject):
         elif self.bridge._wakeEnabled:
             self._set_state("standby", "“자비스”라고 불러주세요")
         else:
-            self._set_state("standby", f"{self.cfg['hotkey'].upper()} 또는 코어 클릭")
+            self._set_state("standby", f"{self._hotkeyText()} 또는 코어 클릭")
 
     def _active(self) -> bool:
         return time.monotonic() < self.active_until
@@ -796,7 +808,7 @@ class Jarvis(QObject):
         if not self.busy and not self.speaker.playing and self.bridge._state in ("standby", "listening"):
             self._to_idle()
         self.bridge.toast.emit("info", "호출어 대기 켜짐 — “자비스”" if on else
-                               f"호출어 대기 꺼짐 — {self.cfg['hotkey'].upper()} 로 호출")
+                               f"호출어 대기 꺼짐 — {self._hotkeyText()} 로 호출")
 
     def toggle_visible(self, show: bool | None = None) -> None:
         show = (not self.win.isVisible()) if show is None else show
@@ -837,11 +849,14 @@ class Jarvis(QObject):
         msg = "설정을 저장했습니다"
         if self.cfg["hotkey"] != old_hotkey:
             self.hotkey.stop()
-            self.hotkey = GlobalHotkey(self.cfg["hotkey"], self.sig_hotkey.emit)
+            self.hotkey = GlobalHotkey(self.cfg["hotkey"], self.sig_hotkey.emit, fallback=False)
             self.hotkey.start()
-            self.bridge.set("hotkeyText", self.cfg["hotkey"].upper())
-            if not self.hotkey.ok:
-                msg += f" (단축키 {self.cfg['hotkey']} 등록 실패)"
+            if not self.hotkey.ok:   # 사용자가 고른 조합이 안 되면 원래 조합으로 되돌림
+                msg += f" (단축키 {self.cfg['hotkey']} 등록 실패 — 다른 앱이 사용 중, {old_hotkey.upper()} 유지)"
+                self.cfg.update({"hotkey": old_hotkey})
+                self.hotkey = GlobalHotkey(old_hotkey, self.sig_hotkey.emit)
+                self.hotkey.start()
+            self._show_hotkey()
         self.bridge.toast.emit("info", msg)
         if not self.busy and not self.speaker.playing:
             self._to_idle()
