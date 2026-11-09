@@ -1,7 +1,8 @@
 """음성 합성(TTS)과 재생.
 
 - 합성: Microsoft Edge 신경망 음성(edge-tts, 인터넷 필요) → 실패 시 Windows SAPI(오프라인)
-- 재생: QMediaPlayer (메인 스레드). QAudioBufferOutput 으로 실제 음량을 읽어 HUD 코어를 맥동시킨다.
+- 다듬기: 합성된 조각마다 앞 ~0.3초·뒤 ~1.1초의 무음이 붙어 오므로 잘라 내고, 문장 사이엔 사람처럼 짧게만 쉰다.
+- 재생: 하나의 출력 스트림(sounddevice)에 조각을 끊김 없이 이어 붙인다. 내보내는 소리의 실제 음량으로 HUD 코어를 맥동시킨다.
 """
 from __future__ import annotations
 
@@ -12,17 +13,18 @@ import queue
 import re
 import tempfile
 import threading
+import time
 import uuid
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QObject, QTimer, QUrl, Signal, Slot
-from PySide6.QtMultimedia import (QAudioBufferOutput, QAudioFormat, QAudioOutput,
-                                  QMediaPlayer)
+from PySide6.QtCore import QEventLoop, QObject, QTimer, QUrl, Signal, Slot
+from PySide6.QtMultimedia import QAudioDecoder, QAudioFormat
 
 log = logging.getLogger("jarvis.speech")
 TMP = Path(tempfile.gettempdir()) / "jarvis_tts"
 TMP.mkdir(exist_ok=True)
+SR = 24000            # edge-tts 원음과 같은 표본율 (SAPI 음성도 이 값으로 맞춰 디코딩)
 
 
 def _try_unlink(p: Path) -> None:
@@ -99,148 +101,278 @@ def _sapi(text: str) -> bytes:
         pythoncom.CoUninitialize()
 
 
+def _buffer_to_mono(buf) -> np.ndarray:
+    fmt = buf.format()
+    raw = bytes(buf.constData())
+    sf = fmt.sampleFormat()
+    if sf == QAudioFormat.SampleFormat.Float:
+        a = np.frombuffer(raw, np.float32)
+    elif sf == QAudioFormat.SampleFormat.Int16:
+        a = np.frombuffer(raw, np.int16).astype(np.float32) / 32768.0
+    elif sf == QAudioFormat.SampleFormat.Int32:
+        a = np.frombuffer(raw, np.int32).astype(np.float32) / 2147483648.0
+    else:  # UInt8
+        a = (np.frombuffer(raw, np.uint8).astype(np.float32) - 128.0) / 128.0
+    ch = max(1, fmt.channelCount())
+    if ch > 1:
+        a = a[: a.size // ch * ch].reshape(-1, ch).mean(axis=1)
+    sr = fmt.sampleRate()
+    if sr and sr != SR and a.size:
+        n = int(round(a.size * SR / sr))
+        a = np.interp(np.linspace(0, a.size - 1, n), np.arange(a.size), a)
+    return a.astype(np.float32, copy=True)
+
+
+def decode(data: bytes, suffix: str) -> np.ndarray:
+    """압축된 음성 → 24kHz 모노 float32. 워커 스레드에서 호출 (자체 이벤트 루프를 돌린다)."""
+    if not data:
+        return np.zeros(0, np.float32)
+    path = TMP / f"dec_{uuid.uuid4().hex}{suffix}"
+    path.write_bytes(data)
+    try:
+        loop = QEventLoop()
+        dec = QAudioDecoder()
+        fmt = QAudioFormat()
+        fmt.setSampleRate(SR)
+        fmt.setChannelCount(1)
+        fmt.setSampleFormat(QAudioFormat.SampleFormat.Float)
+        dec.setAudioFormat(fmt)
+        dec.setSource(QUrl.fromLocalFile(str(path)))
+        parts: list[np.ndarray] = []
+        errors: list[str] = []
+
+        def on_buffer() -> None:
+            b = dec.read()
+            if b.isValid():
+                parts.append(_buffer_to_mono(b))
+
+        def on_error(_e) -> None:
+            errors.append(dec.errorString())
+            loop.quit()
+
+        dec.bufferReady.connect(on_buffer)
+        dec.finished.connect(loop.quit)
+        dec.error.connect(on_error)
+        guard = QTimer()
+        guard.setSingleShot(True)
+        guard.timeout.connect(loop.quit)
+        guard.start(10000)
+        dec.start()
+        loop.exec()
+        dec.stop()
+        if not parts:
+            raise RuntimeError(errors[0] if errors else "디코딩 결과 없음")
+        return np.concatenate(parts)
+    finally:
+        _try_unlink(path)
+
+
+def trim_silence(a: np.ndarray, lead: float = 0.02, tail: float = 0.09) -> np.ndarray:
+    """앞뒤 무음을 잘라 내고(말소리 앞 lead 초, 뒤 tail 초만 남김) 잘린 자리에 짧은 페이드를 준다."""
+    if a.size == 0:
+        return a
+    hop = SR // 100                                   # 10ms 단위로 음량을 본다
+    n = a.size // hop
+    if n == 0:
+        return a
+    rms = np.sqrt(np.mean(a[: n * hop].reshape(n, hop) ** 2, axis=1))
+    voiced = np.nonzero(rms > 0.006)[0]
+    if voiced.size == 0:
+        return np.zeros(0, np.float32)
+    start = max(0, int(voiced[0]) * hop - int(lead * SR))
+    end = min(a.size, (int(voiced[-1]) + 1) * hop + int(tail * SR))
+    out = a[start:end].astype(np.float32, copy=True)
+    f = min(out.size // 2, int(0.004 * SR))
+    if f:
+        ramp = np.linspace(0.0, 1.0, f, dtype=np.float32)
+        out[:f] *= ramp
+        out[-f:] *= ramp[::-1]
+    return out
+
+
+def pause_after(text: str) -> float:
+    """이 조각 다음에 쉴 시간(초). 문장 끝은 숨 한 번, 쉼표에서 끊긴 곳은 아주 짧게."""
+    t = text.rstrip(" \"')”’")
+    if not t:
+        return 0.2
+    if t[-1] in ".!?…~。":
+        return 0.32
+    if t[-1] in ",，、":
+        return 0.14
+    return 0.22
+
+
+def render(text: str, voice: str, rate: str) -> np.ndarray:
+    """텍스트 → 재생할 PCM (앞뒤 무음 정리 완료). 워커 스레드에서 호출."""
+    data, suffix = synthesize(text, voice, rate)
+    if not data:
+        return np.zeros(0, np.float32)
+    return trim_silence(decode(data, suffix))
+
+
 class Speaker(QObject):
-    """메인 스레드 전용 재생기."""
+    """하나의 출력 스트림에 음성 조각을 끊김 없이 이어 재생한다. 공개 메서드는 메인 스레드 전용."""
     level = Signal(float)
     started = Signal()
     finished = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.player = QMediaPlayer(self)
-        self.output = QAudioOutput(self)
-        self.output.setVolume(1.0)
-        self.player.setAudioOutput(self.output)
-        self._has_buffer = False
-        try:
-            fmt = QAudioFormat()
-            fmt.setSampleRate(16000)
-            fmt.setChannelCount(1)
-            fmt.setSampleFormat(QAudioFormat.SampleFormat.Float)
-            self.buf_out = QAudioBufferOutput(fmt, self)
-            self.player.setAudioBufferOutput(self.buf_out)
-            self.buf_out.audioBufferReceived.connect(self._on_buffer)
-            self._has_buffer = True
-        except Exception as e:  # 구버전 Qt
-            log.warning("QAudioBufferOutput 사용 불가: %s", e)
-        self.player.mediaStatusChanged.connect(self._on_status)
-        self.player.errorOccurred.connect(self._on_error)
-        self._playing = False
-        self._current: Path | None = None
-        self._q: collections.deque[tuple[bytes, str]] = collections.deque()   # 이어서 재생할 조각
+        self._lock = threading.Lock()
+        self._q: collections.deque[np.ndarray] = collections.deque()   # 아직 내보내지 않은 조각
+        self._cur: np.ndarray | None = None
+        self._pos = 0
+        self._dry_since: float | None = None   # 출력 콜백이 마지막 소리를 다 내보낸 시각
+        self._stream = None
+        self._latency = 0.2
         self._holding = False      # 스트리밍 중: 조각이 더 올 수 있으니 대기열이 비어도 끝내지 않음
         self._session = False      # started 를 보낸 뒤 아직 finished 를 보내지 않음
-        self._decay = QTimer(self)
-        self._decay.setInterval(33)
-        self._decay.timeout.connect(self._tick)
-        self._lvl = 0.0
-        self._fake_phase = 0.0
+        self._gap = 0.0            # 다음 조각 앞에 둘 쉼(초)
+        self._out_lvl = 0.0
+        self._timer = QTimer(self)
+        self._timer.setInterval(33)
+        self._timer.timeout.connect(self._tick)
 
     @property
     def playing(self) -> bool:
         """말하는 중 (스트리밍 중 다음 조각을 기다리는 동안도 포함)."""
-        return self._playing or self._session
+        return self._session
 
-    def play(self, data: bytes, suffix: str) -> None:
+    @Slot(object, float)
+    def play(self, pcm, gap: float = 0.0) -> None:
         self.stop()
-        if not data:
+        if pcm is None or not len(pcm):
             self.finished.emit()
             return
-        self.enqueue(data, suffix)
+        self.enqueue(pcm, gap)
 
     # ---- 스트리밍: 문장 조각을 차례로 이어서 재생 ----
     def begin_stream(self) -> None:
         self.stop()
         self._holding = True
 
-    @Slot(bytes, str)
-    def enqueue(self, data: bytes, suffix: str) -> None:
-        if not data:
+    def enqueue(self, pcm, gap: float = 0.0) -> None:
+        if pcm is None or not len(pcm):
             return
-        if self._playing:
-            self._q.append((data, suffix))
+        pcm = np.asarray(pcm, dtype=np.float32)
+        if not self._session:
+            with self._lock:
+                self._q.clear()
+                self._cur, self._pos, self._dry_since = None, 0, None
+                self._q.append(pcm)
+            if not self._open():
+                with self._lock:
+                    self._q.clear()
+                if not self._holding:
+                    self.finished.emit()
+                return
+            self._session = True
+            self._timer.start()
+            self.started.emit()
         else:
-            self._start(data, suffix)
+            with self._lock:
+                dry = self._dry_since
+                waited = time.monotonic() - dry if dry is not None else 0.0
+                lead = self._gap - waited      # 다음 조각을 기다리느라 이미 쉰 만큼은 빼고
+                if lead > 0.01:
+                    self._q.append(np.zeros(int(lead * SR), np.float32))
+                self._q.append(pcm)
+                self._dry_since = None
+        self._gap = gap
 
     def end_stream(self) -> None:
         self._holding = False
-        if not self._playing and not self._q:
-            self._session = False
-            self.finished.emit()     # 이미 다 읽었거나(또는 읽을 것이 없었음) → 끝
-
-    def _start(self, data: bytes, suffix: str) -> None:
-        path = TMP / f"say_{uuid.uuid4().hex}{suffix}"
-        path.write_bytes(data)
-        self._current = path
-        self._playing = True
-        self.player.setSource(QUrl.fromLocalFile(str(path)))
-        self.player.play()
-        self._decay.start()
         if not self._session:
-            self._session = True
-            self.started.emit()
+            self.finished.emit()     # 읽을 것이 없었음 → 끝 (읽는 중이면 다 읽은 뒤 _tick 이 끝낸다)
 
     @Slot()
     def stop(self) -> None:
-        self._q.clear()
         self._holding = False
-        if self._playing:
-            self.player.stop()
-            self._finish()
-        elif self._session:
-            self._session = False
-            self.finished.emit()
+        with self._lock:
+            self._q.clear()
+            self._cur = None
+        if self._session:
+            self._end()
 
-    def _finish(self) -> None:
-        if not self._playing:
-            return
-        self._playing = False
-        self._decay.stop()
-        self.level.emit(0.0)
-        old = self._current
-        self._current = None
-        if old:
-            self.player.setSource(QUrl())   # 파일 잠금 해제 (새 재생은 이후 _start()에서 설정)
-            QTimer.singleShot(2000, lambda p=old: _try_unlink(p))
-        if self._q:                         # 다음 조각을 바로 이어서
-            data, suffix = self._q.popleft()
-            self._start(data, suffix)
-            return
-        if self._holding:                   # 다음 조각이 아직 합성 중 → 말하는 상태 유지
-            return
+    # ---- 내부 ----
+    def _open(self) -> bool:
+        try:
+            import sounddevice as sd
+            self._stream = sd.OutputStream(samplerate=SR, channels=1, dtype="float32",
+                                           callback=self._callback)
+            self._latency = float(getattr(self._stream, "latency", 0.2) or 0.2)
+            self._stream.start()
+            return True
+        except Exception as e:
+            log.error("스피커를 열 수 없습니다: %s", e)
+            self._close()
+            return False
+
+    def _close(self) -> None:
+        st, self._stream = self._stream, None
+        if st is not None:
+            try:
+                st.abort()
+                st.close()
+            except Exception:
+                pass
+
+    def _end(self) -> None:
+        self._close()
+        self._timer.stop()
         self._session = False
+        self._out_lvl = 0.0
+        self.level.emit(0.0)
         self.finished.emit()
 
-    def _on_status(self, status) -> None:
-        if status in (QMediaPlayer.MediaStatus.EndOfMedia, QMediaPlayer.MediaStatus.InvalidMedia):
-            self._finish()
-
-    def _on_error(self, err, msg="") -> None:
-        log.error("재생 오류: %s %s", err, msg)
-        self._finish()
-
-    def _on_buffer(self, buf) -> None:
-        try:
-            raw = buf.constData()
-            arr = np.frombuffer(bytes(raw), dtype=np.float32)
-            if arr.size:
-                rms = float(np.sqrt(np.mean(arr * arr)))
-                self._lvl = max(self._lvl * 0.6, min(1.0, rms * 2.8))
-        except Exception:
-            self._has_buffer = False
+    def _callback(self, outdata, frames, time_info, status) -> None:
+        out = outdata[:, 0]
+        filled = 0
+        with self._lock:
+            while filled < frames:
+                if self._cur is None:
+                    if not self._q:
+                        break
+                    self._cur, self._pos = self._q.popleft(), 0
+                n = min(frames - filled, self._cur.size - self._pos)
+                out[filled:filled + n] = self._cur[self._pos:self._pos + n]
+                filled += n
+                self._pos += n
+                if self._pos >= self._cur.size:
+                    self._cur = None
+            if filled < frames:
+                out[filled:] = 0.0
+                if self._dry_since is None:
+                    self._dry_since = time.monotonic()
+        if filled:
+            seg = out[:filled]
+            rms = float(np.sqrt(np.mean(seg * seg)))
+            self._out_lvl = max(self._out_lvl * 0.6, min(1.0, rms * 2.8))
 
     def _tick(self) -> None:
-        if not self._has_buffer:  # 실제 레벨을 못 읽으면 자연스러운 가짜 파형
-            self._fake_phase += 0.33
-            self._lvl = 0.35 + 0.3 * abs(np.sin(self._fake_phase)) * abs(np.sin(self._fake_phase * 0.37))
-        self.level.emit(self._lvl)
-        self._lvl *= 0.85
+        self.level.emit(self._out_lvl)
+        self._out_lvl *= 0.85
+        if not self._session:
+            return
+        st = self._stream
+        if st is None or not st.active:            # 장치가 빠지는 등 스트림이 멈춤 → 끝낸 것으로
+            self._holding = False
+            self._end()
+            return
+        if self._holding:
+            return
+        with self._lock:
+            idle = self._cur is None and not self._q
+            dry = self._dry_since
+        # 마지막 소리가 장치 버퍼를 다 빠져나갈 때까지 기다렸다가 닫는다 (끝음절 잘림 방지)
+        if idle and dry is not None and time.monotonic() - dry > self._latency + 0.08:
+            self._end()
 
 
 class TTS(QObject):
-    """텍스트 → (워커에서 합성) → 메인 스레드 재생."""
-    _ready = Signal(bytes, str)
-    _chunk = Signal(int, bytes, str)
+    """텍스트 → (워커에서 합성·디코딩) → 메인 스레드 재생."""
+    _ready = Signal(object, float)
+    _chunk = Signal(int, object, float)
     _chunks_done = Signal(int)
 
     def __init__(self, speaker: Speaker, voice_getter, parent=None) -> None:
@@ -273,12 +405,12 @@ class TTS(QObject):
                     self._chunks_done.emit(gen)
                     return
                 try:
-                    data, suffix = synthesize(text, voice, rate)
+                    pcm = render(text, voice, rate)
                 except Exception as e:
                     log.exception("TTS 실패: %s", e)
                     continue
                 if gen == self._gen:
-                    self._chunk.emit(gen, data, suffix)
+                    self._chunk.emit(gen, pcm, pause_after(text))
 
         threading.Thread(target=work, daemon=True, name="tts-stream").start()
 
@@ -295,10 +427,10 @@ class TTS(QObject):
     def streaming(self) -> bool:
         return self._sq is not None
 
-    @Slot(int, bytes, str)
-    def _on_chunk(self, gen: int, data: bytes, suffix: str) -> None:
+    @Slot(int, object, float)
+    def _on_chunk(self, gen: int, pcm, gap: float) -> None:
         if gen == self._gen:
-            self.speaker.enqueue(data, suffix)
+            self.speaker.enqueue(pcm, gap)
 
     @Slot(int)
     def _on_chunks_done(self, gen: int) -> None:
@@ -313,12 +445,12 @@ class TTS(QObject):
 
         def work():
             try:
-                data, suffix = synthesize(text, voice, rate)
+                pcm = render(text, voice, rate)
             except Exception as e:
                 log.exception("TTS 실패: %s", e)
-                data, suffix = b"", ".mp3"
+                pcm = np.zeros(0, np.float32)
             if gen == self._gen:  # 그 사이 새 발화/중단이 없을 때만 재생
-                self._ready.emit(data, suffix)
+                self._ready.emit(pcm, 0.0)
 
         threading.Thread(target=work, daemon=True, name="tts").start()
 
