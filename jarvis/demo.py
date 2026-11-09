@@ -20,6 +20,8 @@ def run_demo(core, args) -> None:
         for i, (label, st) in enumerate([("앱 실행 · 크롬", "ok"), ("YouTube 재생 · 아이유 노래", "ok"),
                                           ("볼륨 · set 40", "ok"), ("웹 검색 · 오늘 서울 날씨", "run")]):
             b.actionEvent.emit(f"demo{i}", label, st, "")
+        if os.environ.get("JARVIS_DEMO_CHAT"):   # 1 = 자유 대화 모드 표시
+            b.set("chatMode", True)
         compact = os.environ.get("JARVIS_DEMO_COMPACT")
         if compact is not None:             # 1 = 축소 모드, 0 = 전체 모드 (설정 파일은 건드리지 않음)
             b.set("compact", compact not in ("", "0"))

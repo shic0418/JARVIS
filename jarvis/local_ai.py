@@ -110,6 +110,8 @@ class LocalAI:
         self.last_ms = 0
         self._ok_until = 0.0          # 서버·모델 확인 결과 캐시
         self._down_until = 0.0        # 연결 실패 후 잠시 시도하지 않음
+        self._loaded_until = 0.0      # 모델이 메모리에 올라가 있음을 확인한 시각 + 유효 시간
+        self._warming = False
         self._lock = threading.Lock()
 
     @property
@@ -145,15 +147,36 @@ class LocalAI:
 
     def warmup(self) -> None:
         """모델을 미리 메모리에 올려 첫 명령도 빠르게 (백그라운드에서 호출)."""
-        if not self.cfg["local_ai"] or not self.available():
+        if not self.cfg["local_ai"] or not self.available() or self._warming:
             return
+        self._warming = True
         try:
-            self.classify("안녕")
+            self.classify("안녕", timeout=120)
             log.info("로컬 AI 준비 완료: %s (%d ms)", self.model, self.last_ms)
         except Exception as e:
             log.warning("로컬 AI 예열 실패: %s", e)
+        finally:
+            self._warming = False
 
-    def classify(self, text: str) -> dict | None:
+    def loaded(self) -> bool:
+        """모델이 지금 메모리에 있는가. 없으면(오래 안 써서 내려감) 백그라운드로 다시 올리고 False.
+        (기록: 1시간 만의 첫 명령에서 모델을 다시 올리느라 12초 기다린 뒤 결국 Claude 로 넘어감)"""
+        now = time.time()
+        if now < self._loaded_until:
+            return True
+        try:
+            with urllib.request.urlopen(OLLAMA_URL + "/api/ps", timeout=1.0) as r:
+                names = {m.get("name") for m in json.loads(r.read().decode("utf-8")).get("models", [])}
+        except Exception:
+            return False
+        if self.model in names:
+            self._loaded_until = now + 60
+            return True
+        log.info("로컬 AI 모델이 메모리에 없어 이번에는 건너뛰고 다시 올립니다")
+        threading.Thread(target=self.warmup, daemon=True, name="local-ai-warmup").start()
+        return False
+
+    def classify(self, text: str, timeout: float | None = None) -> dict | None:
         messages = [{"role": "system", "content": SYSTEM}]
         for q, a in FEWSHOT:
             messages.append({"role": "user", "content": q})
@@ -168,7 +191,8 @@ class LocalAI:
                 "format": SCHEMA,
                 "keep_alive": "30m",
                 "options": {"temperature": 0, "num_predict": 60, "num_ctx": 2048},
-            }, timeout=float(self.cfg["local_ai_timeout"] or 12))
+            }, timeout=timeout or float(self.cfg["local_ai_timeout"] or 12))
+        self._loaded_until = time.time() + 60
         self.last_ms = int((time.perf_counter() - t0) * 1000)
         try:
             out = json.loads(resp["message"]["content"])
@@ -176,16 +200,32 @@ class LocalAI:
             return None
         return out if isinstance(out, dict) and out.get("intent") in INTENTS else None
 
+    def chat(self, messages: list[dict], timeout: float = 30) -> str | None:
+        """Claude 를 쓸 수 없을 때 자유 대화용 (작은 모델이라 짧고 단순한 대화만)."""
+        if not self.available():
+            return None
+        try:
+            with self._lock:
+                resp = self._post("/api/chat", {
+                    "model": self.model, "messages": messages, "stream": False, "keep_alive": "30m",
+                    "options": {"temperature": 0.7, "num_predict": 160, "num_ctx": 4096},
+                }, timeout=timeout)
+            return (resp.get("message") or {}).get("content", "").strip() or None
+        except Exception as e:
+            log.warning("로컬 AI 대화 실패: %s", e)
+            return None
+
     # ------------------------------------------------------------------ 의도 → 표준 명령
     def interpret(self, text: str) -> str | None:
         """말을 규칙 처리기가 알아듣는 표준 명령으로 바꾼다. 못 하면 None (→ Claude)."""
-        if not self.available():
+        if not self.available() or not self.loaded():
             return None
         try:
             out = self.classify(text)
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             log.warning("로컬 AI 응답 없음 → Claude: %s", e)
             self._ok_until = 0
+            self._loaded_until = 0
             return None
         if not out:
             return None
@@ -236,6 +276,9 @@ def to_command(out: dict, text: str) -> str | None:
         if not 0 <= number <= 100 or not (str(number) in text or _half(text, number)):
             return None
         return f"볼륨 {number}"
+    # 파일 얘기를 앱·폴더 열기로 바꾸지 않는다 (기록: '주사위.rld 파일을 열어' → 앱 '주술회전 주사위' 실행 시도)
+    if intent in ("open_app", "close_app", "open_folder") and re.search(r"파일|\.[A-Za-z0-9]{2,4}\b", text):
+        return None
     if intent in ("open_app", "close_app"):
         if not target or len(target) > 15 or not _said(target, text):
             return None

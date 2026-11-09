@@ -154,7 +154,7 @@ def list_windows() -> list[dict]:
             exe = psutil.Process(pid).name()
         except Exception:
             exe = ""
-        result.append({"hwnd": hwnd, "title": title, "exe": exe})
+        result.append({"hwnd": hwnd, "title": title, "exe": exe, "pid": pid})
         return True
 
     win32gui.EnumWindows(cb, None)

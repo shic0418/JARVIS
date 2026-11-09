@@ -37,6 +37,7 @@ class Hooks:
     confirm: Callable[[str, str], bool]          # (제목, 상세) -> 승인 여부 (블로킹)
     schedule_timer: Callable[[int, str], None]   # (초, 라벨)
     hud_hwnd: Callable[[], int]
+    notify: Callable[[str], None] = lambda msg: None   # 백그라운드 작업이 사용자에게 말로 알림
 
 
 # 한국어 별칭 → Start 메뉴 검색어 / 실행 파일
@@ -56,6 +57,19 @@ APP_ALIASES: dict[str, list[str]] = {
     "명령프롬프트": ["명령 프롬프트", "command prompt"], "파워셸": ["windows powershell"], "파워쉘": ["windows powershell"],
     "제어판": ["제어판", "control panel"], "카메라": ["카메라", "camera"], "사진": ["사진", "photos"],
     "시계": ["시계", "clock"], "알람": ["시계", "clock"], "캘린더": ["calendar", "일정"],
+    # 한국어로 부르는 영어 이름 앱 (기록: '클로드 열어', '잉크스페이스' 가 앱을 못 찾아 Claude 로 넘어감)
+    "클로드": ["claude"], "챗지피티": ["chatgpt"], "지피티": ["chatgpt"],
+    "잉크스케이프": ["inkscape"], "잉크스페이스": ["inkscape"], "inkspace": ["inkscape"],
+    "알디웍스": ["rdworks"],
+    "포토샵": ["photoshop"], "일러스트레이터": ["illustrator"], "일러스트": ["illustrator"],
+    "프리미어": ["premiere pro"], "프리미어프로": ["premiere pro"], "애프터이펙트": ["after effects"],
+    "블렌더": ["blender"], "오비에스": ["obs studio"], "obs": ["obs studio"],
+    "한글": ["한글", "hwp"], "한컴": ["한글", "hwp"], "유니티": ["unity hub", "unity"],
+    "마인크래프트": ["minecraft"], "로블록스": ["roblox"],
+    "리그오브레전드": ["league of legends"], "배틀넷": ["battle.net"],
+    "에픽게임즈": ["epic games launcher"], "오페라": ["opera"], "곰플레이어": ["gom player"],
+    "팟플레이어": ["potplayer"], "반디집": ["bandizip"], "캡컷": ["capcut"], "피그마": ["figma"],
+    "파이참": ["pycharm"], "비주얼스튜디오": ["visual studio"], "아크로뱃": ["acrobat"],
 }
 EXE_ALIASES: dict[str, list[str]] = {
     "크롬": ["chrome.exe"], "엣지": ["msedge.exe"], "웨일": ["whale.exe"], "파이어폭스": ["firefox.exe"],
@@ -65,6 +79,8 @@ EXE_ALIASES: dict[str, list[str]] = {
     "디스코드": ["discord.exe"], "디코": ["discord.exe"], "스포티파이": ["spotify.exe"], "vscode": ["code.exe"],
     "브이에스코드": ["code.exe"], "작업관리자": ["taskmgr.exe"], "설정": ["systemsettings.exe"], "멜론": ["melon.exe"],
     "스팀": ["steam.exe"], "줌": ["zoom.exe"], "슬랙": ["slack.exe"], "노션": ["notion.exe"], "팀즈": ["ms-teams.exe"],
+    "클로드": ["claude.exe"], "잉크스케이프": ["inkscape.exe"], "잉크스페이스": ["inkscape.exe"],
+    "포토샵": ["photoshop.exe"], "블렌더": ["blender.exe"], "챗지피티": ["chatgpt.exe"],
 }
 SYSTEM_EXE = {"작업관리자": "taskmgr.exe", "명령프롬프트": "cmd.exe", "파워셸": "powershell.exe",
               "파워쉘": "powershell.exe", "제어판": "control.exe", "레지스트리": "regedit.exe",
@@ -102,7 +118,7 @@ class PCTools:
         except Exception as e:
             log.warning("앱 인덱싱 실패: %s", e)
 
-    def _find_app(self, query: str) -> tuple[str, str] | None:
+    def _find_app(self, query: str, min_score: float = 38) -> tuple[str, str] | None:
         terms = [query] + APP_ALIASES.get(_norm(query), [])
         best, best_score = None, 0.0
         for name, appid in self._apps:
@@ -123,7 +139,7 @@ class PCTools:
                     s = difflib.SequenceMatcher(None, tn, nn).ratio() * 50
                 if s > best_score:
                     best, best_score = (name, appid), s
-        return best if best_score >= 38 else None
+        return best if best_score >= min_score else None
 
     # ------------------------------------------------------------------ 스키마
     def schemas(self) -> list[dict]:
@@ -184,7 +200,9 @@ class PCTools:
                  {"target": s}, ["target"]),
             tool("find_files", "Search the user's Desktop/Documents/Downloads/Pictures/Music/Videos for files whose name contains the query.",
                  {"query": s, "folder": {"type": "string", "description": "optional known folder name or path to limit search"}}, ["query"]),
-            tool("open_path", "Open a file or folder with its default program.", {"path": s}, ["path"]),
+            tool("open_path", "Open a file or folder. With 'app', opens the file in that program (e.g. app='RDWorks' for a .rld file) "
+                 "instead of the default program. Never type file paths into an app's Open dialog; use this.",
+                 {"path": s, "app": {"type": "string", "description": "optional program name to open the file with"}}, ["path"]),
             tool("run_powershell", "Run a PowerShell command on the user's PC and return its output. Use for tasks no other tool covers. The user is asked to approve it first.",
                  {"command": s, "reason": {"type": "string", "description": "short Korean explanation shown to the user"}},
                  ["command", "reason"]),
@@ -195,6 +213,12 @@ class PCTools:
             tool("get_weather", "Get current weather and today's forecast.", {"location": {"type": "string", "description": "city name; default is the user's home city"}}),
             tool("read_clipboard", "Read the text currently in the clipboard."),
             tool("write_clipboard", "Put text into the clipboard.", {"text": s}, ["text"]),
+            tool("watch_app", "Watch an app window in the background and tell the user by voice when it finishes working, "
+                 "e.g. 'tell me when Claude finishes', 'let me know when the render/download is done'. Returns immediately.",
+                 {"name": {"type": "string", "description": "app name or window title to watch"},
+                  "label": {"type": "string", "description": "short Korean description of what is being waited for"},
+                  "max_minutes": {"type": "integer", "description": "give up after this many minutes (default 60)"}},
+                 ["name"]),
             tool("remember", "Save a fact about the user to long-term memory (e.g. preferences, names). Use when the user asks you to remember something.",
                  {"fact": s}, ["fact"]),
         ]
@@ -225,7 +249,7 @@ class PCTools:
             "system_status": lambda: "시스템 진단",
             "open_folder": lambda: f"폴더 열기 · {a.get('target')}",
             "find_files": lambda: f"파일 검색 · {a.get('query')}",
-            "open_path": lambda: f"파일 열기 · {Path(str(a.get('path', ''))).name}",
+            "open_path": lambda: f"파일 열기 · {Path(str(a.get('path', ''))).name}" + (f" ({a['app']})" if a.get("app") else ""),
             "run_powershell": lambda: f"PowerShell · {a.get('command', '')[:40]}",
             "power": lambda: f"전원 · {a.get('action')}",
             "set_timer": lambda: f"타이머 · {a.get('label')} ({a.get('seconds')}초)",
@@ -233,6 +257,7 @@ class PCTools:
             "read_clipboard": lambda: "클립보드 읽기",
             "write_clipboard": lambda: "클립보드 쓰기",
             "remember": lambda: f"기억 저장 · {a.get('fact', '')[:30]}",
+            "watch_app": lambda: f"작업 감시 · {a.get('name')}",
             "web_search": lambda: f"웹 검색 · {a.get('query', '')}",
         }
         try:
@@ -254,13 +279,15 @@ class PCTools:
             raise ToolError("사용자가 실행을 거부했습니다.")
 
     # --- 앱/창 ---
-    def t_open_app(self, name: str) -> str:
+    def t_open_app(self, name: str, min_score: float = 38) -> str:
         key = _norm(name)
-        hit = self._find_app(name)
+        hit = self._find_app(name, min_score)
         if hit:
             subprocess.Popen(["explorer.exe", f"shell:AppsFolder\\{hit[1]}"], creationflags=NO_WINDOW)
             return f"'{hit[0]}' 실행함"
         exe = SYSTEM_EXE.get(key)
+        if not exe and min_score > 38:
+            raise ToolError(f"'{name}' 앱을 찾지 못했습니다.")   # 엄격 모드: 이름만으로 실행해 보지 않음
         target = exe or name
         try:
             os.startfile(target)
@@ -605,14 +632,129 @@ class PCTools:
             return f"'{query}' 이름의 파일을 찾지 못했습니다."
         return "\n".join(results[:25])
 
-    def t_open_path(self, path: str) -> str:
+    def t_open_path(self, path: str, app: str | None = None) -> str:
         p = Path(os.path.expandvars(os.path.expanduser(path)))
         if not p.exists():
             raise ToolError(f"경로가 없습니다: {p}")
         if p.suffix.lower() in RISKY_EXT:
             self._confirm("프로그램 실행", str(p))
+        if app:
+            exe = self._app_exe(app)
+            if not exe:
+                raise ToolError(f"'{app}' 프로그램 위치를 찾지 못했습니다. app 없이 기본 프로그램으로 열 수 있습니다.")
+            subprocess.Popen([exe, str(p)], cwd=str(Path(exe).parent))
+            return f"{Path(exe).stem}(으)로 열기: {p}"
         os.startfile(str(p))
         return f"열기: {p}"
+
+    def _app_exe(self, name: str) -> str | None:
+        """앱 이름 → 실행 파일 경로. 실행 중인 창 → 시작 메뉴·바탕화면 바로가기 순으로 찾는다."""
+        for w in self._match_windows(name):
+            try:
+                exe = psutil.Process(w["pid"]).exe()
+            except Exception:
+                continue
+            if exe.lower().endswith(".exe") and not exe.lower().endswith("explorer.exe"):
+                return exe
+        terms = [t for t in (_norm(x) for x in [name] + APP_ALIASES.get(_norm(name), [])) if t]
+        dirs = [Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "Microsoft/Windows/Start Menu/Programs",
+                Path(os.environ.get("APPDATA", "")) / "Microsoft/Windows/Start Menu/Programs",
+                Path(winutil.known_folder("바탕화면") or Path.home() / "Desktop"),
+                Path(os.environ.get("PUBLIC", r"C:\Users\Public")) / "Desktop"]
+        best, score = None, 0
+        for d in dirs:
+            if not d.is_dir():
+                continue
+            for lnk in d.rglob("*.lnk"):
+                stem = _norm(lnk.stem)
+                for t in terms:
+                    sc = 3 if stem == t else 2 if stem.startswith(t) else 1 if t in stem else 0
+                    if sc > score:
+                        best, score = lnk, sc
+        if not best:
+            return None
+        try:
+            import win32com.client
+            target = win32com.client.Dispatch("WScript.Shell").CreateShortcut(str(best)).TargetPath
+        except Exception as e:
+            log.warning("바로가기 해석 실패 %s: %s", best, e)
+            return None
+        return target if target and target.lower().endswith(".exe") and Path(target).exists() else None
+
+    # --- 백그라운드 감시 ---
+    def t_watch_app(self, name: str, label: str = "", max_minutes: int = 60) -> str:
+        hits = self._match_windows(name)
+        if not hits:
+            raise ToolError(f"'{name}' 창이 열려 있지 않습니다.")
+        hwnd, title = hits[0]["hwnd"], hits[0]["title"]
+        minutes = max(1, min(int(max_minutes or 60), 240))
+        what = (label or f"{name} 작업").strip()
+        threading.Thread(target=self._watch_loop, args=(hwnd, what, minutes), daemon=True, name="watch").start()
+        return f"'{title[:40]}' 창을 지켜보다가 끝나면 알려 드립니다 (최대 {minutes}분)."
+
+    @staticmethod
+    def _app_procs(hwnd: int) -> list:
+        """창을 가진 앱의 프로세스 묶음 (Electron·크롬은 메인 + 렌더러·GPU 등 자식 프로세스)."""
+        try:
+            pid = next((w["pid"] for w in winutil.list_windows() if w["hwnd"] == hwnd), None)
+            root = psutil.Process(pid) if pid else None
+            while root is not None:
+                parent = root.parent()
+                if parent is None or parent.name().lower() != root.name().lower():
+                    break
+                root = parent
+            return [root] + root.children(recursive=True) if root else []
+        except Exception:
+            return []
+
+    def _watch_loop(self, hwnd: int, what: str, minutes: int) -> None:
+        """작업 중 신호: '중지' 버튼이 보이거나, 앱 프로세스들이 CPU 를 쓰거나, 창 내용이 바뀜.
+        한 번이라도 작업 중이었다가 신호가 25초 이상 없으면 끝난 것으로 본다.
+        (Claude 데스크톱 앱은 화면 요소를 거의 노출하지 않아 CPU 사용량이 주된 신호)"""
+        scr = uia.Screen()
+        procs = self._app_procs(hwnd)
+        for p in procs:
+            try:
+                p.cpu_percent(None)
+            except Exception:
+                pass
+        t0 = time.monotonic()
+        last_sig, last_busy, saw_busy = None, t0, False
+        smooth = peak = 0.0       # 앱마다 평소 CPU 가 달라서, 작업 중 최고치의 40% 아래로 내려가야 '조용함'
+        while time.monotonic() - t0 < minutes * 60:
+            time.sleep(4)
+            if not winutil.user32.IsWindow(hwnd):
+                self.hooks.notify(f"지켜보던 창이 닫혔습니다. ({what})")
+                return
+            cpu = 0.0
+            for p in procs:
+                try:
+                    cpu += p.cpu_percent(None)
+                except Exception:
+                    pass
+            names: list[str] = []
+            try:
+                scr.read(hwnd)
+                names = [it.name for it in scr.items]
+            except Exception as e:
+                log.debug("감시 읽기 실패: %s", e)
+            sig = hash(tuple(names))
+            changed = last_sig is not None and sig != last_sig and len(names) > 5
+            last_sig = sig
+            smooth = cpu if smooth == 0.0 else 0.5 * smooth + 0.5 * cpu
+            peak = max(peak, smooth)
+            busy = any(uia.is_stop_button(n) for n in names) or changed or cpu >= max(6.0, 0.4 * peak)
+            now = time.monotonic()
+            log.debug("감시 %s: cpu %.1f%% 요소 %d 바뀜 %s → %s", what, cpu, len(names), changed, busy)
+            if busy:
+                saw_busy, last_busy = True, now
+            elif saw_busy and now - last_busy >= 25:
+                self.hooks.notify(f"{what}, 끝난 것 같습니다.")
+                return
+            elif not saw_busy and now - t0 >= 90:
+                self.hooks.notify(f"{what}, 지켜보는 동안 작업하는 움직임이 없었습니다. 이미 끝났을 수 있어요.")
+                return
+        self.hooks.notify(f"{what}, {minutes}분 동안 지켜봤지만 끝나지 않아 감시를 멈췄습니다.")
 
     # --- 명령/전원 ---
     def t_run_powershell(self, command: str, reason: str = "") -> str:

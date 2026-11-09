@@ -36,6 +36,9 @@ DEFAULTS: dict = {
     "mic_sensitivity": 1.0,           # 높을수록 작은 소리에도 반응
     "noise_robust": True,             # 소음 환경 모드: 음성 감지 AI + 소음 제거 AI (시끄러운 곳에서 작은 목소리)
     "follow_up_seconds": 7,           # 대답 후 호출어 없이 이어 말할 수 있는 시간
+    # --- 자유 대화 모드 ---
+    "chat_idle_seconds": 40,          # 대화 모드에서 이 시간 동안 아무 말이 없으면 대화 모드 종료
+    "chat_model": "",                 # 대화 모드 모델 (비우면 pro_model). Pro: haiku | sonnet | opus
     # --- 화자 인식 (목소리 확인) ---
     "speaker_lock": True,             # 세션 잠금: '자비스'라고 부른 사람의 목소리만 이어서 인식
     "owner_only": False,              # 등록된 주인 목소리에만 반응 (목소리 등록 후 켜짐)

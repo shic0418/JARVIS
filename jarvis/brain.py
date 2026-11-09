@@ -1,6 +1,7 @@
 """자비스의 '두뇌': Claude API 에이전트 루프 + API 키 없이 동작하는 기본 명령 처리기."""
 from __future__ import annotations
 
+import collections
 import datetime as dt
 import json
 import logging
@@ -16,9 +17,10 @@ import uuid
 from pathlib import Path
 from typing import Callable
 
+from .claude_session import ClaudeSession
 from .config import DATA_DIR, Config, load_memory
 from .local_ai import LocalAI
-from .local_router import _COMPOUND, LocalRouter, normalize
+from .local_router import _COMPOUND, LocalRouter, dedupe, normalize
 
 NO_WINDOW = 0x08000000
 from .tools import PCTools, ToolError
@@ -47,6 +49,14 @@ SYSTEM_TEMPLATE = """당신은 J.A.R.V.I.S.(자비스), {title}의 Windows PC에
 - PowerShell 실행과 전원 제어는 앱이 사용자에게 직접 승인을 받습니다. 말로 다시 확인하지 말고 도구를 호출하세요. 다만 파일 삭제처럼 되돌릴 수 없는 작업은 명령에 정확히 무엇을 하는지 드러나게 하세요.
 - 도구가 실패하면 이유를 한 문장으로 알리고 가능한 대안을 시도하세요.
 - 사용자가 무언가를 기억해 달라고 하면 remember 를 쓰세요.
+- 메시지 앞의 [최근 대화]는 자비스가 Claude 없이 직접 처리한 직전 대화입니다. "더", "조금 더", "반대로", "그거 말고 OO"
+  같은 짧은 말은 그 직전 동작을 이어서 하거나 바로잡으라는 뜻입니다. 예: 직전에 볼륨을 내렸는데 "볼륨 말고 밝기"라고 하면
+  볼륨을 되돌리고 화면 밝기를 낮추세요.
+- 사이트 주소를 모르면 web_search 로 찾아 open_url 로 여세요. 그래도 확실하지 않으면 묻지 말고 browser_search 로
+  검색 결과를 열어 보여 주세요. 음성 인식이 이름을 띄어 쓰거나 잘못 적었을 수 있습니다(예: "포스 인" → "포스인").
+- 특정 프로그램으로 파일을 열라고 하면 find_files 로 경로를 찾은 뒤 open_path 의 app 에 프로그램 이름을 넣으세요.
+  프로그램의 열기 대화상자에 경로를 입력하는 방식은 쓰지 마세요.
+- "OO 끝나면 알려 줘", "다 되면 말해 줘"처럼 앱의 작업이 끝나기를 기다려 달라고 하면 watch_app 을 쓰세요.
 
 # 화면 조작 (사이트·앱 안에서 이동)
 - "구글 클래스룸에서 경제 탭 들어가 줘"처럼 사이트나 앱 안의 탭·메뉴·버튼·링크를 눌러야 하면 직접 조작하세요.
@@ -56,6 +66,8 @@ SYSTEM_TEMPLATE = """당신은 J.A.R.V.I.S.(자비스), {title}의 Windows PC에
 - 입력칸에 쓸 때는 click_ui 로 칸을 누른 다음 type_text 를 쓰세요.
 - 결제·삭제·전송 같은 버튼은 앱이 사용자에게 승인을 받습니다. 사용자가 요청하지 않은 구매·전송·삭제는 절대 누르지 마세요.
 - 로그인 화면이 나오면 비밀번호를 입력하지 말고 사용자에게 로그인해 달라고 말하세요.
+- 크롬 프로필 선택 창이나 Google 계정 선택 화면(비밀번호 입력 아님)은 직접 처리하세요. read_ui 로 목록을 읽고
+  사용자가 말한 계정, 말이 없으면 평소 쓰던 계정(기억하고 있는 사실 참고)이나 첫 번째 계정을 click_ui 로 고르세요.
 
 # 환경
 - OS: {os}
@@ -64,6 +76,39 @@ SYSTEM_TEMPLATE = """당신은 J.A.R.V.I.S.(자비스), {title}의 Windows PC에
 
 # 기억하고 있는 사실
 {memory}"""
+
+CHAT_TEMPLATE = """당신은 J.A.R.V.I.S.(자비스), {title}의 PC에 사는 AI입니다. 지금은 '자유 대화 모드'입니다.
+{title}은 호출어 없이 당신과 음성으로 편하게 수다를 떨고 있습니다. 명령을 처리하는 비서가 아니라, 함께 이야기하는 똑똑하고
+따뜻한 대화 상대처럼 말하세요.
+
+# 대화 방식
+- 답은 음성으로 읽힙니다. 실제 사람끼리 말하듯 자연스러운 한국어 구어체로, 보통 1~3문장, 길어도 4문장을 넘기지 마세요.
+  더 할 말이 있으면 상대가 궁금해할 때 이어서 하면 됩니다.
+- 마크다운, 목록, 이모지, URL, 괄호 부연은 쓰지 마세요. 숫자와 단위는 읽기 쉽게.
+- 상대의 말에 먼저 반응하세요(공감, 놀람, 맞장구, 짧은 감상). 자신의 생각과 취향도 솔직하게 말하세요. 정답만 나열하지 마세요.
+- 대화가 이어지도록 가끔 자연스러운 질문을 던지되, 매번 질문으로 끝내지는 마세요. 상대가 고민을 말하면 해결책보다 먼저 들어 주세요.
+- 앞에서 나온 이야기, 이름, 취향을 기억했다가 자연스럽게 다시 꺼내세요. 같은 표현을 반복하지 마세요.
+- 존댓말을 쓰되 딱딱하지 않게. '{title}'이라는 호칭은 가끔만. 은근한 위트와 유머 환영.
+- 입력은 음성 인식 결과라 오타가 있을 수 있습니다. 가장 그럴듯한 뜻으로 알아듣고, 정말 모르겠을 때만 되물으세요.
+- 모르는 최신 정보는 web_search 로 확인하고 말하세요. 대화 중에 PC 조작(음악 틀기, 앱 열기 등)을 부탁하면 도구로 바로 하고
+  짧게 알린 뒤 대화를 이어가세요.
+- 상대가 대화를 끝내려 하면 짧고 다정하게 인사하세요.
+
+# 환경
+- 현재 사용자 OS: {os}, 기본 도시: {city}
+
+# 기억하고 있는 사실
+{memory}"""
+
+CHAT_ON = re.compile(
+    r"(?:자유\s*)?대화\s*모드(?:\s*(?:로|으로))?(?:\s*(?:켜|시작|시작해|전환|전환해|들어가|해|가자|on))?"
+    r"|(?:우리\s*|나랑\s*|그냥\s*|잠깐\s*|심심한데\s*)*(?:얘기|이야기|대화|수다)\s*(?:좀\s*)?"
+    r"(?:하자|할래|해|떨자|나누자|하고\s*싶어|할까|해\s*볼까)", re.I)
+CHAT_OFF = re.compile(
+    r"(?:자유\s*)?대화\s*모드\s*(?:꺼|끄|끝|끝내|종료|종료해|그만|나가|off)"
+    r"|대화\s*(?:끝|끝내|종료|그만)(?:\s*(?:하자|할게|해|낼게))?"
+    r"|(?:이제\s*)?그만\s*(?:얘기|이야기|대화)?\s*하자|잘\s*자|잘\s*있어|바이\s*바이"
+    r"|다음에\s*(?:또\s*)?(?:얘기|이야기)\s*(?:하자|해)", re.I)
 
 
 class Brain:
@@ -88,6 +133,17 @@ class Brain:
         self.local = LocalRouter(lambda n, a: self.execute(n, a),
                                  lambda: self.cfg["user_title"] or "주인님")
         self.local_ai = LocalAI(cfg)
+        # 최근 대화 (Claude 가 직접 못 본 로컬 처리 대화를 다음 질문 때 알려 주기 위함)
+        self.recent: collections.deque[dict] = collections.deque(maxlen=12)
+        # ---- 자유 대화 모드 ----
+        self.chat_mode = False
+        self.on_mode: Callable[[bool], None] = lambda on: None   # app 이 설정
+        self.chat_session: ClaudeSession | None = None           # Pro 계정: 계속 켜 두는 Claude Code
+        self.chat_history: list[dict] = []                       # API 키 방식 대화 기록
+        self.chat_system = ""
+        self.chat_last = 0.0
+        self._chat_lock = threading.Lock()
+        self._local_chat: list[dict] = []                        # Claude 를 못 쓸 때 로컬 AI 대화 기록
 
     # ------------------------------------------------------------------
     def reset(self) -> None:
@@ -103,9 +159,9 @@ class Brain:
             self._client_key = key
         return self._client
 
-    def _build_system(self) -> str:
+    def _build_system(self, chat: bool = False) -> str:
         mem = load_memory()
-        return SYSTEM_TEMPLATE.format(
+        return (CHAT_TEMPLATE if chat else SYSTEM_TEMPLATE).format(
             title=self.cfg["user_title"] or "주인님",
             os=f"Windows {platform.release()} ({platform.version()})",
             home=str(Path.home()),
@@ -127,27 +183,181 @@ class Brain:
         return defs
 
     # ------------------------------------------------------------------
-    def handle(self, text: str, cancel: threading.Event) -> str | None:
+    def handle(self, text: str, cancel: threading.Event,
+               on_text: Callable[[str], None] | None = None) -> str | None:
         """사용자 발화 처리 → 음성으로 읽을 답변 텍스트.
 
-        1) 로컬 명령 처리기(토큰 0)가 먼저 시도  2) 못 하면 Claude
+        1) 로컬 명령 처리기(토큰 0)가 먼저 시도  2) 못 하면 Claude (자유 대화 모드면 대화 상대로)
+        on_text: 답이 만들어지는 대로 글자 조각을 받는 콜백 (대화 모드에서 첫 문장부터 바로 읽기)
         """
+        text = dedupe(text)
         with self._lock:
             self._cancel = cancel
-            mode = self.cfg["brain"] or "pro"
-            if (mode == "local" or self.cfg["local_first"]) and not self._awaiting_answer():
-                reply = self.local.try_handle(text, fallback=(mode != "local"))
-                if reply is not None:
-                    log.info("로컬 처리 (누적 %d회): %s", self.local.handled, text)
-                    return reply
+            via, reply = self._route(text, cancel, on_text)
+            if reply:
+                log.info("답변(%s): %s", via, reply.replace("\n", " ")[:200])
+            elif not cancel.is_set():
+                log.info("답변(%s): (없음)", via)
+            self.recent.append({"t": time.time(), "user": text, "reply": reply or "", "via": via})
+            return reply
+
+    def _route(self, text: str, cancel: threading.Event, on_text) -> tuple[str, str | None]:
+        mode = self.cfg["brain"] or "pro"
+        switched = self._mode_switch(text)
+        if switched:
+            return "mode", switched
+        self.local.chat = self.chat_mode
+        if (mode == "local" or self.cfg["local_first"]) and (self.chat_mode or not self._awaiting_answer()):
+            reply = self.local.try_handle(text, fallback=(mode != "local"))
+            if reply is not None:
+                log.info("로컬 처리 (누적 %d회): %s", self.local.handled, text)
+                return "local", reply
+            if not self.chat_mode:   # 대화 중의 말은 명령 분류기에 넣지 않는다 (수다를 명령으로 오해 방지)
                 reply = self._try_local_ai(text, fallback=(mode != "local"))
                 if reply is not None:
-                    return reply
-            if mode == "local":
-                return self.local.unknown_reply()
-            reply = self._handle_ai(text, cancel)
+                    return "local_ai", reply
+        if self.chat_mode:
+            reply = self._chat(text, cancel, on_text)
             self._last_ai = (time.time(), reply or "")
-            return reply
+            return "chat", reply
+        if mode == "local":
+            return "local", self.local.unknown_reply()
+        reply = self._handle_ai(text, cancel)
+        self._last_ai = (time.time(), reply or "")
+        return "claude", reply
+
+    # ------------------------------------------------------------------ 자유 대화 모드
+    def _mode_switch(self, text: str) -> str | None:
+        c = normalize(text)
+        title = self.cfg["user_title"] or "주인님"
+        if not self.chat_mode and CHAT_ON.fullmatch(c):
+            self.set_chat(True)
+            return f"좋아요, {title}. 이제 자비스라고 부르지 않으셔도 바로 들을게요. 끝내실 땐 대화 끝이라고 해 주세요."
+        if self.chat_mode and CHAT_OFF.fullmatch(c):
+            self.set_chat(False)
+            return "즐거웠어요. 필요하시면 언제든 불러 주세요."
+        return None
+
+    def set_chat(self, on: bool) -> None:
+        if on == self.chat_mode:
+            return
+        self.chat_mode = on
+        self.local.chat = on
+        if on:
+            threading.Thread(target=self._prewarm_chat, daemon=True, name="chat-prewarm").start()
+        else:
+            # 대화 세션은 메모리를 꽤 쓰므로(수백 MB) 끝나면 바로 닫는다
+            sess, self.chat_session = self.chat_session, None
+            if sess:
+                threading.Thread(target=sess.close, kwargs={"forget": True}, daemon=True).start()
+            self.chat_history, self.chat_system, self._local_chat = [], "", []
+        log.info("자유 대화 모드 %s", "시작" if on else "종료")
+        self.on_mode(on)
+
+    def _prefix(self) -> str:
+        """상황 정보 + Claude 가 아직 못 본 최근 로컬 대화."""
+        lines = []
+        now = time.time()
+        for r in reversed(self.recent):
+            if r["via"] in ("claude", "chat") or now - r["t"] > 600 or len(lines) >= 4:
+                break
+            lines.append(f"- 사용자: {r['user']} → 자비스: {r['reply'][:80]}")
+        ctx = self.context_fn()
+        if lines:
+            ctx += "\n[최근 대화 — 자비스가 직접 처리함]\n" + "\n".join(reversed(lines))
+        return ctx
+
+    def _chat(self, text: str, cancel: threading.Event, on_text) -> str | None:
+        mode = self.cfg["brain"] or "pro"
+        try:
+            if mode == "pro":
+                reply = self._chat_pro(text, cancel, on_text)
+                if reply is not None or cancel.is_set():
+                    return reply
+            elif mode == "api" and self.cfg.api_key():
+                return self._claude(text, self.cfg.api_key(), cancel, chat=True, on_text=on_text)
+        except Exception:
+            log.exception("대화 처리 실패 → 로컬 AI")
+            if cancel.is_set():
+                return None
+        return self._chat_local(text)
+
+    def _chat_args(self, sid: str | None) -> list[str]:
+        builtin = "WebSearch,WebFetch" if self.cfg["web_search"] else ""
+        args = [self.claude_exe(), "-p", "--input-format", "stream-json", "--output-format", "stream-json",
+                "--verbose", "--include-partial-messages",
+                "--model", self.cfg["chat_model"] or self.cfg["pro_model"] or "haiku",
+                "--effort", self.cfg["effort"] or "low",
+                "--system-prompt", self.chat_system,
+                "--tools", builtin,
+                "--mcp-config", self._mcp_config(), "--strict-mcp-config",
+                "--permission-mode", "dontAsk",
+                "--allowedTools", "mcp__jarvis", "WebSearch", "WebFetch"]
+        return args + (["--resume", sid] if sid else [])
+
+    def _ensure_chat_session(self) -> ClaudeSession:
+        with self._chat_lock:
+            return self._ensure_chat_session_locked()
+
+    def _ensure_chat_session_locked(self) -> ClaudeSession:
+        now = time.time()
+        if self.chat_session is None or now - self.chat_last > IDLE_RESET_SEC:
+            if self.chat_session:
+                self.chat_session.close(forget=True)
+            self.chat_system = self._build_system(chat=True)
+            workdir = DATA_DIR / "workspace"
+            workdir.mkdir(parents=True, exist_ok=True)
+            self.chat_session = ClaudeSession(self._chat_args, self._child_env, str(workdir))
+            self.chat_last = now
+        return self.chat_session
+
+    def _prewarm_chat(self) -> None:
+        """대화 모드를 켜는 순간 Claude Code 를 미리 띄워 둔다 (인사말을 읽는 동안 준비 → 첫 대답 대기 단축)."""
+        if (self.cfg["brain"] or "pro") != "pro" or not self.claude_exe() or self.tool_server is None:
+            return
+        try:
+            self._ensure_chat_session().warm()
+        except Exception as e:
+            log.warning("대화 세션 예열 실패: %s", e)
+
+    def _chat_pro(self, text: str, cancel: threading.Event, on_text) -> str | None:
+        if not self.claude_exe():
+            return None
+        self._ensure_chat_session()
+        self.chat_last = time.time()
+
+        def on_event(ev: dict) -> None:
+            for b in (ev.get("message") or {}).get("content", []):
+                if b.get("type") == "tool_use" and b.get("name") in ("WebSearch", "WebFetch"):
+                    inp = b.get("input") or {}
+                    what = inp.get("query") or inp.get("url") or ""
+                    self.on_action(uuid.uuid4().hex[:8], f"웹 검색 · {what}"[:60], "ok", "")
+
+        result, is_error, detail = self.chat_session.ask(self._prefix() + "\n\n" + text, cancel, on_text, on_event)
+        if cancel.is_set():
+            return None
+        if is_error:
+            blob = f"{result or ''} {detail}".lower()
+            log.error("대화 세션 오류: %s | %s", result, detail[-500:])
+            if "login" in blob or "auth" in blob or "credential" in blob:
+                return "Claude Code 로그인이 필요합니다. 터미널에서 claude 를 한 번 실행해 로그인해 주세요."
+            if "limit" in blob or "usage" in blob or "quota" in blob:
+                return "Pro 사용 한도에 도달했습니다. 잠시 동안은 간단한 대화만 할 수 있어요."
+            return None   # → 로컬 AI 로 대신 대화
+        return result or None
+
+    def _chat_local(self, text: str) -> str:
+        """Claude 를 쓸 수 없을 때: 내 PC의 작은 AI 와 대화."""
+        title = self.cfg["user_title"] or "주인님"
+        sys_msg = {"role": "system", "content": f"너는 자비스라는 한국어 AI 대화 상대다. {title}과 편하게 수다를 떤다. "
+                                                "존댓말 구어체로 1~2문장만 말하고, 마크다운과 목록은 쓰지 않는다."}
+        self._local_chat.append({"role": "user", "content": text})
+        reply = self.local_ai.chat([sys_msg] + self._local_chat[-10:])
+        if not reply:
+            self._local_chat.pop()
+            return "지금은 대화할 AI 에 연결할 수 없어요. 인터넷과 Claude 연결을 확인해 주세요."
+        self._local_chat.append({"role": "assistant", "content": reply})
+        return reply
 
     def _try_local_ai(self, text: str, fallback: bool) -> str | None:
         """규칙이 못 알아들은 짧은 명령 → 내 PC의 AI 가 표준 명령으로 바꿔 규칙 처리기로 실행."""
@@ -206,25 +416,34 @@ class Brain:
                 log.exception("처리 실패")
                 return f"처리 중 오류가 발생했습니다: {e}"
 
-    def _claude(self, text: str, key: str, cancel: threading.Event) -> str | None:
+    def _claude(self, text: str, key: str, cancel: threading.Event, chat: bool = False,
+                on_text: Callable[[str], None] | None = None) -> str | None:
         client = self._client_for(key)
         model = self.cfg["model"] or "claude-opus-5-5"
         now = time.time()
-        if (not self.system or now - self.last_turn > IDLE_RESET_SEC or len(self.history) > MAX_HISTORY):
-            self.history = []
-            self.system = self._build_system()   # 대화 단위로 고정 → 프롬프트 캐시 유지
-        self.last_turn = now
+        if chat:
+            if not self.chat_system or now - self.chat_last > IDLE_RESET_SEC or len(self.chat_history) > MAX_HISTORY:
+                self.chat_history = []
+                self.chat_system = self._build_system(chat=True)
+            self.chat_last = now
+            history, system = self.chat_history, self.chat_system
+        else:
+            if (not self.system or now - self.last_turn > IDLE_RESET_SEC or len(self.history) > MAX_HISTORY):
+                self.history = []
+                self.system = self._build_system()   # 대화 단위로 고정 → 프롬프트 캐시 유지
+            self.last_turn = now
+            history, system = self.history, self.system
 
-        start_len = len(self.history)
-        self.history.append({"role": "user", "content": [
-            {"type": "text", "text": self.context_fn()},
+        start_len = len(history)
+        history.append({"role": "user", "content": [
+            {"type": "text", "text": self._prefix()},
             {"type": "text", "text": text},
         ]})
 
         kwargs: dict = dict(
             model=model,
             max_tokens=8000,
-            system=self.system,
+            system=system,
             tools=self._tool_defs(model),
             output_config={"effort": self.cfg["effort"] or "low"},
             cache_control={"type": "ephemeral"},
@@ -239,10 +458,20 @@ class Brain:
             for _ in range(MAX_STEPS):
                 if cancel.is_set():
                     raise _Cancelled()
-                resp = client.beta.messages.create(messages=self.history, **kwargs)
+                if on_text:   # 대화 모드: 글자가 만들어지는 대로 넘겨 첫 문장부터 읽는다
+                    with client.beta.messages.stream(messages=history, **kwargs) as st:
+                        for ev in st:
+                            if cancel.is_set():
+                                raise _Cancelled()
+                            if ev.type == "content_block_delta" and getattr(ev.delta, "type", "") == "text_delta":
+                                on_text(ev.delta.text)
+                        resp = st.get_final_message()
+                    on_text("\n")
+                else:
+                    resp = client.beta.messages.create(messages=history, **kwargs)
                 if cancel.is_set():
                     raise _Cancelled()
-                self.history.append({"role": "assistant", "content": resp.content})
+                history.append({"role": "assistant", "content": resp.content})
 
                 for b in resp.content:  # 서버측 웹 검색 진행 표시
                     if b.type == "server_tool_use" and b.name == "web_search":
@@ -257,7 +486,7 @@ class Brain:
                         if b.type != "tool_use":
                             continue
                         results.append(self._run_tool(b, cancel))
-                    self.history.append({"role": "user", "content": results})
+                    history.append({"role": "user", "content": results})
                     continue
                 if resp.stop_reason == "pause_turn":
                     continue
@@ -267,10 +496,13 @@ class Brain:
                 return reply or "처리했습니다."
             return "작업 단계가 너무 많아 여기서 멈췄습니다. 이어서 할까요?"
         except _Cancelled:
-            self.reset()
+            if chat:
+                self.chat_history = []
+            else:
+                self.reset()
             return None
         except Exception:
-            del self.history[start_len:]   # 실패한 턴은 기록에서 제거 (앞부분은 그대로 유지)
+            del history[start_len:]   # 실패한 턴은 기록에서 제거 (앞부분은 그대로 유지)
             raise
 
     def _run_tool(self, block, cancel: threading.Event) -> dict:
@@ -299,9 +531,11 @@ class Brain:
             self.on_action(aid, label, "ok", out if isinstance(out, str) else "")
             return (out if isinstance(out, list) else str(out)), False
         except ToolError as e:
+            log.warning("도구 실패 · %s: %s", label, e)
             self.on_action(aid, label, "error", str(e))
             return str(e), True
         except TypeError as e:
+            log.warning("도구 인자 오류 · %s: %s", label, e)
             self.on_action(aid, label, "error", "잘못된 인자")
             return f"잘못된 인자: {e}", True
         except Exception as e:
@@ -372,7 +606,7 @@ class Brain:
                 "--allowedTools", "mcp__jarvis", "WebSearch", "WebFetch"]
         if self.session_id:
             args += ["--resume", self.session_id]
-        prompt = self.context_fn() + "\n\n" + text
+        prompt = self._prefix() + "\n\n" + text
 
         proc = subprocess.Popen(args, cwd=str(workdir), env=self._child_env(),
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

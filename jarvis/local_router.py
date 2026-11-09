@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+import time
 from typing import Callable
 
 WEEKDAYS = "월화수목금토일"
@@ -20,6 +21,93 @@ _PUNCT = re.compile(r"[\s.!?~,]+$")
 _COMPOUND = re.compile(r"(하고\s|그리고|다음에|한\s*뒤|한\s*후|해서\s|면서|열고|켜고|틀고|닫고|끄고|찾아서|보고\s|뒤에\s*\S|후에\s*\S|랑\s.*(열|켜|틀))")
 _NOT_APP = re.compile(r"(컴퓨터|피씨|pc|시스템|자비스|너|화면|소리|음악|노래|영상|불|타이머|알람|파일|폴더|창|전원)$", re.I)
 _SITES = {"구글": "google", "네이버": "naver", "유튜브": "youtube", "지도": "maps"}
+
+# 이름으로 바로 여는 웹사이트 (기록: '핀터레스트 들어가줘', 'ebs 들어가줘', '리로스쿨' 이 매번 Claude 로 넘어가 3~8초씩 걸림)
+# 이름(공백 없이, 소문자) → (읽을 이름, 주소). 같은 이름의 PC 앱이 있으면 '열어/켜'는 앱을 먼저 연다(APP_FIRST).
+WEBSITES: dict[str, tuple[str, str]] = {}
+for _names, _label, _url in [
+    ("유튜브 youtube 유투브", "유튜브", "https://www.youtube.com"),
+    ("유튜브뮤직 유튜브음악", "유튜브 뮤직", "https://music.youtube.com"),
+    ("네이버 naver", "네이버", "https://www.naver.com"),
+    ("구글 google", "구글", "https://www.google.com"),
+    ("daum 다음사이트 다음포털", "다음", "https://www.daum.net"),
+    ("구글클래스룸 클래스룸 구글클래스 classroom", "구글 클래스룸", "https://classroom.google.com"),
+    ("제미나이 제미니 gemini", "제미나이", "https://gemini.google.com"),
+    ("챗지피티 챗gpt chatgpt 지피티", "챗GPT", "https://chatgpt.com"),
+    ("클로드 claude", "클로드", "https://claude.ai"),
+    ("핀터레스트 pinterest", "핀터레스트", "https://www.pinterest.com"),
+    ("ebs 이비에스", "EBS", "https://www.ebs.co.kr"),
+    ("ebsi 이비에스아이", "EBSi", "https://www.ebsi.co.kr"),
+    ("리로스쿨 리로 riroschool", "리로스쿨", "https://riroschool.kr"),
+    ("인스타 인스타그램 instagram", "인스타그램", "https://www.instagram.com"),
+    ("페이스북 facebook", "페이스북", "https://www.facebook.com"),
+    ("트위터 twitter 엑스", "X", "https://x.com"),
+    ("넷플릭스 netflix", "넷플릭스", "https://www.netflix.com"),
+    ("쿠팡 coupang", "쿠팡", "https://www.coupang.com"),
+    ("지메일 gmail 구글메일", "지메일", "https://mail.google.com"),
+    ("네이버메일", "네이버 메일", "https://mail.naver.com"),
+    ("구글드라이브 드라이브", "구글 드라이브", "https://drive.google.com"),
+    ("구글문서 구글독스", "구글 문서", "https://docs.google.com"),
+    ("구글캘린더", "구글 캘린더", "https://calendar.google.com"),
+    ("구글지도 구글맵", "구글 지도", "https://maps.google.com"),
+    ("네이버지도", "네이버 지도", "https://map.naver.com"),
+    ("카카오맵 카카오지도", "카카오맵", "https://map.kakao.com"),
+    ("나무위키", "나무위키", "https://namu.wiki"),
+    ("위키백과 위키피디아", "위키백과", "https://ko.wikipedia.org"),
+    ("파파고", "파파고", "https://papago.naver.com"),
+    ("구글번역 번역기", "구글 번역", "https://translate.google.com"),
+    ("깃허브 github", "깃허브", "https://github.com"),
+    ("네이버웹툰 웹툰", "네이버 웹툰", "https://comic.naver.com"),
+    ("치지직", "치지직", "https://chzzk.naver.com"),
+    ("트위치 twitch", "트위치", "https://www.twitch.tv"),
+    ("숲 아프리카 아프리카tv", "숲", "https://www.sooplive.co.kr"),
+    ("티빙", "티빙", "https://www.tving.com"),
+    ("디즈니플러스", "디즈니 플러스", "https://www.disneyplus.com"),
+    ("클래스팅", "클래스팅", "https://www.classting.com"),
+    ("하이클래스", "하이클래스", "https://www.hiclass.net"),
+]:
+    for _n in _names.split():
+        WEBSITES[_n] = (_label, _url)
+APP_FIRST = {"클로드", "claude", "챗지피티", "chatgpt", "지피티", "스포티파이"}   # 데스크톱 앱이 있으면 앱으로
+
+# 이름만 말해도 여는 앱 (일반 명사는 제외: '사진', '시계', '설정' 등)
+BARE_APPS = {"크롬", "엣지", "웨일", "메모장", "계산기", "그림판", "카톡", "카카오톡", "디스코드", "스팀", "노션",
+             "클로드", "잉크스케이프", "잉크스페이스", "포토샵", "블렌더", "엑셀", "워드", "파워포인트", "브이에스코드"}
+BARE_SITE_SKIP = {"숲", "리로", "엑스", "드라이브", "번역기", "웹툰", "지피티"}   # 이름만 들으면 다른 뜻일 수 있는 말
+_SITE_TAIL = re.compile(r"(홈\s*화면|기본\s*화면|메인\s*화면|첫\s*화면|홈페이지|웹\s*사이트|사이트|메인|홈)$")
+
+# 직전 볼륨/밝기 조절을 이어서: '더 줄여', '조금 더', '한 번 더' (기록: '더 줄여줘'를 Claude 가 '답을 짧게'로 오해)
+_MORE = re.compile(r"(?:좀\s*|조금\s*|약간\s*|훨씬\s*|아주\s*)?(?:더|더욱|한\s*번\s*더|한번\s*더)"
+                   r"\s*(?:좀\s*|조금\s*|많이\s*)?(\S{1,6})?")
+_KIND = {"volume": re.compile(r"볼륨|소리|음량"), "brightness": re.compile(r"밝기|화면|모니터")}
+
+
+def _squash(s: str) -> str:
+    return re.sub(r"\s+", "", s or "").lower()
+
+
+def dedupe(text: str) -> str:
+    """음성 인식이 같은 말을 두 번 붙여 적은 경우 하나만 남긴다.
+    '카카오톡 열어 줘 카카오톡 열어 줘' → '카카오톡 열어 줘'
+    '클래스룸 열어 줘   구글 클래스룸 열어 줘' → '구글 클래스룸 열어 줘' (고쳐 말한 뒤쪽을 쓴다)"""
+    import difflib
+    t = (text or "").strip()
+    parts = [p.strip() for p in re.split(r"\s{2,}", t) if p.strip()]
+    if len(parts) >= 2 and all(difflib.SequenceMatcher(None, _squash(p), _squash(parts[-1])).ratio() >= 0.6
+                               for p in parts[:-1]):
+        t = parts[-1]
+    words = t.split()
+    n = len(words)
+    if n >= 2 and n % 2 == 0 and words[:n // 2] == words[n // 2:]:
+        t = " ".join(words[:n // 2])
+    return t
+
+
+def find_site(name: str) -> tuple[str, str] | None:
+    key = _squash(name)
+    key = re.sub(r"(에|으로|로|에서)$", "", key)
+    key = _SITE_TAIL.sub("", key) or key
+    return WEBSITES.get(key)
 
 
 def has_batchim(word: str) -> bool:
@@ -42,7 +130,7 @@ _STT_FIX = [(re.compile(r"([어아])\s*(?:죠|져|조)$"), r"\1 줘"), (re.compi
 
 
 def normalize(text: str) -> str:
-    t = _PUNCT.sub("", text.strip())
+    t = _PUNCT.sub("", dedupe(text))
     for pat, rep in _STT_FIX:
         t = pat.sub(rep, t)
     t = re.sub(r"^(자비스|쟈비스|jarvis)\s*(야|아)?[,\s]*", "", t, flags=re.I)
@@ -63,6 +151,9 @@ class LocalRouter:
         self.execute = execute       # (도구 이름, 인자) -> (결과, 오류 여부)
         self.title = title_fn
         self.handled = 0             # 로컬로 처리한 횟수 (토큰 절약)
+        self.chat = False            # 자유 대화 모드: 인사·맞장구 같은 정해진 대답은 하지 않고 AI 에게 넘긴다
+        # 마지막 볼륨/밝기 조절 (종류, 올림 여부, 단계, 시각) — '더 줄여', '볼륨 말고 밝기' 처리용
+        self.last_adjust: tuple[str, bool, int, float] | None = None
 
     def unknown_reply(self) -> str:
         return ("그건 로컬 모드에서 처리할 수 없는 요청입니다. "
@@ -84,19 +175,41 @@ class LocalRouter:
         out, err = self.execute(tool, args)
         return str(out), err
 
+    def _adjust(self, kind: str, up: bool, step: int) -> str:
+        """볼륨/밝기 올리기·내리기 + 마지막 조절 기억."""
+        out, err = self._run(kind, {"action": "up" if up else "down", "level": step})
+        if not err:
+            self.last_adjust = (kind, up, step, time.monotonic())
+        return (self._volume_speech if kind == "volume" else self._bright_speech)(out, err)
+
+    def _recent_adjust(self, within: float = 180) -> tuple[str, bool, int, float] | None:
+        la = self.last_adjust
+        return la if la and time.monotonic() - la[3] < within else None
+
+    def _open_site(self, site: tuple[str, str]) -> str:
+        label, url = site
+        out, err = self._run("open_url", {"url": url})
+        return out if err else f"{label}{'을' if has_batchim(label) else '를'} 열었습니다."
+
     def _route(self, c: str, fallback: bool) -> str | None:
         title = self.title()
         lc = c.lower()
 
-        # ---- 인사/짧은 대답 ----
-        if re.fullmatch(r"(고마워|고맙다|고마워요|감사해|감사합니다|땡큐|thank you|thanks|수고했어|잘했어|잘했다)", lc):
-            return f"별말씀을요, {title}."
-        if re.fullmatch(r"(안녕|안녕하세요|하이|헬로|hello|hi|좋은 아침|굿모닝)", lc):
-            h = dt.datetime.now().hour
-            part = "좋은 아침입니다" if 5 <= h < 12 else "좋은 오후입니다" if h < 18 else "좋은 저녁입니다"
-            return f"{part}, {title}. 무엇을 도와드릴까요?"
-        if re.fullmatch(r"(됐어|됐다|아니야|아니|괜찮아|그만|취소|아무것도 아니야|없어)", c):
-            return "알겠습니다."
+        # ---- 인사/짧은 대답 (자유 대화 모드에서는 AI 가 자연스럽게 받는다) ----
+        if not self.chat:
+            if re.fullmatch(r"(고마워|고맙다|고마워요|감사해|감사합니다|땡큐|thank you|thanks|수고했어|잘했어|잘했다)", lc):
+                return f"별말씀을요, {title}."
+            if re.fullmatch(r"(안녕|안녕하세요|하이|헬로|hello|hi|좋은 아침|굿모닝)", lc):
+                h = dt.datetime.now().hour
+                part = "좋은 아침입니다" if 5 <= h < 12 else "좋은 오후입니다" if h < 18 else "좋은 저녁입니다"
+                return f"{part}, {title}. 무엇을 도와드릴까요?"
+            if re.fullmatch(r"(됐어|됐다|아니야|아니|괜찮아|그만|취소|아무것도 아니야|없어)", c):
+                return "알겠습니다."
+
+        # ---- 직전 조절 이어서 / 바로잡기 ----
+        r = self._follow_up(c)
+        if r is not None:
+            return r
 
         # ---- 타이머 (복합 문장 검사보다 먼저: '5분 후에 알려줘') ----
         m = re.fullmatch(r"(?:타이머\s*)?((?:\d+\s*(?:시간|분|초)\s*)+)(?:\s*(?:뒤에|후에|뒤|후))?"
@@ -137,8 +250,7 @@ class LocalRouter:
         m = re.fullmatch(r"(?:볼륨|소리|음량)\s*(?:을|를)?\s*(많이\s*)?(?:좀\s*)?(?:더\s*)?(올려|키워|크게|높여|업|내려|줄여|작게|낮춰|다운)", c)
         if m:
             up = m.group(2) in ("올려", "키워", "크게", "높여", "업")
-            return self._volume_speech(*self._run("volume", {"action": "up" if up else "down",
-                                                             "level": 20 if m.group(1) else 10}))
+            return self._adjust("volume", up, 20 if m.group(1) else 10)
         if re.fullmatch(r"(음소거(?:\s*해)?|소리\s*꺼|조용히\s*해|뮤트)", c):
             self._run("volume", {"action": "mute"})
             return "음소거했습니다."
@@ -156,13 +268,12 @@ class LocalRouter:
                          r"(올려|높여|밝게|키워|낮춰|내려|줄여|어둡게)", c)
         if m:
             up = m.group(2) in ("올려", "높여", "밝게", "키워")
-            return self._bright_speech(*self._run("brightness", {"action": "up" if up else "down",
-                                                                 "level": 30 if m.group(1) else 20}))
+            return self._adjust("brightness", up, 30 if m.group(1) else 20)
         m = re.fullmatch(r"(?:(?:화면|모니터)\s*(?:이|가)?\s*(?:너무|좀|많이|되게)?\s*(밝아|밝네|밝다|어두워|어둡네|어둡다)"
                          r"|(눈\s*(?:이\s*)?부셔|눈부셔|눈부시네))", c)
         if m:
             up = bool(m.group(1)) and m.group(1).startswith("어")
-            return self._bright_speech(*self._run("brightness", {"action": "up" if up else "down", "level": 20}))
+            return self._adjust("brightness", up, 20)
         if re.fullmatch(r"(?:화면|모니터)?\s*밝기\s*(?:가|는)?\s*(?:몇|얼마)(?:야|이야|니|지|예요)?", c):
             return self._bright_speech(*self._run("brightness", {"action": "get"}))
 
@@ -230,13 +341,88 @@ class LocalRouter:
             if err:
                 return f"열려 있는 {name} 창이 없습니다." if "열린 창이 없" in out else (None if fallback else out)
             return f"{obj(name)} 닫았습니다."
-        m = re.fullmatch(r"(.{1,20}?)\s*(?:을|를)?\s*(?:좀\s*)?(?:열어|실행|실행해|켜)", c)
+        # ---- 파일 열기: '주술회전 주사위.rld 파일 열어', 'rdworks에서 주사위 파일 열어' ----
+        m = re.fullmatch(r"(?:(.{1,15}?)\s*(?:에서|으로|로)\s+)?(.{1,30}?)\s*파일\s*(?:을|를)?\s*(?:좀\s*)?(?:열어|실행|실행해|켜|띄워)", c)
+        if m and m.group(2).strip() not in ("이", "그", "저", "그거", "이거", "여기", "여기에서", "방금"):
+            app = (m.group(1) or "").strip()
+            if app in ("여기", "이거", "거기", "이 프로그램", "이 앱"):
+                return None   # '여기에서' = 지금 창 → 어떤 앱인지 알아야 하므로 Claude
+            out, err = self._run("find_files", {"query": m.group(2).strip()})
+            paths = [p for p in str(out).splitlines() if re.match(r"^[A-Za-z]:\\", p)]
+            if err or len(paths) != 1:
+                return None   # 못 찾았거나 여러 개 → Claude 가 골라서 연다
+            args = {"path": paths[0], **({"app": app} if app else {})}
+            out, err = self._run("open_path", args)
+            if err:
+                return None if fallback else out
+            name = paths[0].rsplit("\\", 1)[-1]
+            return f"{app}에서 {name} 파일을 열었습니다." if app else f"{name} 파일을 열었습니다."
+
+        # ---- 웹사이트: '핀터레스트 들어가', 'ebs 접속해', '유튜브 홈화면 열어' ----
+        m = re.fullmatch(r"(.{1,20}?)\s*(?:에|으로|로)?\s*(?:좀\s*)?(들어가|접속|접속해|이동|이동해|가|열어|켜|띄워)", c)
+        if m:
+            site = find_site(m.group(1))
+            if site and (m.group(2) not in ("열어", "켜") or _squash(m.group(1)) not in APP_FIRST):
+                return self._open_site(site)
+
+        m = re.fullmatch(r"(.{1,20}?)\s*(?:을|를)?\s*(?:좀\s*)?(?:열어|실행|실행해|켜|띄워)", c)
         if m and not _NOT_APP.search(m.group(1).strip()) and len(m.group(1).split()) <= 3:
             name = m.group(1).strip()
             out, err = self._run("open_app", {"name": name})
             if err:
+                site = find_site(name)   # 앱이 없으면 같은 이름의 사이트 (클로드 → claude.ai)
+                if site:
+                    return self._open_site(site)
                 return None if fallback else out
             return f"{obj(name)} 열었습니다."
+
+        # ---- 이름만 말한 경우: '리로스쿨', '잉크스페이스', 'inkspace' ----
+        if len(c) <= 15 and not re.search(r"[?]|뭐|왜|어떻|누구|언제|어디", c):
+            site = find_site(c)
+            key = _squash(c)
+            if key in BARE_APPS or re.fullmatch(r"[a-z][a-z0-9]{3,19}", key):
+                out, err = self._run("open_app", {"name": c, "min_score": 70})
+                if not err:
+                    return f"{obj(c)} 열었습니다."
+            if site and key not in BARE_SITE_SKIP:
+                return self._open_site(site)
+        return None
+
+    # ------------------------------------------------------------------ 직전 동작 이어서
+    def _follow_up(self, c: str) -> str | None:
+        # '볼륨 말고 밝기' / '소리 말고 화면' — 잘못 고른 쪽을 되돌리고 원래 뜻대로
+        m = re.fullmatch(r"(?:아니\s*)?(?:,\s*)?(.{1,8}?)\s*(?:말고|아니고|아니라|가\s*아니라)\s*(.{1,10}?)"
+                         r"(?:\s*(?:을|를|으로|로|이야|야))?(?:\s*(?:조절|낮춰|올려|줄여|내려|해))?", c)
+        if m:
+            src = next((k for k, p in _KIND.items() if p.search(m.group(1))), None)
+            dst = next((k for k, p in _KIND.items() if p.search(m.group(2))), None)
+            la = self._recent_adjust(300)
+            if src and dst and src != dst and la and la[0] == src:
+                _, up, step, _ = la
+                self._run(src, {"action": "down" if up else "up", "level": step})   # 되돌리기
+                said = self._adjust(dst, up, 20 if dst == "brightness" else 10)
+                return f"{'볼륨' if src == 'volume' else '화면 밝기'}은 되돌렸습니다. " + said
+            return None
+
+        # '더 줄여', '조금 더', '한 번 더', '더 어둡게'
+        m = _MORE.fullmatch(c)
+        if not m or len(c) > 14:
+            return None
+        verb = m.group(1) or ""
+        la = self._recent_adjust()
+        if re.match(r"어둡|어둡게", verb):
+            return self._adjust("brightness", False, 20)
+        if re.match(r"밝", verb):
+            return self._adjust("brightness", True, 20)
+        if not la:
+            return None
+        kind, up, step, _ = la
+        if not verb:
+            return self._adjust(kind, up, step)
+        if re.match(r"줄|낮|내|작|다운|조용", verb):
+            return self._adjust(kind, False, step)
+        if re.match(r"올|키|높|크|업", verb):
+            return self._adjust(kind, True, step)
         return None
 
     # ------------------------------------------------------------------ 말하기용 요약

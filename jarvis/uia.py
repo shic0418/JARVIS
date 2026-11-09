@@ -294,3 +294,12 @@ def _wake_chromium(hwnd: int) -> bool:
 
 def is_risky(name: str) -> bool:
     return bool(RISKY.search(name or ""))
+
+
+_STOP = re.compile(r"^(중지|정지|응답\s*중지|생성\s*중지|답변\s*중지|stop|stop\s*(generating|response|streaming|answering)"
+                   r"|interrupt|응답 생성 중지)$", re.I)
+
+
+def is_stop_button(name: str) -> bool:
+    """AI 앱이 답을 만드는 동안만 보이는 '중지' 버튼인가 (작업 감시용)."""
+    return bool(_STOP.match((name or "").strip()))

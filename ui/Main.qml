@@ -268,6 +268,13 @@ Window {
                     }
                     Text {
                         anchors.right: parent.right
+                        visible: jarvis.chatMode
+                        text: "CHAT · LIVE"
+                        color: win.warm
+                        font.family: "Bahnschrift"; font.pixelSize: 8; font.letterSpacing: 2
+                    }
+                    Text {
+                        anchors.right: parent.right
                         text: "AI · " + jarvis.modelName.replace("claude-", "").toUpperCase()
                         color: win.c(0.42); font.family: "Bahnschrift"; font.pixelSize: 8; font.letterSpacing: 1.6
                     }
@@ -337,9 +344,16 @@ Window {
                 transform: Translate { y: (1 - win.ent(0.2)) * 12 }
 
                 property int shown: 0
+                property string prev: ""
                 Connections {
                     target: jarvis
-                    function onReplyTextChanged() { talk.shown = 0; typer.restart() }
+                    // 대화 모드에서는 답이 조금씩 늘어나므로, 이어지는 글이면 처음부터 다시 타이핑하지 않는다
+                    function onReplyTextChanged() {
+                        const t = jarvis.replyText
+                        if (talk.prev === "" || !t.startsWith(talk.prev)) talk.shown = 0
+                        talk.prev = t
+                        if (!typer.running) typer.start()
+                    }
                 }
                 Timer {
                     id: typer
@@ -587,6 +601,14 @@ Window {
                             width: 18; height: 1.6; rotation: -45
                             color: "#ff6b81"
                         }
+                    }
+                    IconButton {
+                        Layout.preferredWidth: 28; Layout.preferredHeight: 28
+                        accent: jarvis.chatMode ? win.warm : win.accent
+                        glyph: ""
+                        active: jarvis.chatMode
+                        tip: jarvis.chatMode ? "자유 대화 모드 끝내기" : "자유 대화 모드 (호출어 없이 AI 와 대화)"
+                        onClicked: jarvis.toggleChat()
                     }
                     Text {
                         Layout.leftMargin: 4

@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import logging
+import queue
 import re
 import tempfile
 import threading
@@ -125,6 +127,9 @@ class Speaker(QObject):
         self.player.errorOccurred.connect(self._on_error)
         self._playing = False
         self._current: Path | None = None
+        self._q: collections.deque[tuple[bytes, str]] = collections.deque()   # 이어서 재생할 조각
+        self._holding = False      # 스트리밍 중: 조각이 더 올 수 있으니 대기열이 비어도 끝내지 않음
+        self._session = False      # started 를 보낸 뒤 아직 finished 를 보내지 않음
         self._decay = QTimer(self)
         self._decay.setInterval(33)
         self._decay.timeout.connect(self._tick)
@@ -133,13 +138,37 @@ class Speaker(QObject):
 
     @property
     def playing(self) -> bool:
-        return self._playing
+        """말하는 중 (스트리밍 중 다음 조각을 기다리는 동안도 포함)."""
+        return self._playing or self._session
 
     def play(self, data: bytes, suffix: str) -> None:
         self.stop()
         if not data:
             self.finished.emit()
             return
+        self.enqueue(data, suffix)
+
+    # ---- 스트리밍: 문장 조각을 차례로 이어서 재생 ----
+    def begin_stream(self) -> None:
+        self.stop()
+        self._holding = True
+
+    @Slot(bytes, str)
+    def enqueue(self, data: bytes, suffix: str) -> None:
+        if not data:
+            return
+        if self._playing:
+            self._q.append((data, suffix))
+        else:
+            self._start(data, suffix)
+
+    def end_stream(self) -> None:
+        self._holding = False
+        if not self._playing and not self._q:
+            self._session = False
+            self.finished.emit()     # 이미 다 읽었거나(또는 읽을 것이 없었음) → 끝
+
+    def _start(self, data: bytes, suffix: str) -> None:
         path = TMP / f"say_{uuid.uuid4().hex}{suffix}"
         path.write_bytes(data)
         self._current = path
@@ -147,13 +176,20 @@ class Speaker(QObject):
         self.player.setSource(QUrl.fromLocalFile(str(path)))
         self.player.play()
         self._decay.start()
-        self.started.emit()
+        if not self._session:
+            self._session = True
+            self.started.emit()
 
     @Slot()
     def stop(self) -> None:
+        self._q.clear()
+        self._holding = False
         if self._playing:
             self.player.stop()
             self._finish()
+        elif self._session:
+            self._session = False
+            self.finished.emit()
 
     def _finish(self) -> None:
         if not self._playing:
@@ -164,8 +200,15 @@ class Speaker(QObject):
         old = self._current
         self._current = None
         if old:
-            self.player.setSource(QUrl())   # 파일 잠금 해제 (새 재생은 이후 play()에서 설정)
+            self.player.setSource(QUrl())   # 파일 잠금 해제 (새 재생은 이후 _start()에서 설정)
             QTimer.singleShot(2000, lambda p=old: _try_unlink(p))
+        if self._q:                         # 다음 조각을 바로 이어서
+            data, suffix = self._q.popleft()
+            self._start(data, suffix)
+            return
+        if self._holding:                   # 다음 조각이 아직 합성 중 → 말하는 상태 유지
+            return
+        self._session = False
         self.finished.emit()
 
     def _on_status(self, status) -> None:
@@ -197,15 +240,73 @@ class Speaker(QObject):
 class TTS(QObject):
     """텍스트 → (워커에서 합성) → 메인 스레드 재생."""
     _ready = Signal(bytes, str)
+    _chunk = Signal(int, bytes, str)
+    _chunks_done = Signal(int)
 
     def __init__(self, speaker: Speaker, voice_getter, parent=None) -> None:
         super().__init__(parent)
         self.speaker = speaker
         self.voice_getter = voice_getter   # () -> (voice, rate)
         self._ready.connect(self.speaker.play)
+        self._chunk.connect(self._on_chunk)
+        self._chunks_done.connect(self._on_chunks_done)
         self._gen = 0
+        self._sq: queue.Queue | None = None   # 스트리밍 중인 문장 대기열
+
+    # ---- 스트리밍 (메인 스레드에서 호출) ----
+    def stream_begin(self) -> None:
+        """문장이 하나씩 도착할 때마다 합성해 이어서 읽는다. 합성은 순서대로 한 번에 하나씩."""
+        self._gen += 1
+        gen = self._gen
+        self.speaker.begin_stream()
+        q: queue.Queue = queue.Queue()
+        self._sq = q
+        voice, rate = self.voice_getter()
+
+        def work():
+            while gen == self._gen:
+                try:
+                    text = q.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+                if text is None:
+                    self._chunks_done.emit(gen)
+                    return
+                try:
+                    data, suffix = synthesize(text, voice, rate)
+                except Exception as e:
+                    log.exception("TTS 실패: %s", e)
+                    continue
+                if gen == self._gen:
+                    self._chunk.emit(gen, data, suffix)
+
+        threading.Thread(target=work, daemon=True, name="tts-stream").start()
+
+    def stream_feed(self, text: str) -> None:
+        if self._sq is not None and text.strip():
+            self._sq.put(text)
+
+    def stream_end(self) -> None:
+        if self._sq is not None:
+            self._sq.put(None)
+            self._sq = None
+
+    @property
+    def streaming(self) -> bool:
+        return self._sq is not None
+
+    @Slot(int, bytes, str)
+    def _on_chunk(self, gen: int, data: bytes, suffix: str) -> None:
+        if gen == self._gen:
+            self.speaker.enqueue(data, suffix)
+
+    @Slot(int)
+    def _on_chunks_done(self, gen: int) -> None:
+        if gen == self._gen:
+            self.speaker.end_stream()
 
     def say(self, text: str) -> None:
+        self._sq = None
         self._gen += 1
         gen = self._gen
         voice, rate = self.voice_getter()
@@ -223,4 +324,33 @@ class TTS(QObject):
 
     def cancel(self) -> None:
         self._gen += 1
+        self._sq = None
         self.speaker.stop()
+
+
+_SENT_END = re.compile(r"(.+?[.!?…~]+[\"')]?)(?=\s)|(.+?\n)", re.S)   # 뒤에 공백이 와야 문장 끝 ('3.5' 보호)
+
+
+def split_sentences(buf: str, final: bool = False) -> tuple[list[str], str]:
+    """흘러 들어오는 답에서 완성된 문장만 떼어 낸다 → (문장들, 남은 조각).
+    너무 짧은 문장('네.')은 다음 문장과 붙여 합성 횟수를 줄이고, 긴 문장은 쉼표에서 끊어 첫 소리를 빨리 낸다."""
+    out: list[str] = []
+    pending = ""
+    pos = 0
+    for m in _SENT_END.finditer(buf):
+        piece = m.group(0)
+        pos = m.end()
+        pending += piece
+        if len(pending.strip()) >= 8:
+            out.append(pending.strip())
+            pending = ""
+    rest = pending + buf[pos:]
+    if not out and len(rest) > 90:            # 마침표 없이 길어지면 쉼표에서 끊기
+        cut = max(rest.rfind(", ", 0, 90), rest.rfind("，", 0, 90))
+        if cut > 20:
+            out.append(rest[:cut + 1].strip())
+            rest = rest[cut + 1:]
+    if final and rest.strip():
+        out.append(rest.strip())
+        rest = ""
+    return [o for o in out if clean_for_speech(o)], rest
