@@ -246,6 +246,8 @@ class Jarvis(QObject):
         self._weather_at = 0.0
         self._point_until = 0.0
         self._target_hwnd = 0
+        self._hud_before_active = False   # 액티브 모드 켜기 전에 작은 HUD 가 보였는지
+        self._hud_for_confirm = False     # 액티브 모드 중 승인 카드 때문에 작은 HUD 를 잠깐 띄웠는지
         self._stream_gen = -1          # 지금 흘러 들어오는 답의 명령 번호
         self._stream_buf = ""          # 아직 문장이 덜 끝난 조각
         self._stream_text = ""         # 지금까지 받은 답 전체 (HUD 표시용)
@@ -747,7 +749,11 @@ class Jarvis(QObject):
         self._pending_confirm = cid
         self.bridge.confirmRequest.emit(cid, title, detail)
         if not self.win.isVisible():
-            self.toggle_visible(True)
+            if self.bridge._activeMode:      # 액티브 모드: 승인 카드를 누를 수 있게 잠깐만 띄운다
+                self._hud_for_confirm = True
+            self.toggle_visible(True, force=True)
+        elif self.bridge._activeMode:
+            self.win.raise_()
         self.say(f"{title}, 승인하시겠습니까?", follow_up=True)
 
     @Slot(str)
@@ -758,6 +764,13 @@ class Jarvis(QObject):
             if self.busy:
                 self._set_state("thinking")
         self.bridge.confirmClosed.emit(cid)
+        self._rehide_after_confirm()
+
+    def _rehide_after_confirm(self) -> None:
+        if self._hud_for_confirm and not self._pending_confirm:
+            self._hud_for_confirm = False
+            if self.bridge._activeMode:
+                QTimer.singleShot(1200, self._hide_hud_for_active)
 
     def answer_confirm(self, cid: str, approved: bool) -> None:
         entry = self._confirms.get(cid)
@@ -766,6 +779,7 @@ class Jarvis(QObject):
             entry[0].set()
         if self._pending_confirm == cid:
             self._pending_confirm = None
+            self._rehide_after_confirm()
             self.tts.cancel()
             self.active_until = 0
         self.bridge.confirmClosed.emit(cid)
@@ -795,7 +809,7 @@ class Jarvis(QObject):
             self.set_compact(True)
         elif action == "big":
             if not self.win.isVisible():
-                self.toggle_visible(True)
+                self.toggle_visible(True, force=True)
             self.set_compact(False)
         elif action == "hide":
             QTimer.singleShot(2500, lambda: self.toggle_visible(False))   # 대답을 들려준 뒤 숨김
@@ -828,11 +842,24 @@ class Jarvis(QObject):
         log.info("액티브 모드 %s", "켜짐" if on else "꺼짐")
         if on:
             self.chime.play()
-            if self.win.isVisible():   # 작은 HUD 는 전체 화면 HUD 위에 둔다
-                QTimer.singleShot(60, self.win.raise_)
+            # 작은 HUD 는 오른쪽 패널들을 가리므로 숨긴다 (상태 · 대답은 전체 화면 HUD 에 나온다)
+            self._hud_before_active = self.win.isVisible()
+            self._hud_for_confirm = False
+            if self._pending_confirm:
+                self._hud_for_confirm = True
+                self.win.raise_()
+            else:
+                QTimer.singleShot(250, self._hide_hud_for_active)
             self._start_feed()
         else:
             self._stop_feed()
+            if self._hud_before_active or self._pending_confirm:
+                self.toggle_visible(True)
+            self._hud_for_confirm = False
+
+    def _hide_hud_for_active(self) -> None:
+        if self.bridge._activeMode and not self._pending_confirm and not self._enroll:
+            self.win.hide()
 
     # ---- 액티브 모드 실시간 정보 ----
     def _start_feed(self) -> None:
@@ -1100,7 +1127,7 @@ class Jarvis(QObject):
         self.active_until = time.monotonic() + 30
         if self.bridge._compact:
             self.set_compact(False)
-        self.toggle_visible(True)
+        self.toggle_visible(True, force=True)
         self.bridge.set("userText", "")
         msg = (f"목소리 등록을 시작합니다. 화면에 나오는 문장 {self._enroll.n}개를 "
                "평소 말투로 하나씩 읽어 주세요.")
@@ -1198,8 +1225,12 @@ class Jarvis(QObject):
         self.bridge.toast.emit("info", "호출어 대기 켜짐 — “자비스”" if on else
                                f"호출어 대기 꺼짐 — {self._hotkeyText()} 로 호출")
 
-    def toggle_visible(self, show: bool | None = None) -> None:
+    def toggle_visible(self, show: bool | None = None, force: bool = False) -> None:
+        """작은 HUD 보이기/숨기기. 액티브 모드 중에는 전체 화면 HUD 를 가리지 않도록
+        사용자가 직접 띄울 때(force)만 보인다 — 듣기 · 알림 · 타이머는 전체 화면 HUD 에 나온다."""
         show = (not self.win.isVisible()) if show is None else show
+        if show and self.bridge._activeMode and not force:
+            return
         if show:
             self.win.show()
             self.win.raise_()
@@ -1293,7 +1324,7 @@ class Jarvis(QObject):
         self.tray = QSystemTrayIcon(icon, self)
         self.tray.setToolTip("J.A.R.V.I.S")
         menu = QMenu()
-        menu.addAction("HUD 보이기 / 숨기기", lambda: self.toggle_visible())
+        menu.addAction("HUD 보이기 / 숨기기", lambda: self.toggle_visible(force=True))
         menu.addAction("지금 듣기", self.activate)
         self.act_wake = QAction("“자비스” 호출어 대기", menu, checkable=True)
         self.act_wake.setChecked(bool(self.cfg["wake_word_enabled"]))
@@ -1320,7 +1351,7 @@ class Jarvis(QObject):
 
     def _tray_activated(self, reason) -> None:
         if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):
-            self.toggle_visible()
+            self.toggle_visible(force=True)
 
     def _toggle_startup(self, on: bool) -> None:
         link = _startup_link()
@@ -1366,7 +1397,7 @@ class Jarvis(QObject):
         return fx
 
     def show_external(self) -> None:
-        self.toggle_visible(True)
+        self.toggle_visible(True, force=True)
 
     def quit(self) -> None:
         try:

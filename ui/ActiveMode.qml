@@ -21,6 +21,7 @@ Window {
     readonly property color cyan: "#46d9ff"
     readonly property color hot: "#eafdff"
     readonly property color red: "#ff3b4f"
+    readonly property color shade: Qt.rgba(0.0, 0.03, 0.06, 0.9)     // 글자 테두리 · 받침 (밝은 화면 위에서도 읽히게)
     property color accent: st === "thinking" ? "#ffb347" : st === "offline" ? "#ff4d61" : st === "listening" ? "#8af4ff" : cyan
     Behavior on accent { ColorAnimation { duration: 450 } }
     readonly property real level: Math.max(jarvis.micLevel, jarvis.voiceLevel)
@@ -190,7 +191,9 @@ Window {
             Translate { x: (ov.cx - (fly.x + fly.width / 2)) * (1 - fly.e); y: (ov.cy - (fly.y + fly.height / 2)) * (1 - fly.e) }
         ]
     }
-    component Decode: Text {
+    // 모든 글자: 얇은 어두운 테두리 (뒤 화면이 밝거나 복잡해도 읽히게)
+    component HText: Text { style: Text.Outline; styleColor: ov.shade }
+    component Decode: HText {
         property string full: ""
         property real t: 1
         property int seed: 0
@@ -198,7 +201,7 @@ Window {
         color: ov.c(0.85)
         font.family: "Bahnschrift"; font.pixelSize: 11 * ov.u; font.letterSpacing: 2 * ov.u
     }
-    component Label: Text {
+    component Label: HText {
         color: ov.c(0.62)
         font.family: "Bahnschrift"; font.pixelSize: 9 * ov.u; font.letterSpacing: 2 * ov.u; font.weight: Font.DemiBold
     }
@@ -232,7 +235,7 @@ Window {
                 PathAngleArc { centerX: g.width / 2; centerY: g.width / 2; radiusX: g.r - 9 * ov.u; radiusY: g.r - 9 * ov.u; startAngle: 0; sweepAngle: 360 * g.e }
             }
         }
-        Text {
+        HText {
             x: 0; width: g.width; y: g.width / 2 - height / 2
             horizontalAlignment: Text.AlignHCenter
             text: Math.round(g.shown * g.e) + "%"
@@ -293,12 +296,12 @@ Window {
             y: er.rr * 0.15
             spacing: 2
             Decode { full: er.tag; t: er.e; seed: 11; font.pixelSize: 9 * ov.u; color: ov.c(0.9); anchors.right: er.mirror ? parent.right : undefined }
-            Text {
+            HText {
                 anchors.right: er.mirror ? parent.right : undefined
                 text: (96 + 3.9 * ov.rnd(ov.slow + er.rr + (er.mirror ? 5 : 0))).toFixed(1) + " %"
                 color: ov.hot; font.family: "Bahnschrift"; font.pixelSize: 15 * ov.u
             }
-            Text {
+            HText {
                 anchors.right: er.mirror ? parent.right : undefined
                 text: "FOCUS " + (1.2 + ov.rnd(ov.slow * 2 + (er.mirror ? 3 : 0)) * 0.6).toFixed(2) + " m"
                 color: ov.c(0.55); font.family: "Bahnschrift"; font.pixelSize: 8 * ov.u; font.letterSpacing: 1.5 * ov.u
@@ -311,6 +314,48 @@ Window {
     Item {
         anchors.fill: parent
         opacity: ov.seg(0.1, 0.45) * ov.flick
+        Rectangle {   // 헬멧 바이저 색: 화면 전체를 살짝 어둡게 (뒤 창은 그대로 보임)
+            anchors.fill: parent
+            color: Qt.rgba(0.0, 0.025, 0.05, 0.42)
+        }
+        Repeater {    // 조준경 · 눈 고리 뒤 어두운 원 (가운데가 가장 진함)
+            model: [[0, 0, 245], [-300, -40, 120], [300, -40, 120]]
+            Shape {
+                readonly property real r: modelData[2] * ov.u
+                readonly property real px: ov.cx + modelData[0] * ov.u
+                readonly property real py: ov.cy + modelData[1] * ov.u
+                anchors.fill: parent
+                ShapePath {
+                    strokeColor: "transparent"
+                    fillGradient: RadialGradient {
+                        centerX: px; centerY: py; centerRadius: r
+                        focalX: px; focalY: py; focalRadius: 0
+                        GradientStop { position: 0.0; color: Qt.rgba(0.0, 0.03, 0.06, 0.62) }
+                        GradientStop { position: 0.72; color: Qt.rgba(0.0, 0.03, 0.06, 0.45) }
+                        GradientStop { position: 1.0; color: Qt.rgba(0.0, 0.03, 0.06, 0.0) }
+                    }
+                    PathAngleArc { centerX: px; centerY: py; radiusX: r; radiusY: r; startAngle: 0; sweepAngle: 360 }
+                }
+            }
+        }
+        Rectangle {   // 위 제목 · 방위 테이프 뒤 띠
+            x: ov.cx - width / 2; y: 10 * ov.u
+            width: ov.width * 0.42; height: 84 * ov.u
+            gradient: Gradient { orientation: Gradient.Horizontal
+                GradientStop { position: 0.0; color: Qt.rgba(0, 0.03, 0.06, 0) }
+                GradientStop { position: 0.2; color: Qt.rgba(0, 0.03, 0.06, 0.62) }
+                GradientStop { position: 0.8; color: Qt.rgba(0, 0.03, 0.06, 0.62) }
+                GradientStop { position: 1.0; color: Qt.rgba(0, 0.03, 0.06, 0) } }
+        }
+        Rectangle {   // 아래 상태 글 · 파형 뒤 띠
+            x: ov.cx - width / 2; y: ov.cy + 168 * ov.u + 8 * ov.u
+            width: 520 * ov.u; height: 150 * ov.u
+            gradient: Gradient { orientation: Gradient.Horizontal
+                GradientStop { position: 0.0; color: Qt.rgba(0, 0.03, 0.06, 0) }
+                GradientStop { position: 0.2; color: Qt.rgba(0, 0.03, 0.06, 0.62) }
+                GradientStop { position: 0.8; color: Qt.rgba(0, 0.03, 0.06, 0.62) }
+                GradientStop { position: 1.0; color: Qt.rgba(0, 0.03, 0.06, 0) } }
+        }
         Shape {
             anchors.fill: parent
             ShapePath {
@@ -513,22 +558,29 @@ Window {
                 color: ov.red
             }
             // 이름표: 박스 위에 자리가 없으면 안쪽 위
+            Rectangle {
+                x: tgLabel.x - 6 * ov.u; y: tgLabel.y - 4 * ov.u
+                width: tgLabel.width + 12 * ov.u; height: tgLabel.height + 8 * ov.u
+                color: Qt.rgba(0, 0.03, 0.06, 0.72)
+                border.color: Qt.rgba(tg.col.r, tg.col.g, tg.col.b, 0.5); border.width: 1
+            }
             Column {
+                id: tgLabel
                 readonly property bool inside: tg.y < 46 * ov.u
                 x: Math.min(inside ? 26 * ov.u : 0, Math.max(0, ov.width - tg.x - width - 10))
                 y: inside ? 24 * ov.u : -height - 6 * ov.u
                 spacing: 1
-                Text {
+                HText {
                     text: tg.pt ? (ov.lock >= 1 ? "LOCKED" : "ANALYZING" + ".".repeat(1 + ov.tick % 3))
                                 : "TRACKING  ·  " + (ov.target.app || "WINDOW").toUpperCase()
                     color: tg.col; font.family: "Bahnschrift"; font.pixelSize: 10 * ov.u; font.letterSpacing: 2 * ov.u; font.weight: Font.DemiBold
                 }
-                Text {
+                HText {
                     width: Math.min(implicitWidth, 380 * ov.u); elide: Text.ElideRight
                     text: ov.target.title || ""
                     color: ov.hot; font.pixelSize: (tg.pt ? 14 : 11) * ov.u
                 }
-                Text {
+                HText {
                     visible: !tg.pt && ov.target.cpu !== undefined && ov.target.cpu >= 0
                     text: "CPU " + ov.target.cpu + "%   ·   MEM " + ov.mb(ov.target.mem || 0)
                     color: ov.c(0.75); font.family: "Bahnschrift"; font.pixelSize: 9 * ov.u; font.letterSpacing: 1.5 * ov.u
@@ -569,7 +621,7 @@ Window {
                     Item {
                         x: reticle.rr; y: reticle.rr
                         rotation: index * 90
-                        Text {
+                        HText {
                             x: -width / 2; y: -reticle.rr - 18 * ov.u
                             text: ("00" + index * 90).slice(-3)
                             color: ov.c(0.7); font.family: "Bahnschrift"; font.pixelSize: 9 * ov.u
@@ -666,7 +718,7 @@ Window {
                                        startAngle: -90; sweepAngle: 360 * Math.max(0.002, tmr.frac) }
                     }
                 }
-                Text {
+                HText {
                     anchors.horizontalCenter: parent.horizontalCenter
                     y: reticle.rr + 15 * ov.u
                     text: tmr.t0 ? ov.hms(ov.left(tmr.t0)) : ""
@@ -740,9 +792,9 @@ Window {
                 y: onBottom ? ov.cy + off - height : ov.cy - off
                 opacity: ov.seg(0.55, 0.85)
                 spacing: 0
-                Text { anchors.right: parent.onRight ? undefined : parent.right; text: modelData[0]
+                HText { anchors.right: parent.onRight ? undefined : parent.right; text: modelData[0]
                        color: ov.c(0.6); font.family: "Bahnschrift"; font.pixelSize: 8 * ov.u; font.letterSpacing: 2 * ov.u; font.weight: Font.DemiBold }
-                Text { anchors.right: parent.onRight ? undefined : parent.right; text: modelData[1]
+                HText { anchors.right: parent.onRight ? undefined : parent.right; text: modelData[1]
                        color: ov.hot; font.family: "Bahnschrift"; font.pixelSize: 12 * ov.u }
             }
         }
@@ -766,7 +818,7 @@ Window {
                 color: ov.c(0.65)
                 font.pixelSize: 10 * ov.u
             }
-            Text {
+            HText {
                 anchors.horizontalCenter: parent.horizontalCenter
                 visible: ov.timers.length > 0
                 text: ov.timers.length ? "⏱  " + ov.timers[0].label + (ov.timers.length > 1 ? "   +" + (ov.timers.length - 1) : "") : ""
@@ -814,7 +866,7 @@ Window {
                             y: hd.height - height
                             color: ov.c(0.2 + 0.7 * parent.fade)
                         }
-                        Text {
+                        HText {
                             readonly property int dd: (index % 72) * 5
                             visible: dd % 45 === 0
                             text: dd % 45 === 0 ? ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][dd / 45] : ""
@@ -862,7 +914,7 @@ Window {
             opacity: ov.seg(0.5, 0.75)
             Repeater {
                 model: 6
-                Text {
+                HText {
                     readonly property real ph: ((ov.scan * 6 + index) % 6) / 6
                     anchors.horizontalCenter: parent.horizontalCenter
                     y: parent.height * (1 - ph) - height
@@ -872,7 +924,7 @@ Window {
                     font.pixelSize: 26 * ov.u; font.weight: Font.Bold
                 }
             }
-            Text {
+            HText {
                 anchors.horizontalCenter: parent.horizontalCenter
                 y: parent.height + 6 * ov.u
                 text: "LIFT"
@@ -885,7 +937,7 @@ Window {
             d: 0.34; tilt: 22
             x: 62 * ov.u; y: ov.height * 0.2
             width: 300 * ov.u; height: 132 * ov.u
-            HoloPanel { anchors.fill: parent; accent: ov.accent; fillAlpha: 0.1; cut: 12; title: "SYSTEM TIME"; tag: "KST // UTC+9" }
+            HoloPanel { anchors.fill: parent; accent: ov.accent; fillAlpha: 0.82; cut: 12; title: "SYSTEM TIME"; tag: "KST // UTC+9" }
             // 날짜 고리
             Item {
                 id: dayRing
@@ -909,7 +961,7 @@ Window {
                         PathAngleArc { centerX: dayRing.width / 2; centerY: dayRing.width / 2; radiusX: 32 * ov.u; radiusY: 32 * ov.u; startAngle: 0; sweepAngle: 360 }
                     }
                 }
-                Text {
+                HText {
                     anchors.centerIn: parent
                     text: ov.now.getDate()
                     color: ov.hot; font.family: "Bahnschrift"; font.pixelSize: 30 * ov.u; font.weight: Font.Light
@@ -918,7 +970,7 @@ Window {
             Column {
                 x: 112 * ov.u; y: 30 * ov.u
                 spacing: 0
-                Text {
+                HText {
                     text: ov.pad(ov.now.getHours()) + ":" + ov.pad(ov.now.getMinutes())
                     color: ov.hot; font.family: "Bahnschrift"; font.pixelSize: 44 * ov.u; font.weight: Font.Light
                 }
@@ -927,7 +979,7 @@ Window {
                     t: ov.lin(0.5, 0.8); seed: 7
                     font.pixelSize: 12 * ov.u; font.letterSpacing: 3 * ov.u
                 }
-                Text {
+                HText {
                     text: ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"][ov.now.getMonth()] + " " + ov.now.getFullYear()
                           + "   ·   " + ov.pad(ov.now.getSeconds()) + " s"
                     color: ov.c(0.55); font.family: "Bahnschrift"; font.pixelSize: 9 * ov.u; font.letterSpacing: 2 * ov.u
@@ -941,7 +993,7 @@ Window {
             x: 62 * ov.u; y: ov.height * 0.2 + 146 * ov.u
             width: 300 * ov.u; height: 150 * ov.u
             HoloPanel {
-                anchors.fill: parent; accent: ov.accent; fillAlpha: 0.1; cut: 12
+                anchors.fill: parent; accent: ov.accent; fillAlpha: 0.82; cut: 12
                 title: ov.timers.length ? "TIMERS" : "SYSTEM LOG"
                 tag: ov.timers.length ? ov.timers.length + " ACTIVE" : "STREAM " + ov.pad(ov.streamBase % 100)
             }
@@ -951,7 +1003,7 @@ Window {
                 spacing: 3 * ov.u
                 Repeater {
                     model: 7
-                    Text {
+                    HText {
                         readonly property bool boot: ov.p < 1 || ov.streamBase < 3
                         text: boot ? (index < ov.bootLines.length ? ov.decode(ov.bootLines[index], ov.lin(0.45 + index * 0.07, 0.6 + index * 0.07), index) : "")
                                    : ov.streamLine(ov.streamBase + index)
@@ -974,9 +1026,9 @@ Window {
                         spacing: 3 * ov.u
                         Item {
                             width: parent.width; height: 16 * ov.u
-                            Text { text: modelData.label; color: ov.hot; font.pixelSize: 12 * ov.u
+                            HText { text: modelData.label; color: ov.hot; font.pixelSize: 12 * ov.u
                                    width: parent.width - 80 * ov.u; elide: Text.ElideRight; anchors.verticalCenter: parent.verticalCenter }
-                            Text { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                            HText { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
                                    text: ov.hms(parent.parent.rem); color: parent.parent.frac < 0.1 ? ov.red : ov.hot
                                    font.family: "Bahnschrift"; font.pixelSize: 14 * ov.u }
                         }
@@ -998,10 +1050,10 @@ Window {
             y: ov.height * 0.8 - height
             readonly property bool ready: ov.weather.temp !== undefined
             HoloPanel {
-                anchors.fill: parent; accent: ov.accent; fillAlpha: 0.1; cut: 12
+                anchors.fill: parent; accent: ov.accent; fillAlpha: 0.82; cut: 12
                 title: "ATMOSPHERICS"; tag: wx.ready ? String(ov.weather.loc).toUpperCase() : ""
             }
-            Text {
+            HText {
                 visible: !wx.ready
                 anchors.centerIn: parent
                 text: ov.weather.error ? "WEATHER LINK OFFLINE" : "SCANNING ATMOSPHERE" + ".".repeat(1 + ov.tick % 3)
@@ -1027,12 +1079,12 @@ Window {
                                        startAngle: 135; sweepAngle: 270 * Math.max(0.005, (ov.weather.rain || 0) / 100) * wx.e }
                     }
                 }
-                Text {
+                HText {
                     anchors.centerIn: parent; anchors.verticalCenterOffset: -4 * ov.u
                     text: (ov.weather.temp !== undefined ? ov.weather.temp : "-") + "°"
                     color: ov.hot; font.family: "Bahnschrift"; font.pixelSize: 32 * ov.u; font.weight: Font.Light
                 }
-                Text {
+                HText {
                     anchors.horizontalCenter: parent.horizontalCenter
                     y: parent.height - 18 * ov.u
                     text: "RAIN " + (ov.weather.rain || 0) + "%"
@@ -1044,10 +1096,10 @@ Window {
                 x: 124 * ov.u; y: 36 * ov.u
                 width: parent.width - 138 * ov.u
                 spacing: 4 * ov.u
-                Text { width: parent.width; elide: Text.ElideRight; text: ov.weather.desc || ""; color: ov.hot; font.pixelSize: 14 * ov.u }
-                Text { text: "체감 " + ov.weather.feels + "°   ·   습도 " + ov.weather.humidity + "%"; color: ov.c(0.85); font.pixelSize: 10 * ov.u }
-                Text { text: "바람 " + ov.weather.wind + " km/h"; color: ov.c(0.85); font.pixelSize: 10 * ov.u }
-                Text { text: "최고 " + ov.weather.max + "°  /  최저 " + ov.weather.min + "°"; color: ov.hot; font.pixelSize: 11 * ov.u }
+                HText { width: parent.width; elide: Text.ElideRight; text: ov.weather.desc || ""; color: ov.hot; font.pixelSize: 14 * ov.u }
+                HText { text: "체감 " + ov.weather.feels + "°   ·   습도 " + ov.weather.humidity + "%"; color: ov.c(0.85); font.pixelSize: 10 * ov.u }
+                HText { text: "바람 " + ov.weather.wind + " km/h"; color: ov.c(0.85); font.pixelSize: 10 * ov.u }
+                HText { text: "최고 " + ov.weather.max + "°  /  최저 " + ov.weather.min + "°"; color: ov.hot; font.pixelSize: 11 * ov.u }
             }
             // 오늘 3시간 간격 기온
             Row {
@@ -1065,7 +1117,7 @@ Window {
                         spacing: 2 * ov.u
                         width: 28 * ov.u
                         readonly property bool cur: index === hourly.nowSlot
-                        Text { anchors.horizontalCenter: parent.horizontalCenter; text: modelData.t + "°"
+                        HText { anchors.horizontalCenter: parent.horizontalCenter; text: modelData.t + "°"
                                color: parent.cur ? ov.hot : ov.c(0.7); font.family: "Bahnschrift"; font.pixelSize: 8 * ov.u }
                         Item {
                             width: parent.width; height: 24 * ov.u
@@ -1076,7 +1128,7 @@ Window {
                                 color: parent.parent.cur ? ov.hot : ov.c(0.45 + 0.4 * modelData.rain / 100)
                             }
                         }
-                        Text { anchors.horizontalCenter: parent.horizontalCenter; text: ov.pad(modelData.h)
+                        HText { anchors.horizontalCenter: parent.horizontalCenter; text: ov.pad(modelData.h)
                                color: parent.cur ? ov.hot : ov.c(0.5); font.family: "Bahnschrift"; font.pixelSize: 8 * ov.u }
                     }
                 }
@@ -1095,8 +1147,12 @@ Window {
             readonly property bool alert: cpuHi || ramHi || batLo
             Rectangle {
                 anchors.fill: parent
-                color: ov.rc(alertBox.alert ? 0.14 + 0.08 * ov.pulse : 0.06)
-                border.color: ov.rc(alertBox.alert ? 0.95 : 0.7); border.width: 1.5
+                color: Qt.rgba(0.04, 0.02, 0.04, 0.78)
+                Rectangle {
+                    anchors.fill: parent
+                    color: ov.rc(alertBox.alert ? 0.16 + 0.1 * ov.pulse : 0.07)
+                    border.color: ov.rc(alertBox.alert ? 0.95 : 0.75); border.width: 1.5
+                }
             }
             Rectangle {
                 width: parent.width; height: 20 * ov.u
@@ -1105,16 +1161,16 @@ Window {
                     x: 10 * ov.u; anchors.verticalCenter: parent.verticalCenter
                     spacing: 8 * ov.u
                     Rectangle { width: 7 * ov.u; height: width; radius: width / 2; color: "#fff"; opacity: 0.4 + 0.6 * ov.pulse; anchors.verticalCenter: parent.verticalCenter }
-                    Text { text: "PROCESS MONITOR"; color: "#fff"; font.family: "Bahnschrift"; font.pixelSize: 10 * ov.u; font.letterSpacing: 3 * ov.u; font.weight: Font.DemiBold }
+                    HText { text: "PROCESS MONITOR"; color: "#fff"; font.family: "Bahnschrift"; font.pixelSize: 10 * ov.u; font.letterSpacing: 3 * ov.u; font.weight: Font.DemiBold }
                 }
-                Text {
+                HText {
                     anchors.right: parent.right; anchors.rightMargin: 10 * ov.u; anchors.verticalCenter: parent.verticalCenter
                     text: alertBox.cpuHi ? "CPU " + Math.round(ov.stats.cpu) + "%" : alertBox.ramHi ? "MEM " + Math.round(ov.stats.ram) + "%"
                           : alertBox.batLo ? "BATTERY LOW" : "CPU " + Math.round(ov.stats.cpu || 0) + "%  ·  MEM " + Math.round(ov.stats.ram || 0) + "%"
                     color: "#fff"; font.family: "Bahnschrift"; font.pixelSize: 9 * ov.u; font.letterSpacing: 1.5 * ov.u
                 }
             }
-            Text {
+            HText {
                 visible: ov.procs.length === 0
                 anchors.centerIn: parent
                 text: "SCANNING PROCESSES" + ".".repeat(1 + ov.tick % 3)
@@ -1132,20 +1188,20 @@ Window {
                         Rectangle {
                             width: 15 * ov.u; height: 13 * ov.u; anchors.verticalCenter: parent.verticalCenter
                             color: parent.heavy ? ov.red : "transparent"; border.color: ov.rc(0.9); border.width: 1
-                            Text { anchors.centerIn: parent; text: index + 1; color: "#fff"; font.family: "Bahnschrift"; font.pixelSize: 9 * ov.u; font.weight: Font.DemiBold }
+                            HText { anchors.centerIn: parent; text: index + 1; color: "#fff"; font.family: "Bahnschrift"; font.pixelSize: 9 * ov.u; font.weight: Font.DemiBold }
                         }
-                        Text {
+                        HText {
                             x: 22 * ov.u; anchors.verticalCenter: parent.verticalCenter
                             width: 120 * ov.u; elide: Text.ElideRight
                             text: modelData.name + (modelData.count > 1 ? "  ×" + modelData.count : "")
                             color: parent.heavy ? ov.red : ov.hot; font.pixelSize: 11 * ov.u
                         }
-                        Text {
+                        HText {
                             x: 150 * ov.u; anchors.verticalCenter: parent.verticalCenter
                             text: modelData.cpu.toFixed(1) + "%"
                             color: modelData.cpu >= 50 ? ov.red : ov.rc(0.95); font.family: "Bahnschrift"; font.pixelSize: 10 * ov.u
                         }
-                        Text {
+                        HText {
                             anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
                             text: ov.mb(modelData.mem)
                             color: modelData.mem >= 2048 ? ov.red : ov.hot; font.family: "Bahnschrift"; font.pixelSize: 10 * ov.u
@@ -1153,7 +1209,7 @@ Window {
                     }
                 }
             }
-            Text {
+            HText {
                 anchors.bottom: parent.bottom; anchors.bottomMargin: 5 * ov.u
                 anchors.horizontalCenter: parent.horizontalCenter
                 text: "“1번 꺼줘” 라고 말하면 종료 (확인 후)"
@@ -1166,7 +1222,7 @@ Window {
             d: 0.42; tilt: -22
             width: 300 * ov.u; height: 150 * ov.u
             x: ov.width - 62 * ov.u - width; y: ov.height * 0.2 + 154 * ov.u
-            HoloPanel { anchors.fill: parent; accent: ov.accent; fillAlpha: 0.1; cut: 12; title: "DIAGNOSTICS"; tag: "SUBSYSTEMS" }
+            HoloPanel { anchors.fill: parent; accent: ov.accent; fillAlpha: 0.82; cut: 12; title: "DIAGNOSTICS"; tag: "SUBSYSTEMS" }
             Row {
                 x: 16 * ov.u; y: 32 * ov.u
                 spacing: 24 * ov.u
@@ -1192,7 +1248,7 @@ Window {
                             PathLine { x: pie.width / 2; y: pie.width / 2 }
                         }
                     }
-                    Text { anchors.horizontalCenter: parent.horizontalCenter; y: pie.width / 2 - height / 2
+                    HText { anchors.horizontalCenter: parent.horizontalCenter; y: pie.width / 2 - height / 2
                            text: Math.round(pie.used * 100) + "%"; color: "#ffffff"; font.family: "Bahnschrift"; font.pixelSize: 12 * ov.u
                            style: Text.Outline; styleColor: Qt.rgba(0, 0.1, 0.15, 0.6) }
                     Label { anchors.horizontalCenter: parent.horizontalCenter; y: pie.width - 4 * ov.u; text: "STORAGE"; font.pixelSize: 8 * ov.u }
@@ -1212,18 +1268,18 @@ Window {
             d: 0.5; tilt: -22
             width: 300 * ov.u; height: 214 * ov.u
             x: ov.width - 62 * ov.u - width; y: ov.height * 0.8 - height
-            HoloPanel { anchors.fill: parent; accent: ov.accent; fillAlpha: 0.1; cut: 12; title: "COMMS LINK"; tag: jarvis.chatMode ? "CHAT MODE" : "SECURE" }
+            HoloPanel { anchors.fill: parent; accent: ov.accent; fillAlpha: 0.82; cut: 12; title: "COMMS LINK"; tag: jarvis.chatMode ? "CHAT MODE" : "SECURE" }
             Column {
                 x: 14 * ov.u; y: 32 * ov.u
                 width: parent.width - 28 * ov.u
                 spacing: 5 * ov.u
                 Label { text: "▸ OPERATOR"; font.pixelSize: 8 * ov.u }
-                Text {
+                HText {
                     width: parent.width; text: jarvis.userText || "—"
                     color: ov.hot; font.pixelSize: 12 * ov.u; elide: Text.ElideRight; maximumLineCount: 2; wrapMode: Text.Wrap
                 }
                 Label { text: "▸ J.A.R.V.I.S"; font.pixelSize: 8 * ov.u }
-                Text {
+                HText {
                     width: parent.width; text: jarvis.replyText || "—"
                     color: ov.c(0.95); font.pixelSize: 12 * ov.u; elide: Text.ElideRight; maximumLineCount: 2; wrapMode: Text.Wrap
                 }
@@ -1237,8 +1293,8 @@ Window {
                             anchors.verticalCenter: parent.verticalCenter
                             color: status === "error" ? ov.red : status === "run" ? "#ffb347" : "#53ffa8"
                         }
-                        Text { text: t; color: ov.c(0.55); font.family: "Bahnschrift"; font.pixelSize: 9 * ov.u }
-                        Text { text: label; color: ov.c(0.85); font.pixelSize: 10 * ov.u; elide: Text.ElideRight; width: 220 * ov.u }
+                        HText { text: t; color: ov.c(0.55); font.family: "Bahnschrift"; font.pixelSize: 9 * ov.u }
+                        HText { text: label; color: ov.c(0.85); font.pixelSize: 10 * ov.u; elide: Text.ElideRight; width: 220 * ov.u }
                     }
                 }
             }
