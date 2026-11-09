@@ -26,7 +26,7 @@ from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickWindow  # noqa: F401  (루트 객체를 QQuickWindow 로 받기 위해 필요)
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
-from . import winutil
+from . import hud_feed, winutil
 from .brain import Brain, situation_text
 from .config import DATA_DIR, ROOT, UI_DIR, Config
 from .hotkey import GlobalHotkey
@@ -72,6 +72,10 @@ class Bridge(QObject):
     voiceEnrolledChanged = Signal()
     chatModeChanged = Signal()
     activeModeChanged = Signal()
+    timersJsonChanged = Signal()
+    procsJsonChanged = Signal()
+    weatherJsonChanged = Signal()
+    targetJsonChanged = Signal()
 
     actionEvent = Signal(str, str, str, str)     # id, label, status(run|ok|error), detail
     confirmRequest = Signal(str, str, str)       # id, title, detail
@@ -95,6 +99,10 @@ class Bridge(QObject):
     voiceEnrolled = _ro("voiceEnrolled", bool, voiceEnrolledChanged)
     chatMode = _ro("chatMode", bool, chatModeChanged)
     activeMode = _ro("activeMode", bool, activeModeChanged)
+    timersJson = _ro("timersJson", str, timersJsonChanged)      # 돌고 있는 타이머 [{label, end(ms), total(s)}]
+    procsJson = _ro("procsJson", str, procsJsonChanged)         # 액티브 모드: 무거운 프로그램 상위 5개
+    weatherJson = _ro("weatherJson", str, weatherJsonChanged)   # 액티브 모드: 날씨
+    targetJson = _ro("targetJson", str, targetJsonChanged)      # 액티브 모드: 추적 박스 (지금 창 / 짚은 위치)
 
     def __init__(self, core: "Jarvis") -> None:
         super().__init__()
@@ -116,6 +124,10 @@ class Bridge(QObject):
         self._voiceEnrolled = False
         self._chatMode = False
         self._activeMode = False
+        self._timersJson = "[]"
+        self._procsJson = "[]"
+        self._weatherJson = "{}"
+        self._targetJson = "{}"
 
     def set(self, name: str, value) -> None:
         if getattr(self, "_" + name) != value:
@@ -197,6 +209,9 @@ class Jarvis(QObject):
     sig_mode = Signal(bool)            # 자유 대화 모드 켜짐/꺼짐
     sig_notify = Signal(str)           # 백그라운드 작업(작업 감시 등)의 알림
     sig_hud = Signal(str)              # 말로 HUD 보기 방식 바꾸기 (small | big | hide | active_on | active_off)
+    sig_feed = Signal(str, str)        # 백그라운드 → 액티브 모드 화면 정보 (속성 이름, JSON)
+    sig_timer_cancel = Signal()
+    sig_point = Signal(int, int, int, int, str)   # 화면 위치 짚기 (실제 픽셀 x, y, w, h, 라벨)
 
     def __init__(self, app: QApplication, args) -> None:
         super().__init__()
@@ -224,6 +239,13 @@ class Jarvis(QObject):
         self._hwnd = 0
         self.overlay = None            # 액티브 모드 전체 화면 HUD (처음 켤 때 불러옴)
         self._overlay_hwnd = 0
+        self._timers: dict[str, dict] = {}     # 돌고 있는 타이머 (id → label, end, total, qt)
+        self._feed_stop = threading.Event()
+        self._feed_stop.set()
+        self._proc_watch: hud_feed.ProcWatch | None = None
+        self._weather_at = 0.0
+        self._point_until = 0.0
+        self._target_hwnd = 0
         self._stream_gen = -1          # 지금 흘러 들어오는 답의 명령 번호
         self._stream_buf = ""          # 아직 문장이 덜 끝난 조각
         self._stream_text = ""         # 지금까지 받은 답 전체 (HUD 표시용)
@@ -234,7 +256,9 @@ class Jarvis(QObject):
                           (self.sig_confirm_close, self._on_confirm_close), (self.sig_timer, self._on_timer_req),
                           (self.sig_hotkey, self.activate), (self.sig_voice, self._on_voice_status),
                           (self.sig_stream, self._on_stream), (self.sig_mode, self._on_mode),
-                          (self.sig_notify, self._on_notify), (self.sig_hud, self._on_hud)):
+                          (self.sig_notify, self._on_notify), (self.sig_hud, self._on_hud),
+                          (self.sig_feed, self._on_feed), (self.sig_timer_cancel, self._cancel_timers),
+                          (self.sig_point, self._on_point)):
             sig.connect(slot)
 
         # ---- 음성 출력 ----
@@ -251,6 +275,8 @@ class Jarvis(QObject):
             schedule_timer=lambda s, l: self.sig_timer.emit(int(s), str(l)),
             hud_hwnd=lambda: [h for h in (self._hwnd, self._overlay_hwnd) if h],
             notify=lambda msg: self.sig_notify.emit(str(msg)),
+            cancel_timers=self._cancel_timers_hook,
+            point_at=self._point_hook,
         ))
         self.brain = Brain(self.cfg, self.tools,
                            on_action=lambda *a: self.sig_action.emit(*a),
@@ -804,6 +830,122 @@ class Jarvis(QObject):
             self.chime.play()
             if self.win.isVisible():   # 작은 HUD 는 전체 화면 HUD 위에 둔다
                 QTimer.singleShot(60, self.win.raise_)
+            self._start_feed()
+        else:
+            self._stop_feed()
+
+    # ---- 액티브 모드 실시간 정보 ----
+    def _start_feed(self) -> None:
+        if not hasattr(self, "_focus_timer"):
+            self._focus_timer = QTimer(self)
+            self._focus_timer.setInterval(350)
+            self._focus_timer.timeout.connect(self._update_target)
+        self._focus_timer.start()
+        if self._feed_stop.is_set():
+            self._feed_stop = threading.Event()
+            threading.Thread(target=self._proc_loop, args=(self._feed_stop,), daemon=True, name="hud-procs").start()
+        if time.monotonic() - self._weather_at > 900 or self.bridge._weatherJson in ("{}", ""):
+            self._weather_at = time.monotonic()
+            threading.Thread(target=self._fetch_weather, daemon=True, name="hud-weather").start()
+
+    def _stop_feed(self) -> None:
+        self._feed_stop.set()
+        if hasattr(self, "_focus_timer"):
+            self._focus_timer.stop()
+        self._point_until = 0.0
+        self._target_hwnd = 0
+        self.brain.hud_procs = []
+        self.bridge.set("targetJson", "{}")
+
+    def _proc_loop(self, stop: threading.Event) -> None:
+        """무거운 프로그램 상위 목록 (2초마다). 첫 측정은 CPU 값이 없어 곧바로 한 번 더 잰다."""
+        if self._proc_watch is None:
+            self._proc_watch = hud_feed.ProcWatch()
+        first = True
+        while not stop.is_set():
+            try:
+                rows = self._proc_watch.sample()
+                if not stop.is_set():
+                    self.brain.hud_procs = rows
+                    self.sig_feed.emit("procsJson", json.dumps(rows, ensure_ascii=False))
+            except Exception:
+                log.exception("프로세스 목록 실패")
+            if stop.wait(0.6 if first else 2.0):
+                break
+            first = False
+            if time.monotonic() - self._weather_at > 900:   # 켜 둔 동안 15분마다 날씨 새로 고침
+                self._weather_at = time.monotonic()
+                threading.Thread(target=self._fetch_weather, daemon=True, name="hud-weather").start()
+
+    def _fetch_weather(self) -> None:
+        try:
+            data = self.tools.weather_data()
+        except Exception as e:
+            log.warning("액티브 모드 날씨 실패: %s", e)
+            self._weather_at = time.monotonic() - 780   # 2분 뒤 다시 시도
+            data = {"error": "OFFLINE"}
+        self.sig_feed.emit("weatherJson", json.dumps(data, ensure_ascii=False))
+
+    @Slot(str, str)
+    def _on_feed(self, name: str, value: str) -> None:
+        if name == "procsJson" and not self.bridge._activeMode:
+            return
+        self.bridge.set(name, value)
+
+    def _overlay_dpr(self) -> float:
+        scr = self.overlay.screen() if self.overlay is not None else None
+        return scr.devicePixelRatio() if scr else 1.0
+
+    def _to_overlay(self, x: float, y: float) -> tuple[float, float]:
+        """실제 화면 픽셀 → 액티브 모드 창 안의 좌표."""
+        k = self._overlay_dpr()
+        g = self.overlay.geometry()
+        return x / k - g.x(), y / k - g.y()
+
+    def _update_target(self) -> None:
+        """추적 박스: 짚은 위치를 잠시 보여 주고, 평소에는 지금 쓰고 있는 창을 따라다닌다."""
+        if self.overlay is None or not self.bridge._activeMode or time.monotonic() < self._point_until:
+            return
+        info = hud_feed.foreground_window(set(self.focus.own_hwnds))
+        if not info:
+            if self._target_hwnd or self.bridge._targetJson != "{}":
+                self._target_hwnd = 0
+                self.bridge.set("targetJson", "{}")
+            return
+        x, y = self._to_overlay(info["x"], info["y"])
+        k = self._overlay_dpr()
+        st = self._proc_watch.stats_of(info["pid"]) if self._proc_watch else None
+        self._target_hwnd = info["hwnd"]
+        self.bridge.set("targetJson", json.dumps({
+            "kind": "window", "id": str(info["hwnd"]), "x": round(x), "y": round(y),
+            "w": round(info["w"] / k), "h": round(info["h"] / k),
+            "title": info["title"][:80], "app": hud_feed.display_name(info["exe"]) if info["exe"] else "",
+            "cpu": round(st[0], 1) if st else -1, "mem": round(st[1]) if st else -1,
+        }, ensure_ascii=False))
+
+    def _point_hook(self, x: int, y: int, w: int, h: int, label: str) -> bool:
+        """point_at 도구 (두뇌 스레드) → 화면에 표시. 액티브 모드가 꺼져 있으면 False."""
+        if not self.bridge._activeMode:
+            return False
+        self.sig_point.emit(int(x), int(y), int(w), int(h), str(label))
+        return True
+
+    @Slot(int, int, int, int, str)
+    def _on_point(self, x: int, y: int, w: int, h: int, label: str) -> None:
+        if self.overlay is None or not self.bridge._activeMode:
+            return
+        k = self._overlay_dpr()
+        bw, bh = (w / k, h / k) if w > 0 and h > 0 else (0.0, 0.0)
+        cx, cy = self._to_overlay(x, y)
+        if bw and bh:   # 영역을 준 경우 (x, y) 는 왼쪽 위 → 가운데로
+            cx, cy = cx + bw / 2, cy + bh / 2
+        bw, bh = max(bw, 70.0), max(bh, 70.0)
+        self._point_until = time.monotonic() + 9.0
+        self._target_hwnd = 0
+        self.bridge.set("targetJson", json.dumps({
+            "kind": "point", "id": f"p{time.monotonic():.3f}", "x": round(cx - bw / 2), "y": round(cy - bh / 2),
+            "w": round(bw), "h": round(bh), "title": label or "TARGET",
+        }, ensure_ascii=False))
 
     @Slot(str)
     def _on_notify(self, msg: str) -> None:
@@ -823,9 +965,41 @@ class Jarvis(QObject):
 
     @Slot(int, str)
     def _on_timer_req(self, seconds: int, label: str) -> None:
-        QTimer.singleShot(seconds * 1000, lambda l=label: self._timer_fired(l))
+        tid = uuid.uuid4().hex[:8]
+        qt = QTimer(self)
+        qt.setSingleShot(True)
+        qt.timeout.connect(lambda t=tid: self._timer_fired(t))
+        qt.start(seconds * 1000)
+        self._timers[tid] = {"label": label, "end": int(time.time() * 1000) + seconds * 1000, "total": seconds, "qt": qt}
+        self._publish_timers()
 
-    def _timer_fired(self, label: str) -> None:
+    def _publish_timers(self) -> None:
+        rows = sorted(({"label": t["label"], "end": t["end"], "total": t["total"]} for t in self._timers.values()),
+                      key=lambda r: r["end"])
+        self.bridge.set("timersJson", json.dumps(rows, ensure_ascii=False))
+
+    def _cancel_timers_hook(self) -> int:
+        """cancel_timer 도구 (두뇌 스레드) → 메인 스레드에서 취소."""
+        n = len(self._timers)
+        if n:
+            self.sig_timer_cancel.emit()
+        return n
+
+    @Slot()
+    def _cancel_timers(self) -> None:
+        for t in self._timers.values():
+            t["qt"].stop()
+            t["qt"].deleteLater()
+        self._timers.clear()
+        self._publish_timers()
+
+    def _timer_fired(self, tid: str) -> None:
+        t = self._timers.pop(tid, None)
+        if t is None:
+            return
+        t["qt"].deleteLater()
+        self._publish_timers()
+        label = t["label"]
         self.chime.play()
         title = self.cfg["user_title"] or "주인님"
         self.bridge.toast.emit("warn", f"⏰ {label}")

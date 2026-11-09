@@ -38,6 +38,8 @@ class Hooks:
     schedule_timer: Callable[[int, str], None]   # (초, 라벨)
     hud_hwnd: Callable[[], "int | list[int]"]   # 스크린샷에서 뺄 자비스 창 (하나 또는 여러 개)
     notify: Callable[[str], None] = lambda msg: None   # 백그라운드 작업이 사용자에게 말로 알림
+    cancel_timers: Callable[[], int] = lambda: 0       # 돌고 있는 타이머 모두 취소 → 취소한 개수
+    point_at: Callable[[int, int, int, int, str], bool] = lambda x, y, w, h, label: False  # 액티브 모드 화면에 위치 표시
 
 
 # 한국어 별칭 → Start 메뉴 검색어 / 실행 파일
@@ -87,6 +89,25 @@ SYSTEM_EXE = {"작업관리자": "taskmgr.exe", "명령프롬프트": "cmd.exe",
               "설정": "ms-settings:", "메모장": "notepad.exe", "계산기": "calc.exe", "그림판": "mspaint.exe",
               "탐색기": "explorer.exe", "파일탐색기": "explorer.exe"}
 RISKY_EXT = {".exe", ".bat", ".cmd", ".ps1", ".vbs", ".js", ".msi", ".reg", ".scr", ".com", ".lnk"}
+
+
+# wttr.in 이 한국어 설명을 안 줄 때가 있다 (기록: 'Clear ') → 흔한 날씨만 우리말로
+_WEATHER_KO = [("thunder", "뇌우"), ("heavy snow", "많은 눈"), ("blizzard", "눈보라"), ("sleet", "진눈깨비"),
+               ("light snow", "약한 눈"), ("snow", "눈"), ("heavy rain", "강한 비"), ("torrential", "폭우"),
+               ("drizzle", "이슬비"), ("light rain", "약한 비"), ("patchy rain", "가끔 비"), ("shower", "소나기"),
+               ("rain", "비"), ("fog", "안개"), ("mist", "옅은 안개"), ("haze", "연무"), ("overcast", "흐림"),
+               ("partly", "구름 조금"), ("cloudy", "흐림"), ("sunny", "맑음"), ("clear", "맑음")]
+
+
+def _weather_ko(desc: str) -> str:
+    d = (desc or "").strip()
+    if re.search(r"[가-힣]", d):
+        return d
+    low = d.lower()
+    for en, ko in _WEATHER_KO:
+        if en in low:
+            return ko
+    return d
 
 
 def _norm(s: str) -> str:
@@ -210,6 +231,15 @@ class PCTools:
                  {"action": {"type": "string", "enum": ["lock", "sleep", "restart", "shutdown", "cancel_shutdown"]}}, ["action"]),
             tool("set_timer", "Set a timer/reminder. Jarvis will speak the label when it fires.",
                  {"seconds": {"type": "integer"}, "label": s}, ["seconds", "label"]),
+            tool("cancel_timer", "Cancel all running timers/reminders."),
+            tool("end_process", "Force-quit a program that is slowing the PC (all its processes), by app name or exe name "
+                 "(e.g. '크롬', 'chrome.exe'). Unsaved work is lost; the user is asked to approve first. Prefer close_app for a normal close.",
+                 {"name": s}, ["name"]),
+            tool("point_at", "When Active Mode (full-screen HUD) is on, mark a spot on the user's screen with a target box, "
+                 "e.g. to show where an error message or a button is. Use coordinates of the LAST look_at_screen image; "
+                 "optionally give the width/height of the area to frame it.",
+                 {"x": {"type": "integer"}, "y": {"type": "integer"}, "width": {"type": "integer"}, "height": {"type": "integer"},
+                  "label": {"type": "string", "description": "very short Korean label, e.g. '에러 메시지'"}}, ["x", "y"]),
             tool("get_weather", "Get current weather and today's forecast.", {"location": {"type": "string", "description": "city name; default is the user's home city"}}),
             tool("read_clipboard", "Read the text currently in the clipboard."),
             tool("write_clipboard", "Put text into the clipboard.", {"text": s}, ["text"]),
@@ -254,6 +284,9 @@ class PCTools:
             "power": lambda: f"전원 · {a.get('action')}",
             "set_timer": lambda: f"타이머 · {a.get('label')} ({a.get('seconds')}초)",
             "get_weather": lambda: f"날씨 · {a.get('location') or '현재 위치'}",
+            "cancel_timer": lambda: "타이머 취소",
+            "end_process": lambda: f"프로그램 강제 종료 · {a.get('name')}",
+            "point_at": lambda: f"화면 표시 · {a.get('label') or '위치'}",
             "read_clipboard": lambda: "클립보드 읽기",
             "write_clipboard": lambda: "클립보드 쓰기",
             "remember": lambda: f"기억 저장 · {a.get('fact', '')[:30]}",
@@ -802,7 +835,8 @@ class PCTools:
         at = dt.datetime.now() + dt.timedelta(seconds=seconds)
         return f"타이머 설정: {label} — {at:%H:%M:%S}에 알림"
 
-    def t_get_weather(self, location: str | None = None) -> str:
+    def weather_data(self, location: str | None = None) -> dict:
+        """현재 날씨 + 오늘 예보 (액티브 모드 화면과 get_weather 가 함께 씀)."""
         loc = location or self.cfg["home_city"] or "Seoul"
         url = f"https://wttr.in/{urllib.parse.quote(loc)}?format=j1&lang=ko"
         try:
@@ -811,11 +845,69 @@ class PCTools:
         except Exception as e:
             raise ToolError(f"날씨 정보를 가져오지 못했습니다: {e}")
         cur = data["current_condition"][0]
-        desc = (cur.get("lang_ko") or cur.get("weatherDesc") or [{"value": ""}])[0]["value"]
+        desc = _weather_ko((cur.get("lang_ko") or cur.get("weatherDesc") or [{"value": ""}])[0]["value"])
         today = data["weather"][0]
-        rain = max(int(h.get("chanceofrain", 0)) for h in today.get("hourly", [{"chanceofrain": 0}]))
-        return (f"{loc}: {desc}, 기온 {cur['temp_C']}°C (체감 {cur['FeelsLikeC']}°C), 습도 {cur['humidity']}%, "
-                f"바람 {cur['windspeedKmph']}km/h. 오늘 최고 {today['maxtempC']}°C / 최저 {today['mintempC']}°C, 강수확률 최대 {rain}%")
+        hourly = [{"h": int(h.get("time", "0")) // 100, "t": int(h.get("tempC", 0)), "rain": int(h.get("chanceofrain", 0))}
+                  for h in today.get("hourly", [])]
+        return {"loc": loc, "desc": desc, "temp": int(cur["temp_C"]), "feels": int(cur["FeelsLikeC"]),
+                "humidity": int(cur["humidity"]), "wind": int(cur["windspeedKmph"]),
+                "max": int(today["maxtempC"]), "min": int(today["mintempC"]),
+                "rain": max([h["rain"] for h in hourly] or [0]), "hourly": hourly}
+
+    def t_get_weather(self, location: str | None = None) -> str:
+        w = self.weather_data(location)
+        return (f"{w['loc']}: {w['desc']}, 기온 {w['temp']}°C (체감 {w['feels']}°C), 습도 {w['humidity']}%, "
+                f"바람 {w['wind']}km/h. 오늘 최고 {w['max']}°C / 최저 {w['min']}°C, 강수확률 최대 {w['rain']}%")
+
+    def t_cancel_timer(self) -> str:
+        n = self.hooks.cancel_timers()
+        return f"타이머 {n}개를 취소했습니다." if n else "돌고 있는 타이머가 없습니다."
+
+    def t_end_process(self, name: str) -> str:
+        """프로그램의 프로세스를 모두 강제 종료 (Windows 핵심 프로세스 · 자비스 자신은 제외)."""
+        import psutil
+        from . import hud_feed
+        q = _norm(name)
+        exes = {e.lower() for e in EXE_ALIASES.get(q, [])}
+        mine = hud_feed.own_pids()
+        targets = []
+        for p in psutil.process_iter(["name"]):
+            pn = (p.info.get("name") or "").lower()
+            if not pn or p.pid in mine or pn in hud_feed.PROTECTED:
+                continue
+            if pn in exes or _norm(pn.removesuffix(".exe")) == q or _norm(pn) == q or _norm(hud_feed.display_name(pn)) == q:
+                targets.append(p)
+        if not targets:
+            raise ToolError(f"'{name}' 프로그램이 실행 중이 아니거나 종료할 수 없는 프로그램입니다.")
+        exe = targets[0].info["name"]
+        mem = 0
+        for p in targets:
+            try:
+                mem += p.memory_info().rss
+            except psutil.Error:
+                pass
+        self._confirm("프로그램 강제 종료",
+                      f"{hud_feed.display_name(exe)} ({exe}, 프로세스 {len(targets)}개, 메모리 {mem / 1048576:,.0f} MB)\n"
+                      "저장하지 않은 작업은 사라질 수 있습니다.")
+        for p in targets:
+            try:
+                p.terminate()
+            except psutil.Error:
+                pass
+        gone, alive = psutil.wait_procs(targets, timeout=3)
+        for p in alive:
+            try:
+                p.kill()
+            except psutil.Error:
+                pass
+        return f"{hud_feed.display_name(exe)} 종료함 (프로세스 {len(targets)}개, 메모리 약 {mem / 1048576:,.0f} MB 확보)"
+
+    def t_point_at(self, x: int, y: int, width: int = 0, height: int = 0, label: str = "") -> str:
+        k = self._shot_scale
+        ok = self.hooks.point_at(int(x * k), int(y * k), int((width or 0) * k), int((height or 0) * k), str(label or "")[:30])
+        if not ok:
+            raise ToolError("액티브 모드가 꺼져 있어 화면에 표시하지 못했습니다. 위치를 말로 설명하세요.")
+        return "화면에 표시함"
 
     def t_read_clipboard(self) -> str:
         t = winutil.get_clipboard_text()

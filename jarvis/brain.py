@@ -19,6 +19,7 @@ from typing import Callable
 
 from .claude_session import ClaudeSession
 from .config import DATA_DIR, Config, load_memory
+from .hud_feed import parse_kill_index
 from .local_ai import LocalAI
 from .local_router import _COMPOUND, LocalRouter, dedupe, normalize
 
@@ -60,6 +61,10 @@ SYSTEM_TEMPLATE = """당신은 J.A.R.V.I.S.(자비스), {title}의 Windows PC에
 - 특정 프로그램으로 파일을 열라고 하면 find_files 로 경로를 찾은 뒤 open_path 의 app 에 프로그램 이름을 넣으세요.
   프로그램의 열기 대화상자에 경로를 입력하는 방식은 쓰지 마세요.
 - "OO 끝나면 알려 줘", "다 되면 말해 줘"처럼 앱의 작업이 끝나기를 기다려 달라고 하면 watch_app 을 쓰세요.
+- 화면에서 무언가가 어디 있는지 물으면("에러 어디 있어?", "저장 버튼 어디야?") look_at_screen 으로 찾은 뒤 point_at 으로
+  그 위치를 짚고, 무엇인지 한 문장으로 말하세요. point_at 이 실패하면(액티브 모드 꺼짐) 위치를 말로 설명하세요.
+- 컴퓨터가 느리다며 프로그램을 정리해 달라고 하면 system_status 로 무거운 프로그램을 확인하고, 꺼도 되는지 애매하면
+  먼저 물어보세요. 강제 종료는 end_process 를 쓰고(앱이 승인을 받음), 평범하게 닫을 때는 close_app 을 쓰세요.
 
 # 화면 조작 (사이트·앱 안에서 이동)
 - "구글 클래스룸에서 경제 탭 들어가 줘"처럼 사이트나 앱 안의 탭·메뉴·버튼·링크를 눌러야 하면 직접 조작하세요.
@@ -157,6 +162,7 @@ class Brain:
         self.on_mode: Callable[[bool], None] = lambda on: None   # app 이 설정
         self.on_hud: Callable[[str], None] = lambda action: None  # app 이 설정 (small | big | hide | active_on | active_off)
         self.active_hud = False                                   # 액티브 모드(전체 화면 HUD) 켜짐 — app 이 맞춰 둠
+        self.hud_procs: list[dict] = []                           # 액티브 모드 화면의 무거운 프로그램 목록 (1번부터)
         # 음성 인식 후보 고르기용: 실제로 실행하지 않고 '알아들을 수 있는 명령인가'만 본다
         self._dry = LocalRouter(self._dry_execute, lambda: "주인님")
         self.chat_session: ClaudeSession | None = None           # Pro 계정: 계속 켜 두는 Claude Code
@@ -279,6 +285,10 @@ class Brain:
         if HUD_HIDE.fullmatch(c):
             self.on_hud("hide")
             return "트레이로 숨겠습니다. 부르시면 다시 나타날게요."
+        if self.active_hud:
+            n = parse_kill_index(c)
+            if n is not None:
+                return self._kill_listed(n)
         if ACTIVE_OFF.fullmatch(c):
             if not self.active_hud:
                 return "액티브 모드는 이미 꺼져 있어요."
@@ -290,6 +300,17 @@ class Brain:
             self.on_hud("active_on")
             return f"액티브 모드 가동합니다, {self.cfg['user_title'] or '주인님'}."
         return None
+
+    def _kill_listed(self, n: int) -> str:
+        """액티브 모드 화면의 무거운 프로그램 목록에서 n번을 강제 종료 (앱이 승인을 받음)."""
+        procs = list(self.hud_procs)
+        if n > len(procs):
+            return f"{n}번 항목이 없어요. 지금 목록에는 {len(procs)}개가 있습니다." if procs else "아직 프로그램 목록을 불러오는 중이에요."
+        row = procs[n - 1]
+        out, err = self.execute("end_process", {"name": row["exe"]})
+        if err:
+            return str(out) if "거부" not in str(out) else f"{row['name']}은(는) 그대로 두겠습니다."
+        return f"{row['name']}을(를) 종료했습니다."
 
     # ------------------------------------------------------------------ 음성 인식 후보 고르기
     def _dry_execute(self, name: str, args: dict) -> tuple[object, bool]:
@@ -310,7 +331,8 @@ class Brain:
             return False
         if CHAT_ON.fullmatch(c) or CHAT_OFF.fullmatch(c) or (len(c) <= 20 and (
                 HUD_SMALL.fullmatch(c) or HUD_BIG.fullmatch(c) or HUD_HIDE.fullmatch(c)
-                or ACTIVE_ON.fullmatch(c) or ACTIVE_OFF.fullmatch(c))):
+                or ACTIVE_ON.fullmatch(c) or ACTIVE_OFF.fullmatch(c)
+                or (self.active_hud and parse_kill_index(c) is not None))):
             return True
         try:
             return self._dry.try_handle(text, fallback=True) is not None

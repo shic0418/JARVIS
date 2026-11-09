@@ -248,6 +248,18 @@ class LocalRouter:
             out, err = self._run("set_timer", {"seconds": secs, "label": "타이머"})
             return out if err else f"{m.group(1).strip()} 타이머를 맞췄습니다."
 
+        # ---- 집중 타이머 (뽀모도로) ----
+        m = re.fullmatch(r"(?:뽀모도로|포모도로|뽀모|집중\s*타이머|집중\s*모드)\s*(?:(\d+)\s*분\s*)?"
+                         r"(?:으로\s*|로\s*)?(?:시작|시작해|켜|해|돌려|맞춰|가자)?", c)
+        if m:
+            mins = int(m.group(1) or 25)
+            out, err = self._run("set_timer", {"seconds": mins * 60, "label": "집중 시간 끝"})
+            return out if err else f"{mins}분 집중 타이머를 시작합니다. 끝나면 알려 드릴게요."
+        # ---- 타이머 취소 ----
+        if re.fullmatch(r"(?:타이머|알람|뽀모도로|집중\s*타이머)\s*(?:다\s*|전부\s*|모두\s*)?(?:취소|꺼|끄기|없애|지워|종료|그만)(?:해)?", c):
+            out, err = self._run("cancel_timer", {})
+            return str(out)
+
         if _COMPOUND.search(c):
             return None
 

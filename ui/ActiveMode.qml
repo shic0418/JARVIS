@@ -28,6 +28,10 @@ Window {
     readonly property var stateLabels: ({ boot: "INITIALIZING", standby: "STANDBY", listening: "LISTENING",
                                           thinking: "PROCESSING", speaking: "RESPONDING", offline: "MIC OFFLINE" })
     property var cpuHist: []
+    readonly property var timers: JSON.parse(jarvis.timersJson)     // 돌고 있는 타이머 (가까운 순)
+    readonly property var procs: JSON.parse(jarvis.procsJson)       // 무거운 프로그램 상위 5개
+    readonly property var weather: JSON.parse(jarvis.weatherJson)
+    readonly property var target: JSON.parse(jarvis.targetJson)     // 추적 박스: 지금 창 / 짚은 위치
     onStatsChanged: { const h = cpuHist.slice(-47); h.push(stats.cpu || 0); cpuHist = h }
 
     // 화면 크기에 맞춘 단위 (1600×900 기준 1)
@@ -57,6 +61,13 @@ Window {
     function c(a) { return Qt.rgba(accent.r, accent.g, accent.b, a) }
     function rc(a) { return Qt.rgba(red.r, red.g, red.b, a) }
     function pad(n) { return n < 10 ? "0" + n : "" + n }
+    function left(t) { return Math.max(0, (t.end - now.getTime()) / 1000) }
+    function hms(sec) {
+        sec = Math.ceil(sec)
+        const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), x = sec % 60
+        return (h ? h + ":" + pad(m) : pad(m)) + ":" + pad(x)
+    }
+    function mb(v) { return v >= 1024 ? (v / 1024).toFixed(1) + " GB" : Math.round(v) + " MB" }
     function rate(b) {
         if (b === undefined) return "-"
         if (b >= 1048576) return (b / 1048576).toFixed(1) + " MB/s"
@@ -148,27 +159,19 @@ Window {
         return addr + "  " + tag + (rnd(k * 5.3) * 99.9).toFixed(2) + (rnd(k * 0.7) > 0.85 ? "  ▲" : "  OK")
     }
 
-    // 표적 추적 박스 (화면 여기저기를 옮겨 다니며 '분석')
-    property real tgx: cx + 120 * u
-    property real tgy: cy - 80 * u
-    property int tgn: 0
-    Behavior on tgx { NumberAnimation { duration: 750; easing.type: Easing.InOutCubic } }
-    Behavior on tgy { NumberAnimation { duration: 750; easing.type: Easing.InOutCubic } }
-    Timer {
-        interval: 3300; running: ov.live && ov.p >= 1; repeat: true
-        onTriggered: {
-            ov.tgn++
-            ov.tgx = ov.width * (0.3 + 0.4 * Math.random())
-            ov.tgy = ov.height * (0.28 + 0.42 * Math.random())
-            lockAnim.restart()
-        }
+    // 추적 박스: 대상이 바뀔 때마다 넓게 벌어졌다가 조여 들며 '잠금'
+    property string lastTarget: ""
+    onTargetChanged: {
+        const id = target.id === undefined ? "" : String(target.id)
+        if (id !== "" && id !== lastTarget) lockAnim.restart()
+        lastTarget = id
     }
     property real lock: 1
     SequentialAnimation {
         id: lockAnim
         NumberAnimation { target: ov; property: "lock"; to: 0; duration: 10 }
-        PauseAnimation { duration: 650 }
-        NumberAnimation { target: ov; property: "lock"; to: 1; duration: 450; easing.type: Easing.OutBack }
+        PauseAnimation { duration: 380 }
+        NumberAnimation { target: ov; property: "lock"; to: 1; duration: 480; easing.type: Easing.OutBack }
     }
 
     // ---------------------------------------------------------------- 공용 조각
@@ -454,48 +457,81 @@ Window {
             }
         }
 
-        // ---- 표적 추적 박스 (빨강) ----
+        // ---- 추적 박스: 지금 쓰고 있는 창을 따라다니고, 자비스가 짚은 곳에는 빨갛게 잠금 ----
         Item {
             id: tg
-            visible: ov.p >= 1
-            readonly property real sz: (110 - 50 * ov.lock) * ov.u
-            x: ov.tgx - sz / 2; y: ov.tgy - sz / 2
-            width: sz; height: sz
+            readonly property bool has: ov.target.kind !== undefined && ov.p >= 1
+            readonly property bool pt: ov.target.kind === "point"
+            readonly property color col: pt ? ov.red : ov.accent
+            readonly property real mg: 6 * ov.u
+            readonly property real pad: (1 - ov.lock) * 36 * ov.u
+            readonly property real x0: has ? Math.max(mg, ov.target.x) : ov.cx - 40
+            readonly property real y0: has ? Math.max(mg, ov.target.y) : ov.cy - 40
+            readonly property real x1: has ? Math.min(ov.width - mg, ov.target.x + ov.target.w) : ov.cx + 40
+            readonly property real y1: has ? Math.min(ov.height - mg, ov.target.y + ov.target.h) : ov.cy + 40
+            x: x0 - pad; y: y0 - pad
+            width: Math.max(20, x1 - x0) + 2 * pad; height: Math.max(20, y1 - y0) + 2 * pad
+            Behavior on x { NumberAnimation { duration: 420; easing.type: Easing.OutCubic } }
+            Behavior on y { NumberAnimation { duration: 420; easing.type: Easing.OutCubic } }
+            Behavior on width { NumberAnimation { duration: 420; easing.type: Easing.OutCubic } }
+            Behavior on height { NumberAnimation { duration: 420; easing.type: Easing.OutCubic } }
+            opacity: has ? (pt ? 1 : 0.85) : 0
+            Behavior on opacity { NumberAnimation { duration: 300 } }
+            visible: opacity > 0.01
+
             Repeater {
                 model: 4
                 Shape {
                     id: tc
                     readonly property bool onRight: index % 2 === 1
                     readonly property bool onBottom: index >= 2
-                    readonly property real len: 12 * ov.u
+                    readonly property real len: Math.min((tg.pt ? 16 : 26) * ov.u, tg.width / 3, tg.height / 3)
                     width: len; height: len
                     x: onRight ? tg.width - len : 0
                     y: onBottom ? tg.height - len : 0
                     preferredRendererType: Shape.CurveRenderer
                     ShapePath {
-                        strokeColor: ov.red; strokeWidth: 2; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                        strokeColor: tg.col; strokeWidth: tg.pt ? 2.5 : 2; fillColor: "transparent"; capStyle: ShapePath.FlatCap
                         PathMove { x: tc.onRight ? 0 : tc.len; y: tc.onBottom ? tc.len : 0 }
                         PathLine { x: tc.onRight ? tc.len : 0; y: tc.onBottom ? tc.len : 0 }
                         PathLine { x: tc.onRight ? tc.len : 0; y: tc.onBottom ? 0 : tc.len }
                     }
                 }
             }
+            // 짚은 위치: 가운데 고리가 맥박치듯
             Rectangle {
+                visible: tg.pt
                 anchors.centerIn: parent
-                width: 10 * ov.u; height: width; rotation: 45
+                width: 18 * ov.u + 14 * ov.u * ov.pulse; height: width; radius: width / 2
                 color: "transparent"; border.color: ov.red; border.width: 1.5
-                opacity: ov.lock
+                opacity: 0.4 + 0.6 * ov.lock
             }
+            Rectangle {
+                visible: tg.pt
+                anchors.centerIn: parent
+                width: 8 * ov.u; height: width; rotation: 45
+                color: ov.red
+            }
+            // 이름표: 박스 위에 자리가 없으면 안쪽 위
             Column {
-                x: tg.width + 8 * ov.u; y: 0
+                readonly property bool inside: tg.y < 46 * ov.u
+                x: Math.min(inside ? 26 * ov.u : 0, Math.max(0, ov.width - tg.x - width - 10))
+                y: inside ? 24 * ov.u : -height - 6 * ov.u
                 spacing: 1
                 Text {
-                    text: ov.lock >= 1 ? "LOCKED" : "ANALYZING" + ".".repeat(1 + ov.tick % 3)
-                    color: ov.red; font.family: "Bahnschrift"; font.pixelSize: 10 * ov.u; font.letterSpacing: 2 * ov.u; font.weight: Font.DemiBold
+                    text: tg.pt ? (ov.lock >= 1 ? "LOCKED" : "ANALYZING" + ".".repeat(1 + ov.tick % 3))
+                                : "TRACKING  ·  " + (ov.target.app || "WINDOW").toUpperCase()
+                    color: tg.col; font.family: "Bahnschrift"; font.pixelSize: 10 * ov.u; font.letterSpacing: 2 * ov.u; font.weight: Font.DemiBold
                 }
                 Text {
-                    text: "OBJ-" + ov.pad(ov.tgn % 100) + "  ·  " + (2 + ov.rnd(ov.tgn) * 40).toFixed(1) + " m"
-                    color: ov.rc(0.75); font.family: "Bahnschrift"; font.pixelSize: 8 * ov.u; font.letterSpacing: 1.5 * ov.u
+                    width: Math.min(implicitWidth, 380 * ov.u); elide: Text.ElideRight
+                    text: ov.target.title || ""
+                    color: ov.hot; font.pixelSize: (tg.pt ? 14 : 11) * ov.u
+                }
+                Text {
+                    visible: !tg.pt && ov.target.cpu !== undefined && ov.target.cpu >= 0
+                    text: "CPU " + ov.target.cpu + "%   ·   MEM " + ov.mb(ov.target.mem || 0)
+                    color: ov.c(0.75); font.family: "Bahnschrift"; font.pixelSize: 9 * ov.u; font.letterSpacing: 1.5 * ov.u
                 }
             }
         }
@@ -610,6 +646,35 @@ Window {
                     }
                 }
             }
+            // 가장 가까운 타이머: 줄어드는 고리 + 남은 시간
+            Item {
+                id: tmr
+                readonly property var t0: ov.timers.length ? ov.timers[0] : null
+                readonly property real frac: t0 ? ov.left(t0) / Math.max(1, t0.total) : 0
+                visible: t0 !== null
+                anchors.fill: parent
+                Shape {
+                    anchors.fill: parent
+                    preferredRendererType: Shape.CurveRenderer
+                    ShapePath {
+                        strokeColor: ov.c(0.16); strokeWidth: 4 * ov.u; fillColor: "transparent"
+                        PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.4; radiusY: reticle.rr * 0.4; startAngle: 0; sweepAngle: 360 }
+                    }
+                    ShapePath {
+                        strokeColor: tmr.frac < 0.1 ? ov.red : ov.hot; strokeWidth: 4 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                        PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.4; radiusY: reticle.rr * 0.4
+                                       startAngle: -90; sweepAngle: 360 * Math.max(0.002, tmr.frac) }
+                    }
+                }
+                Text {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    y: reticle.rr + 15 * ov.u
+                    text: tmr.t0 ? ov.hms(ov.left(tmr.t0)) : ""
+                    color: tmr.frac < 0.1 ? ov.red : ov.hot
+                    font.family: "Bahnschrift"; font.pixelSize: 17 * ov.u; font.weight: Font.DemiBold
+                    style: Text.Outline; styleColor: Qt.rgba(0, 0.05, 0.1, 0.5)
+                }
+            }
             // 가운데 십자선
             Repeater {
                 model: 4
@@ -700,6 +765,12 @@ Window {
                 t: ov.lin(0.6, 0.92); seed: 5
                 color: ov.c(0.65)
                 font.pixelSize: 10 * ov.u
+            }
+            Text {
+                anchors.horizontalCenter: parent.horizontalCenter
+                visible: ov.timers.length > 0
+                text: ov.timers.length ? "⏱  " + ov.timers[0].label + (ov.timers.length > 1 ? "   +" + (ov.timers.length - 1) : "") : ""
+                color: ov.hot; font.pixelSize: 11 * ov.u
             }
         }
 
@@ -864,13 +935,18 @@ Window {
             }
         }
 
-        // ---- 왼쪽 가운데: 시스템 기록 ----
+        // ---- 왼쪽 가운데: 타이머 (없으면 시스템 기록) ----
         Fly {
             d: 0.4; tilt: 22
             x: 62 * ov.u; y: ov.height * 0.2 + 146 * ov.u
             width: 300 * ov.u; height: 150 * ov.u
-            HoloPanel { anchors.fill: parent; accent: ov.accent; fillAlpha: 0.1; cut: 12; title: "SYSTEM LOG"; tag: "STREAM " + ov.pad(ov.streamBase % 100) }
+            HoloPanel {
+                anchors.fill: parent; accent: ov.accent; fillAlpha: 0.1; cut: 12
+                title: ov.timers.length ? "TIMERS" : "SYSTEM LOG"
+                tag: ov.timers.length ? ov.timers.length + " ACTIVE" : "STREAM " + ov.pad(ov.streamBase % 100)
+            }
             Column {
+                visible: ov.timers.length === 0
                 x: 14 * ov.u; y: 30 * ov.u
                 spacing: 3 * ov.u
                 Repeater {
@@ -884,79 +960,134 @@ Window {
                     }
                 }
             }
+            Column {
+                visible: ov.timers.length > 0
+                x: 14 * ov.u; y: 32 * ov.u
+                width: parent.width - 28 * ov.u
+                spacing: 7 * ov.u
+                Repeater {
+                    model: ov.timers.slice(0, 4)
+                    Column {
+                        readonly property real rem: ov.left(modelData)
+                        readonly property real frac: rem / Math.max(1, modelData.total)
+                        width: parent.width
+                        spacing: 3 * ov.u
+                        Item {
+                            width: parent.width; height: 16 * ov.u
+                            Text { text: modelData.label; color: ov.hot; font.pixelSize: 12 * ov.u
+                                   width: parent.width - 80 * ov.u; elide: Text.ElideRight; anchors.verticalCenter: parent.verticalCenter }
+                            Text { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                                   text: ov.hms(parent.parent.rem); color: parent.parent.frac < 0.1 ? ov.red : ov.hot
+                                   font.family: "Bahnschrift"; font.pixelSize: 14 * ov.u }
+                        }
+                        Rectangle {
+                            width: parent.width; height: 3 * ov.u; color: ov.c(0.15)
+                            Rectangle { width: parent.width * parent.parent.frac; height: parent.height
+                                        color: parent.parent.frac < 0.1 ? ov.red : ov.accent }
+                        }
+                    }
+                }
+            }
         }
 
-        // ---- 왼쪽 아래: 레이더 ----
+        // ---- 왼쪽 아래: 날씨 ----
         Fly {
+            id: wx
             d: 0.46; tilt: 22
             x: 62 * ov.u; width: 300 * ov.u; height: 214 * ov.u
             y: ov.height * 0.8 - height
-            HoloPanel { anchors.fill: parent; accent: ov.accent; fillAlpha: 0.1; cut: 12; title: "PROXIMITY SCAN"; tag: "RANGE 2.4 KM" }
+            readonly property bool ready: ov.weather.temp !== undefined
+            HoloPanel {
+                anchors.fill: parent; accent: ov.accent; fillAlpha: 0.1; cut: 12
+                title: "ATMOSPHERICS"; tag: wx.ready ? String(ov.weather.loc).toUpperCase() : ""
+            }
+            Text {
+                visible: !wx.ready
+                anchors.centerIn: parent
+                text: ov.weather.error ? "WEATHER LINK OFFLINE" : "SCANNING ATMOSPHERE" + ".".repeat(1 + ov.tick % 3)
+                color: ov.weather.error ? ov.red : ov.c(0.75)
+                font.family: "Bahnschrift"; font.pixelSize: 11 * ov.u; font.letterSpacing: 2 * ov.u
+            }
+            // 기온 + 강수 확률 고리
             Item {
-                id: radar
-                readonly property real sz: 166 * ov.u
-                width: sz; height: sz
-                x: 14 * ov.u; y: 34 * ov.u
-                Repeater {
-                    model: 3
-                    Rectangle {
-                        width: radar.sz * (index + 1) / 3; height: width; radius: width / 2
-                        x: (radar.sz - width) / 2; y: (radar.sz - height) / 2
-                        color: "transparent"; border.color: ov.c(index === 2 ? 0.5 : 0.22); border.width: 1
-                    }
-                }
-                Rectangle { width: radar.sz; height: 1; y: radar.sz / 2; color: ov.c(0.2) }
-                Rectangle { width: 1; height: radar.sz; x: radar.sz / 2; color: ov.c(0.2) }
+                id: wring
+                visible: wx.ready
+                x: 14 * ov.u; y: 32 * ov.u
+                width: 96 * ov.u; height: width
                 Shape {
                     anchors.fill: parent
-                    rotation: ov.sweep
                     preferredRendererType: Shape.CurveRenderer
                     ShapePath {
-                        strokeColor: "transparent"
-                        fillGradient: ConicalGradient {
-                            centerX: radar.sz / 2; centerY: radar.sz / 2; angle: 0
-                            GradientStop { position: 0.0; color: ov.c(0.6) }
-                            GradientStop { position: 0.22; color: ov.c(0.0) }
-                            GradientStop { position: 1.0; color: ov.c(0.0) }
-                        }
-                        PathAngleArc { centerX: radar.sz / 2; centerY: radar.sz / 2; radiusX: radar.sz / 2; radiusY: radar.sz / 2; startAngle: 0; sweepAngle: 360 }
+                        strokeColor: ov.c(0.16); strokeWidth: 5 * ov.u; fillColor: "transparent"
+                        PathAngleArc { centerX: wring.width / 2; centerY: wring.width / 2; radiusX: 44 * ov.u; radiusY: 44 * ov.u; startAngle: 135; sweepAngle: 270 }
                     }
-                    Rectangle { x: radar.sz / 2; y: radar.sz / 2 - 0.75; width: radar.sz / 2; height: 1.5; color: ov.hot }
+                    ShapePath {
+                        strokeColor: ov.accent; strokeWidth: 5 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                        PathAngleArc { centerX: wring.width / 2; centerY: wring.width / 2; radiusX: 44 * ov.u; radiusY: 44 * ov.u
+                                       startAngle: 135; sweepAngle: 270 * Math.max(0.005, (ov.weather.rain || 0) / 100) * wx.e }
+                    }
                 }
-                Repeater {
-                    model: 6
-                    Rectangle {
-                        readonly property real a: ov.rnd(index + 40) * 360
-                        readonly property real dist: (0.25 + 0.7 * ov.rnd(index + 90)) * radar.sz / 2
-                        readonly property real since: ((ov.sweep - a) % 360 + 360) % 360
-                        width: 6 * ov.u; height: width; radius: width / 2
-                        x: radar.sz / 2 + Math.cos(a * Math.PI / 180) * dist - width / 2
-                        y: radar.sz / 2 + Math.sin(a * Math.PI / 180) * dist - height / 2
-                        color: index === 0 ? ov.red : ov.hot
-                        opacity: Math.max(0, 1 - since / 220)
-                    }
+                Text {
+                    anchors.centerIn: parent; anchors.verticalCenterOffset: -4 * ov.u
+                    text: (ov.weather.temp !== undefined ? ov.weather.temp : "-") + "°"
+                    color: ov.hot; font.family: "Bahnschrift"; font.pixelSize: 32 * ov.u; font.weight: Font.Light
+                }
+                Text {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    y: parent.height - 18 * ov.u
+                    text: "RAIN " + (ov.weather.rain || 0) + "%"
+                    color: ov.c(0.75); font.family: "Bahnschrift"; font.pixelSize: 8 * ov.u; font.letterSpacing: 1.5 * ov.u
                 }
             }
             Column {
-                x: 14 * ov.u + radar.sz + 14 * ov.u; y: 40 * ov.u
-                spacing: 8 * ov.u
+                visible: wx.ready
+                x: 124 * ov.u; y: 36 * ov.u
+                width: parent.width - 138 * ov.u
+                spacing: 4 * ov.u
+                Text { width: parent.width; elide: Text.ElideRight; text: ov.weather.desc || ""; color: ov.hot; font.pixelSize: 14 * ov.u }
+                Text { text: "체감 " + ov.weather.feels + "°   ·   습도 " + ov.weather.humidity + "%"; color: ov.c(0.85); font.pixelSize: 10 * ov.u }
+                Text { text: "바람 " + ov.weather.wind + " km/h"; color: ov.c(0.85); font.pixelSize: 10 * ov.u }
+                Text { text: "최고 " + ov.weather.max + "°  /  최저 " + ov.weather.min + "°"; color: ov.hot; font.pixelSize: 11 * ov.u }
+            }
+            // 오늘 3시간 간격 기온
+            Row {
+                id: hourly
+                visible: wx.ready
+                x: 14 * ov.u; y: 138 * ov.u
+                spacing: 6 * ov.u
+                readonly property var hs: ov.weather.hourly || []
+                readonly property real lo: Math.min.apply(null, hs.map(h => h.t).concat([99])) - 1
+                readonly property real hi: Math.max.apply(null, hs.map(h => h.t).concat([-99])) + 1
+                readonly property int nowSlot: Math.floor(ov.now.getHours() / 3)
                 Repeater {
-                    model: [["CONTACTS", "06"], ["FLAGGED", "01"], ["SWEEP", "3.2 s"], ["SIGNAL", (95 + ov.rnd(ov.slow) * 4.9).toFixed(1) + "%"]]
+                    model: hourly.hs
                     Column {
-                        spacing: 1
-                        Label { text: modelData[0]; font.pixelSize: 8 * ov.u }
-                        Text { text: modelData[1]; color: modelData[0] === "FLAGGED" ? ov.red : ov.hot
-                               font.family: "Bahnschrift"; font.pixelSize: 14 * ov.u }
+                        spacing: 2 * ov.u
+                        width: 28 * ov.u
+                        readonly property bool cur: index === hourly.nowSlot
+                        Text { anchors.horizontalCenter: parent.horizontalCenter; text: modelData.t + "°"
+                               color: parent.cur ? ov.hot : ov.c(0.7); font.family: "Bahnschrift"; font.pixelSize: 8 * ov.u }
+                        Item {
+                            width: parent.width; height: 24 * ov.u
+                            Rectangle {
+                                anchors.bottom: parent.bottom; anchors.horizontalCenter: parent.horizontalCenter
+                                width: 8 * ov.u
+                                height: Math.max(2, parent.height * (modelData.t - hourly.lo) / Math.max(1, hourly.hi - hourly.lo) * wx.e)
+                                color: parent.parent.cur ? ov.hot : ov.c(0.45 + 0.4 * modelData.rain / 100)
+                            }
+                        }
+                        Text { anchors.horizontalCenter: parent.horizontalCenter; text: ov.pad(modelData.h)
+                               color: parent.cur ? ov.hot : ov.c(0.5); font.family: "Bahnschrift"; font.pixelSize: 8 * ov.u }
                     }
                 }
             }
         }
 
-        // ---- 오른쪽 위: 경고 감시 (빨강) ----
+        // ---- 오른쪽 위: 무거운 프로그램 (빨강) — "1번 꺼줘" 로 종료 ----
         Fly {
             id: alertBox
             d: 0.36; tilt: -22
-            width: 300 * ov.u; height: 118 * ov.u
+            width: 300 * ov.u; height: 142 * ov.u
             x: ov.width - 62 * ov.u - width; y: ov.height * 0.2
             readonly property bool cpuHi: (ov.stats.cpu || 0) > 85
             readonly property bool ramHi: (ov.stats.ram || 0) > 88
@@ -974,33 +1105,59 @@ Window {
                     x: 10 * ov.u; anchors.verticalCenter: parent.verticalCenter
                     spacing: 8 * ov.u
                     Rectangle { width: 7 * ov.u; height: width; radius: width / 2; color: "#fff"; opacity: 0.4 + 0.6 * ov.pulse; anchors.verticalCenter: parent.verticalCenter }
-                    Text { text: "ALERT MONITOR"; color: "#fff"; font.family: "Bahnschrift"; font.pixelSize: 10 * ov.u; font.letterSpacing: 3 * ov.u; font.weight: Font.DemiBold }
+                    Text { text: "PROCESS MONITOR"; color: "#fff"; font.family: "Bahnschrift"; font.pixelSize: 10 * ov.u; font.letterSpacing: 3 * ov.u; font.weight: Font.DemiBold }
                 }
                 Text {
                     anchors.right: parent.right; anchors.rightMargin: 10 * ov.u; anchors.verticalCenter: parent.verticalCenter
-                    text: alertBox.alert ? "WARNING" : "CLEAR"
-                    color: "#fff"; font.family: "Bahnschrift"; font.pixelSize: 9 * ov.u; font.letterSpacing: 2 * ov.u
+                    text: alertBox.cpuHi ? "CPU " + Math.round(ov.stats.cpu) + "%" : alertBox.ramHi ? "MEM " + Math.round(ov.stats.ram) + "%"
+                          : alertBox.batLo ? "BATTERY LOW" : "CPU " + Math.round(ov.stats.cpu || 0) + "%  ·  MEM " + Math.round(ov.stats.ram || 0) + "%"
+                    color: "#fff"; font.family: "Bahnschrift"; font.pixelSize: 9 * ov.u; font.letterSpacing: 1.5 * ov.u
                 }
             }
+            Text {
+                visible: ov.procs.length === 0
+                anchors.centerIn: parent
+                text: "SCANNING PROCESSES" + ".".repeat(1 + ov.tick % 3)
+                color: ov.rc(0.85); font.family: "Bahnschrift"; font.pixelSize: 10 * ov.u; font.letterSpacing: 2 * ov.u
+            }
             Column {
-                x: 12 * ov.u; y: 28 * ov.u
-                width: parent.width - 24 * ov.u
-                spacing: 4 * ov.u
+                x: 10 * ov.u; y: 26 * ov.u
+                width: parent.width - 20 * ov.u
+                spacing: 2 * ov.u
                 Repeater {
-                    model: 4
+                    model: ov.procs
                     Item {
-                        readonly property var row: [
-                            ["PROCESSOR LOAD", Math.round(ov.stats.cpu || 0) + "%", alertBox.cpuHi],
-                            ["MEMORY PRESSURE", Math.round(ov.stats.ram || 0) + "%", alertBox.ramHi],
-                            ["POWER CELL", (ov.stats.bat === undefined || ov.stats.bat < 0) ? "AC LINE" : Math.round(ov.stats.bat) + "%", alertBox.batLo],
-                            ["NETWORK UPLINK", ov.rate(ov.stats.down), false]][index]
-                        width: parent.width; height: 16 * ov.u
-                        Text { text: ov.decode(row[0], ov.lin(0.5 + index * 0.05, 0.75 + index * 0.05), index + 20)
-                               color: row[2] ? ov.red : ov.rc(0.9); font.family: "Bahnschrift"; font.pixelSize: 10 * ov.u; font.letterSpacing: 1.5 * ov.u }
-                        Text { anchors.right: parent.right; text: row[1] + (row[2] ? "  ▲" : "")
-                               color: row[2] ? ov.red : ov.hot; font.family: "Bahnschrift"; font.pixelSize: 11 * ov.u }
+                        readonly property bool heavy: modelData.cpu >= 50 || modelData.mem >= 2048
+                        width: parent.width; height: 17 * ov.u
+                        Rectangle {
+                            width: 15 * ov.u; height: 13 * ov.u; anchors.verticalCenter: parent.verticalCenter
+                            color: parent.heavy ? ov.red : "transparent"; border.color: ov.rc(0.9); border.width: 1
+                            Text { anchors.centerIn: parent; text: index + 1; color: "#fff"; font.family: "Bahnschrift"; font.pixelSize: 9 * ov.u; font.weight: Font.DemiBold }
+                        }
+                        Text {
+                            x: 22 * ov.u; anchors.verticalCenter: parent.verticalCenter
+                            width: 120 * ov.u; elide: Text.ElideRight
+                            text: modelData.name + (modelData.count > 1 ? "  ×" + modelData.count : "")
+                            color: parent.heavy ? ov.red : ov.hot; font.pixelSize: 11 * ov.u
+                        }
+                        Text {
+                            x: 150 * ov.u; anchors.verticalCenter: parent.verticalCenter
+                            text: modelData.cpu.toFixed(1) + "%"
+                            color: modelData.cpu >= 50 ? ov.red : ov.rc(0.95); font.family: "Bahnschrift"; font.pixelSize: 10 * ov.u
+                        }
+                        Text {
+                            anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                            text: ov.mb(modelData.mem)
+                            color: modelData.mem >= 2048 ? ov.red : ov.hot; font.family: "Bahnschrift"; font.pixelSize: 10 * ov.u
+                        }
                     }
                 }
+            }
+            Text {
+                anchors.bottom: parent.bottom; anchors.bottomMargin: 5 * ov.u
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: "“1번 꺼줘” 라고 말하면 종료 (확인 후)"
+                color: ov.rc(0.8); font.pixelSize: 9 * ov.u
             }
         }
 
@@ -1008,7 +1165,7 @@ Window {
         Fly {
             d: 0.42; tilt: -22
             width: 300 * ov.u; height: 150 * ov.u
-            x: ov.width - 62 * ov.u - width; y: ov.height * 0.2 + 132 * ov.u
+            x: ov.width - 62 * ov.u - width; y: ov.height * 0.2 + 154 * ov.u
             HoloPanel { anchors.fill: parent; accent: ov.accent; fillAlpha: 0.1; cut: 12; title: "DIAGNOSTICS"; tag: "SUBSYSTEMS" }
             Row {
                 x: 16 * ov.u; y: 32 * ov.u
