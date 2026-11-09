@@ -39,6 +39,7 @@ MIN_SECONDS = 0.5            # 이보다 짧은 소리는 판별하지 않음
 ENROLL_MIN_SECONDS = 1.0     # 등록 문장은 최소 이만큼은 말해야 함
 ENROLL_CONSISTENCY = 0.40    # 등록 중 앞 녹음들과 이 정도는 닮아야 같은 사람으로 봄
 ABSORB_MARGIN = 0.15         # 세션 기준보다 이만큼 더 높게 일치할 때만 세션 기준을 보강
+OWNER_SLACK = 0.08           # 주인 전용: 같은 대화에서 확인된 목소리와 아주 비슷하면 기준보다 이만큼 낮아도 통과
 SHORT_WAKE_SECONDS = 1.2     # 이보다 짧은 "자비스" 한 마디는 주인 확인을 다음 명령으로 미룸
 # 기준값 근거 (실제 녹음 3명으로 측정): 등록 프로필 vs 1.5초 발화 → 0.40에서 오거부 2%·오수락 1%,
 # 발화 1개 vs 발화 1개(세션 잠금) → 0.40에서 오거부 0~7%·오수락 1~5%. 실제 마이크·소음 환경에서는 달라질 수 있다.
@@ -289,7 +290,17 @@ class SpeakerGate:
             if voice is None:
                 return Verdict(False, "owner", "short")
             s = self.profile.score(voice)
-            return Verdict(s >= th, "owner", "" if s >= th else "owner", s, th)
+            if s >= th:
+                if s >= th + ABSORB_MARGIN:
+                    self._absorb(voice)          # 이번 대화에서 확실히 주인이었던 목소리
+                return Verdict(True, "owner", "", s, th)
+            # 기준에 아슬아슬하게 못 미쳐도, 같은 대화에서 이미 확인된 주인 목소리와 아주 비슷하면 통과
+            # (기록: 주인 점수는 0.47~0.89 인데 대화 중 0.37·0.40 으로 거부되어 명령이 무시됨)
+            if self.session is not None and s >= th - OWNER_SLACK:
+                same = cosine(voice.emb, self.session)
+                if same >= th + ABSORB_MARGIN:
+                    return Verdict(True, "owner", "", s, th)
+            return Verdict(False, "owner", "owner", s, th)
         # ---- 세션 잠금 (주인 미등록) ----
         if voice is None:
             return Verdict(True, "session")       # 판별 불가 → 기존처럼 통과

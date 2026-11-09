@@ -131,6 +131,8 @@ class Listener:
         self.has_wake: Callable[[str], bool] = lambda t: True   # 텍스트에 호출어가 있는가
         self.wake_prefix = "자비스"
         self.last_engine = ""         # 마지막 발화를 인식한 엔진 (HUD 표시·로그용)
+        # Google 이 준 인식 후보들 중 하나를 고른다 (기본: 첫 번째). app 이 '알아들을 수 있는 명령'을 고르게 바꾼다
+        self.pick: Callable[[list[str]], str] = lambda alts: alts[0]
         self._google_down_until = 0.0
 
     # ---------- lifecycle ----------
@@ -273,8 +275,16 @@ class Listener:
     # ---------- STT ----------
     def _recognize(self, rec, sr, pcm: np.ndarray) -> str | None:
         try:
-            text = rec.recognize_google(sr.AudioData(pcm.tobytes(), RATE, 2), language=self.language)
-            return None if isinstance(text, (list, dict)) else text
+            res = rec.recognize_google(sr.AudioData(pcm.tobytes(), RATE, 2), language=self.language, show_all=True)
+            alts = [a["transcript"].strip() for a in (res.get("alternative", []) if isinstance(res, dict) else [])
+                    if isinstance(a, dict) and str(a.get("transcript", "")).strip()]
+            if not alts:
+                return None
+            try:
+                return self.pick(alts) or alts[0]
+            except Exception as e:
+                log.warning("인식 후보 고르기 실패: %s", e)
+                return alts[0]
         except sr.UnknownValueError:
             return None
         except sr.RequestError as e:

@@ -107,7 +107,36 @@ def find_site(name: str) -> tuple[str, str] | None:
     key = _squash(name)
     key = re.sub(r"(에|으로|로|에서)$", "", key)
     key = _SITE_TAIL.sub("", key) or key
-    return WEBSITES.get(key)
+    hit = WEBSITES.get(key)
+    if hit is None and len(key) >= 4 and re.search(r"[가-힣]", key):
+        # 발음·인식이 조금 틀린 이름 ('핀터레스', '나무이키') — 자모 단위로 아주 비슷할 때만
+        import difflib
+        jk = jamo(key)
+        best, score = None, 0.0
+        for k in WEBSITES:
+            if len(k) >= 4:
+                r = difflib.SequenceMatcher(None, jk, jamo(k)).ratio()
+                if r > score:
+                    best, score = k, r
+        hit = WEBSITES[best] if best and score >= 0.85 else None
+    return hit
+
+
+_CHO = "ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ"
+_JUNG = "ㅏㅐㅑㅒㅓㅔㅕㅖㅗㅘㅙㅚㅛㅜㅝㅞㅟㅠㅡㅢㅣ"
+_JONG = " ㄱㄲㄳㄴㄵㄶㄷㄹㄺㄻㄼㄽㄾㄿㅀㅁㅂㅄㅅㅆㅇㅈㅊㅋㅌㅍㅎ"
+
+
+def jamo(s: str) -> str:
+    """한글을 자모로 풀어 쓴다 ('위' → 'ㅇㅟ'). 발음이 조금 다른 말을 비교할 때 글자 단위보다 정확하다."""
+    out = []
+    for ch in s:
+        o = ord(ch) - 0xAC00
+        if 0 <= o < 11172:
+            out.append(_CHO[o // 588] + _JUNG[(o % 588) // 28] + _JONG[o % 28].strip())
+        else:
+            out.append(ch)
+    return "".join(out)
 
 
 def has_batchim(word: str) -> bool:

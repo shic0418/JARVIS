@@ -193,6 +193,7 @@ class Jarvis(QObject):
     sig_stream = Signal(int, str)      # (명령 번호, 답 조각) — 대화 모드에서 답이 만들어지는 대로
     sig_mode = Signal(bool)            # 자유 대화 모드 켜짐/꺼짐
     sig_notify = Signal(str)           # 백그라운드 작업(작업 감시 등)의 알림
+    sig_hud = Signal(str)              # 말로 HUD 보기 방식 바꾸기 (small | big | hide)
 
     def __init__(self, app: QApplication, args) -> None:
         super().__init__()
@@ -228,7 +229,7 @@ class Jarvis(QObject):
                           (self.sig_confirm_close, self._on_confirm_close), (self.sig_timer, self._on_timer_req),
                           (self.sig_hotkey, self.activate), (self.sig_voice, self._on_voice_status),
                           (self.sig_stream, self._on_stream), (self.sig_mode, self._on_mode),
-                          (self.sig_notify, self._on_notify)):
+                          (self.sig_notify, self._on_notify), (self.sig_hud, self._on_hud)):
             sig.connect(slot)
 
         # ---- 음성 출력 ----
@@ -253,6 +254,7 @@ class Jarvis(QObject):
         self.toolserver = ToolServer(self.brain.mcp_tools, lambda n, a: self.brain.execute(n, a))
         self.brain.tool_server = self.toolserver
         self.brain.on_mode = lambda on: self.sig_mode.emit(bool(on))
+        self.brain.on_hud = lambda action: self.sig_hud.emit(str(action))
         self._refresh_link()
         # 로컬 AI 모델을 미리 메모리에 올려 둠 (없으면 조용히 건너뜀)
         threading.Thread(target=self.brain.local_ai.warmup, daemon=True, name="local-ai-warmup").start()
@@ -290,6 +292,7 @@ class Jarvis(QObject):
         self.listener.local_stt = self.local_stt
         self.listener.wake_needed = self._wake_needed
         self.listener.has_wake = self._has_wake
+        self.listener.pick = self._pick_alt
         self._apply_stt_engine(start=not args.no_mic)
         # ---- 화자 인식 (누가 말했는지) ----
         self.voiceid = VoiceID(on_status=self.sig_voice.emit)
@@ -469,6 +472,10 @@ class Jarvis(QObject):
                 self._cancel_busy()
             return
         cmd = self._strip_wake(text)
+        if cmd is not None and was_active and not self._wake_at_start(text):
+            # 이미 대화 중에 문장 가운데 '자비스'가 나오면 호출이 아니라 말의 일부
+            # (기록: '아이언맨에 나오는 자비스를 만들 수 있을까' → '나오는  를'로 잘림)
+            cmd = None
         if cmd is not None:
             if not self._voice_ok(voice, wake=True, wake_only=not cmd):
                 return
@@ -529,6 +536,30 @@ class Jarvis(QObject):
         if st == "error":
             return f"오프라인 인식 준비 실패 — Google 로 인식합니다 ({self.local_stt.error})"
         return ""
+
+    def _wake_at_start(self, text: str) -> bool:
+        for w in (w for w in (self.cfg["wake_words"] or []) if w):
+            pat = r"\s*".join(re.escape(ch) for ch in w.replace(" ", ""))
+            m = re.search(pat, text, re.I)
+            if m and m.start() <= 3:
+                return True
+        return False
+
+    def _pick_alt(self, alts: list[str]) -> str:
+        """(인식 스레드) Google 이 준 후보 중 자비스가 알아들을 수 있는 명령을 고른다.
+        발음이 뭉개지면 첫 후보는 '대모 켜 줘', 다음 후보가 '대화 모드 켜 줘'인 경우가 있다."""
+        if len(alts) == 1:
+            return alts[0]
+        cands = alts
+        if self.listener.wake_needed():
+            cands = [a for a in alts if self._has_wake(a)] or alts
+        for a in cands[:5]:
+            cmd = self._strip_wake(a)
+            if self.brain.recognizes(cmd if cmd else a):
+                if a != alts[0]:
+                    log.info("인식 후보 %r 대신 %r 사용 (후보 %d개)", alts[0], a, len(alts))
+                return a
+        return alts[0]
 
     def _strip_wake(self, text: str) -> str | None:
         words = sorted((w for w in (self.cfg["wake_words"] or []) if w), key=len, reverse=True)
@@ -624,7 +655,15 @@ class Jarvis(QObject):
     # ================================================================== 말하기
     def say(self, text: str, follow_up: bool = True) -> None:
         self._follow_up = follow_up
-        self.tts.say(text)
+        sentences, rest = split_sentences(text, final=True)
+        if len(sentences) <= 1:
+            self.tts.say(text)
+            return
+        # 한 번에 길게 합성하면 느리고, 네트워크가 불안하면 뒷부분이 잘린 소리가 올 수 있다
+        self.tts.stream_begin()
+        for s in sentences:
+            self.tts.stream_feed(s)
+        self.tts.stream_end()
 
     @Slot()
     def _on_speak_start(self) -> None:
@@ -718,6 +757,17 @@ class Jarvis(QObject):
             self.act_chat.setChecked(on)
         if not on and self.bridge._state == "listening" and not self.busy:
             self.active_until = min(self.active_until, time.monotonic() + float(self.cfg["follow_up_seconds"] or 7))
+
+    @Slot(str)
+    def _on_hud(self, action: str) -> None:
+        if action == "small":
+            self.set_compact(True)
+        elif action == "big":
+            if not self.win.isVisible():
+                self.toggle_visible(True)
+            self.set_compact(False)
+        elif action == "hide":
+            QTimer.singleShot(2500, lambda: self.toggle_visible(False))   # 대답을 들려준 뒤 숨김
 
     @Slot(str)
     def _on_notify(self, msg: str) -> None:

@@ -392,26 +392,45 @@ Window {
                             elide: Text.ElideRight
                         }
                     }
+                    // 긴 답도 잘리지 않게: 칸을 넘으면 스크롤 (타이핑 중에는 마지막 줄을 따라감, 휠로 위로 올려 볼 수 있음)
                     Item {
-                        width: parent.width; height: Math.max(replyTxt.height, 14)
+                        width: parent.width
+                        height: Math.max(30, talk.height - 22 - (jarvis.userText !== "" ? userTxt.height + 8 : 0))
                         Text {
                             y: 2
                             text: "JARVIS"
                             color: win.accent
                             font.family: "Bahnschrift"; font.pixelSize: 8; font.letterSpacing: 1.6; font.weight: Font.DemiBold
                         }
-                        Rectangle { x: 42; width: 2; height: parent.height; color: win.c(0.45) }
-                        Text {
-                            id: replyTxt
-                            x: 50; width: parent.width - 50
-                            text: jarvis.replyText !== "" ? jarvis.replyText.substring(0, talk.shown) + (typer.running ? "▌" : "")
-                                                          : "말을 걸거나 아래 입력창에 명령을 입력하세요."
-                            color: jarvis.replyText !== "" ? "#d7fbff" : Qt.rgba(0.8, 0.95, 1, 0.4)
-                            font.pixelSize: 13
-                            lineHeight: 1.15
-                            wrapMode: Text.WordWrap
-                            maximumLineCount: jarvis.userText !== "" ? 3 : 5
-                            elide: Text.ElideRight
+                        Rectangle { x: 42; width: 2; height: Math.min(parent.height, Math.max(replyTxt.height, 14)); color: win.c(0.45) }
+                        Flickable {
+                            id: replyFlick
+                            x: 50; width: parent.width - 56; height: parent.height
+                            clip: true
+                            contentWidth: width; contentHeight: replyTxt.height
+                            boundsBehavior: Flickable.StopAtBounds
+                            interactive: contentHeight > height
+                            Text {
+                                id: replyTxt
+                                width: replyFlick.width
+                                text: jarvis.replyText !== "" ? jarvis.replyText.substring(0, talk.shown) + (typer.running ? "▌" : "")
+                                                              : "말을 걸거나 아래 입력창에 명령을 입력하세요."
+                                color: jarvis.replyText !== "" ? "#d7fbff" : Qt.rgba(0.8, 0.95, 1, 0.4)
+                                font.pixelSize: 13
+                                lineHeight: 1.15
+                                wrapMode: Text.WordWrap
+                                onHeightChanged: {
+                                    if (talk.shown === 0) replyFlick.contentY = 0
+                                    else if (typer.running) replyFlick.contentY = Math.max(0, height - replyFlick.height)
+                                }
+                            }
+                        }
+                        Rectangle {   // 스크롤 위치 표시
+                            visible: replyFlick.contentHeight > replyFlick.height + 1
+                            x: parent.width - 3; width: 2; radius: 1
+                            height: Math.max(10, replyFlick.height * replyFlick.height / Math.max(1, replyFlick.contentHeight))
+                            y: (replyFlick.height - height) * (replyFlick.contentY / Math.max(1, replyFlick.contentHeight - replyFlick.height))
+                            color: win.c(0.6)
                         }
                     }
                 }

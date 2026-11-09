@@ -39,6 +39,9 @@ SYSTEM_TEMPLATE = """당신은 J.A.R.V.I.S.(자비스), {title}의 Windows PC에
 - 마크다운, 목록, 이모지, URL, 코드 블록, 괄호 속 부연을 쓰지 마세요. 숫자와 단위는 소리 내어 읽기 쉽게 쓰세요.
 - 사용자를 '{title}'이라고 부르되 매번 부르지는 마세요. 침착하고 유능하며 가끔 은근한 위트가 있는 집사 같은 말투를 쓰세요.
 - 입력은 음성 인식 결과라 오타나 띄어쓰기 오류가 있을 수 있습니다. 가장 그럴듯한 의도로 해석하고, 정말 모호할 때만 짧게 되물으세요.
+  사용자는 발음이 뭉개지기 쉬워 비슷한 소리로 잘못 적힐 수 있습니다(예: '대화 모드' → '대모', '태화 모드'). 소리가 비슷한 자비스 기능을 먼저 떠올리세요.
+- 무슨 말인지 확실하지 않을 때는 PowerShell 실행, 시스템 설정 변경, 전원 제어처럼 되돌리기 어렵거나 승인이 필요한 행동을
+  추측으로 하지 마세요. "혹시 OO 말씀이세요?"처럼 짧게 되물으세요.
 - 지연에 민감한 음성 대화입니다. 망설이지 말고 바로 행동하고 답하세요.
 
 # 행동
@@ -100,15 +103,25 @@ CHAT_TEMPLATE = """당신은 J.A.R.V.I.S.(자비스), {title}의 PC에 사는 AI
 # 기억하고 있는 사실
 {memory}"""
 
+# 발음이 뭉개져 '대모', '태화 모드', '데화 모드'로 적히는 경우 (기록: '대모 켜 줘', '태화 모드 켜 줘' → Claude 가 다크 모드로 오해)
+_MODE = r"(?:자유\s*)?(?:대화\s*모드|[대태데때][화와하]?\s*모[드두]?)"
 CHAT_ON = re.compile(
     r"(?:자유\s*)?대화\s*모드(?:\s*(?:로|으로))?(?:\s*(?:켜|시작|시작해|전환|전환해|들어가|해|가자|on))?"
+    r"|" + _MODE + r"(?:\s*(?:로|으로))?\s*(?:켜|시작|시작해|전환|전환해|들어가|가자|on)"
     r"|(?:우리\s*|나랑\s*|그냥\s*|잠깐\s*|심심한데\s*)*(?:얘기|이야기|대화|수다)\s*(?:좀\s*)?"
     r"(?:하자|할래|해|떨자|나누자|하고\s*싶어|할까|해\s*볼까)", re.I)
 CHAT_OFF = re.compile(
     r"(?:자유\s*)?대화\s*모드\s*(?:꺼|끄|끝|끝내|종료|종료해|그만|나가|off)"
+    r"|" + _MODE + r"\s*(?:꺼|끄|끝|끝내|종료|종료해|그만|나가|off)"
     r"|대화\s*(?:끝|끝내|종료|그만)(?:\s*(?:하자|할게|해|낼게))?"
     r"|(?:이제\s*)?그만\s*(?:얘기|이야기|대화)?\s*하자|잘\s*자|잘\s*있어|바이\s*바이"
     r"|다음에\s*(?:또\s*)?(?:얘기|이야기)\s*(?:하자|해)", re.I)
+# 자비스 HUD 자체의 보기 방식 (기록: '작게 보기 모드' → Claude 창을 줄여 버림)
+HUD_SMALL = re.compile(r"(?:자비스\s*|홀로그램\s*)?(?:작게|축소|미니)\s*(?:보기|모드)(?:\s*(?:보기|모드))?"
+                       r"(?:\s*(?:로|으로))?(?:\s*(?:해|바꿔|전환|켜))?")
+HUD_BIG = re.compile(r"(?:자비스\s*|홀로그램\s*)?(?:크게|전체|확대)\s*(?:보기|모드)(?:\s*(?:보기|모드))?"
+                     r"(?:\s*(?:로|으로))?(?:\s*(?:해|바꿔|전환|켜))?")
+HUD_HIDE = re.compile(r"(?:자비스\s*|홀로그램\s*|hud\s*)?(?:숨겨|숨기기|사라져|트레이로\s*(?:가|숨겨))", re.I)
 
 
 class Brain:
@@ -138,6 +151,9 @@ class Brain:
         # ---- 자유 대화 모드 ----
         self.chat_mode = False
         self.on_mode: Callable[[bool], None] = lambda on: None   # app 이 설정
+        self.on_hud: Callable[[str], None] = lambda action: None  # app 이 설정 (small | big | hide)
+        # 음성 인식 후보 고르기용: 실제로 실행하지 않고 '알아들을 수 있는 명령인가'만 본다
+        self._dry = LocalRouter(self._dry_execute, lambda: "주인님")
         self.chat_session: ClaudeSession | None = None           # Pro 계정: 계속 켜 두는 Claude Code
         self.chat_history: list[dict] = []                       # API 키 방식 대화 기록
         self.chat_system = ""
@@ -206,6 +222,9 @@ class Brain:
         switched = self._mode_switch(text)
         if switched:
             return "mode", switched
+        hud = self._hud_command(text)
+        if hud:
+            return "local", hud
         self.local.chat = self.chat_mode
         if (mode == "local" or self.cfg["local_first"]) and (self.chat_mode or not self._awaiting_answer()):
             reply = self.local.try_handle(text, fallback=(mode != "local"))
@@ -230,13 +249,57 @@ class Brain:
     def _mode_switch(self, text: str) -> str | None:
         c = normalize(text)
         title = self.cfg["user_title"] or "주인님"
-        if not self.chat_mode and CHAT_ON.fullmatch(c):
+        if CHAT_ON.fullmatch(c):
+            if self.chat_mode:
+                return "이미 대화 모드예요. 편하게 말씀하세요."
             self.set_chat(True)
             return f"좋아요, {title}. 이제 자비스라고 부르지 않으셔도 바로 들을게요. 끝내실 땐 대화 끝이라고 해 주세요."
-        if self.chat_mode and CHAT_OFF.fullmatch(c):
+        if CHAT_OFF.fullmatch(c):
+            if not self.chat_mode:
+                return "대화 모드는 이미 꺼져 있어요."
             self.set_chat(False)
             return "즐거웠어요. 필요하시면 언제든 불러 주세요."
         return None
+
+    def _hud_command(self, text: str) -> str | None:
+        c = normalize(text)
+        if len(c) > 20:
+            return None
+        if HUD_SMALL.fullmatch(c):
+            self.on_hud("small")
+            return "작게 보기로 바꿨습니다."
+        if HUD_BIG.fullmatch(c):
+            self.on_hud("big")
+            return "크게 보기로 바꿨습니다."
+        if HUD_HIDE.fullmatch(c):
+            self.on_hud("hide")
+            return "트레이로 숨겠습니다. 부르시면 다시 나타날게요."
+        return None
+
+    # ------------------------------------------------------------------ 음성 인식 후보 고르기
+    def _dry_execute(self, name: str, args: dict) -> tuple[object, bool]:
+        """실제로 실행하지 않는 도구 실행기. 앱·창 이름은 정말 있는지 확인한다 ('대모 켜' 같은 엉뚱한 앱 이름 거르기)."""
+        if name == "open_app":
+            ok = self.tools._find_app(str(args.get("name", "")), 60) is not None
+            return ("ok", False) if ok else ("없음", True)
+        if name == "close_app":
+            return ("ok", False) if self.tools._match_windows(str(args.get("name", ""))) else ("없음", True)
+        if name in ("find_files", "open_path"):
+            return ("없음", True)
+        return ("ok", False)
+
+    def recognizes(self, text: str) -> bool:
+        """이 말을 자비스가 바로 처리할 수 있는 명령으로 알아듣는가 (실행하지 않음)."""
+        c = normalize(text)
+        if not c:
+            return False
+        if CHAT_ON.fullmatch(c) or CHAT_OFF.fullmatch(c) or (len(c) <= 20 and (
+                HUD_SMALL.fullmatch(c) or HUD_BIG.fullmatch(c) or HUD_HIDE.fullmatch(c))):
+            return True
+        try:
+            return self._dry.try_handle(text, fallback=True) is not None
+        except Exception:
+            return False
 
     def set_chat(self, on: bool) -> None:
         if on == self.chat_mode:
