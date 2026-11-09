@@ -30,6 +30,7 @@ INTENTS = [
     "youtube", "search_google", "search_naver", "open_folder",
     "weather", "timer", "time", "date", "system_status",
     "show_desktop", "lock_screen", "screenshot",
+    "brightness_up", "brightness_down", "brightness_set",
     "claude",
 ]
 
@@ -56,6 +57,7 @@ weather: 오늘 현재 날씨 (target=지역, 없으면 "")
 timer: 타이머·알림 (target=시간, 예 "5분", "1시간 30분")
 time / date: 지금 몇 시 / 오늘 날짜     system_status: 컴퓨터 상태·CPU·메모리
 show_desktop / lock_screen / screenshot: 바탕화면 보기 / 화면 잠금 / 스크린샷
+brightness_up / brightness_down: 화면(모니터) 밝기 올리기 / 낮추기   brightness_set: 화면 밝기를 숫자로 (number=0~100)
 claude: 위에 정확히 맞지 않는 모든 것. 잡담, 질문, 지식, 설명, 글쓰기, 계산, 내일 날씨,
         여러 동작이 섞인 명령, 컴퓨터 종료·재시작, 파일 작업, 애매한 말은 전부 claude.
 확실하지 않으면 claude 를 고른다."""
@@ -72,6 +74,8 @@ FEWSHOT = [
     ("열린 거 다 내려 봐", {"intent": "show_desktop", "target": "", "number": 0}),
     ("김치찌개 끓이는 법 알아봐", {"intent": "search_google", "target": "김치찌개 끓이는 법", "number": 0}),
     ("사진 모아둔 데 열어", {"intent": "open_folder", "target": "사진", "number": 0}),
+    ("눈이 부셔 화면 좀", {"intent": "brightness_down", "target": "", "number": 0}),
+    ("모니터가 너무 어둡네", {"intent": "brightness_up", "target": "", "number": 0}),
     ("양자역학이 뭐야", {"intent": "claude", "target": "", "number": 0}),
     ("나 오늘 좀 우울해", {"intent": "claude", "target": "", "number": 0}),
     ("메모장 열고 일기 써 줘", {"intent": "claude", "target": "", "number": 0}),
@@ -199,6 +203,7 @@ def to_command(out: dict, text: str) -> str | None:
         "pause": "일시정지", "resume": "다시 재생", "time": "몇 시야", "date": "오늘 며칠이야",
         "system_status": "컴퓨터 상태 어때", "show_desktop": "바탕화면 보여",
         "lock_screen": "화면 잠가", "screenshot": "스크린샷 찍어",
+        "brightness_up": "화면 밝기 올려", "brightness_down": "화면 밝기 낮춰",
     }
     # 작은 모델은 '키워/줄여' 방향을 자주 헷갈린다. 모델은 '볼륨 얘기'라는 것만 판단하고,
     # 방향은 말 속 단서로 정한다. 숫자를 말하지 않았는데 volume_set 을 고른 경우도 여기서 처리.
@@ -208,6 +213,10 @@ def to_command(out: dict, text: str) -> str | None:
         return "볼륨 올려" if up and not down else "볼륨 내려" if down and not up else None
     if intent in fixed:
         return fixed[intent]
+    if intent == "brightness_set":
+        if not 0 <= number <= 100 or not (str(number) in text or _half(text, number)):
+            return None
+        return f"화면 밝기 {number}"
     if intent == "volume_set":
         if not 0 <= number <= 100 or not (str(number) in text or _half(text, number)):
             return None

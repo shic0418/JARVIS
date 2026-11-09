@@ -10,3 +10,4 @@ psutil>=5.9
 numpy>=1.26
 pywin32>=306
 sherpa-onnx>=1.12
+comtypes>=1.4

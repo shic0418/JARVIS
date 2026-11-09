@@ -142,6 +142,19 @@ class LocalRouter:
         if re.fullmatch(r"(?:볼륨|소리|음량)\s*(?:이|은|는)?\s*(?:몇|얼마)(?:야|이야|니|지|예요)?", c):
             return self._volume_speech(*self._run("volume", {"action": "get"}))
 
+        # ---- 화면 밝기 ----
+        m = re.fullmatch(r"(?:화면|모니터)?\s*밝기\s*(?:를|을)?\s*(\d{1,3})\s*(?:퍼센트|%)?\s*(?:으로|로)?\s*(?:맞춰|해|설정|조절)?", c)
+        if m:
+            return self._bright_speech(*self._run("brightness", {"action": "set", "level": int(m.group(1))}))
+        m = re.fullmatch(r"(?:(?:화면|모니터)\s*(?:밝기)?|밝기)\s*(?:를|을|가)?\s*(?:좀\s*)?(?:더\s*)?(많이\s*)?(?:좀\s*)?"
+                         r"(올려|높여|밝게|키워|낮춰|내려|줄여|어둡게)", c)
+        if m:
+            up = m.group(2) in ("올려", "높여", "밝게", "키워")
+            return self._bright_speech(*self._run("brightness", {"action": "up" if up else "down",
+                                                                 "level": 30 if m.group(1) else 20}))
+        if re.fullmatch(r"(?:화면|모니터)?\s*밝기\s*(?:가|는)?\s*(?:몇|얼마)(?:야|이야|니|지|예요)?", c):
+            return self._bright_speech(*self._run("brightness", {"action": "get"}))
+
         # ---- 미디어 ----
         if re.fullmatch(r"(다음\s*(?:곡|노래|트랙|영상)(?:으로)?|넘겨|스킵|skip)", lc):
             self._run("media_control", {"action": "next"})
@@ -238,6 +251,16 @@ class LocalRouter:
         if m:
             return f"현재 볼륨은 {m.group(1)}퍼센트입니다." + (" 음소거 상태입니다." if "음소거" in out else "")
         return out.replace("%", "퍼센트")
+
+    @staticmethod
+    def _bright_speech(out: str, err: bool = False) -> str:
+        if err:
+            return out
+        m = re.search(r"→\s*(\d+)%", out)
+        if m:
+            return f"화면 밝기를 {m.group(1)}퍼센트로 맞췄습니다."
+        m = re.search(r"현재 밝기 (\d+)%", out)
+        return f"현재 화면 밝기는 {m.group(1)}퍼센트입니다." if m else out.replace("%", "퍼센트")
 
     @staticmethod
     def _status_speech(out: str) -> str:

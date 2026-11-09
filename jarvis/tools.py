@@ -21,7 +21,7 @@ from typing import Callable
 
 import psutil
 
-from . import winutil
+from . import uia, winutil
 from .config import Config, load_memory, save_memory
 
 log = logging.getLogger("jarvis.tools")
@@ -83,6 +83,8 @@ class PCTools:
         self.focus = focus
         self.hooks = hooks
         self._apps: list[tuple[str, str]] = []
+        self.screen = uia.Screen()          # 화면 조작: 마지막으로 읽은 요소 목록
+        self._shot_scale = 1.0              # look_at_screen 이미지 → 실제 화면 좌표 배율
         threading.Thread(target=self._index_apps, daemon=True, name="app-index").start()
 
     # ------------------------------------------------------------------ 앱 인덱스
@@ -157,6 +159,25 @@ class PCTools:
             tool("press_keys", "Press a keyboard shortcut in the user's active window, e.g. 'ctrl+s', 'alt+tab', 'win+shift+s', 'f5', 'enter'.",
                  {"keys": s, "times": {"type": "integer"}}, ["keys"]),
             tool("look_at_screen", "Capture the user's primary screen and look at it. Use when the user asks about what is on screen or you need to see it to help."),
+            tool("read_ui", "List clickable elements (buttons, links, tabs, menu items, input boxes) inside a window, numbered. "
+                 "Works inside web pages in Chrome/Edge (e.g. Google Classroom tabs) and in normal apps. "
+                 "Use this before click_ui to navigate inside a site or app. Defaults to the user's active window.",
+                 {"app": {"type": "string", "description": "optional app name or window title; default = active window"},
+                  "query": {"type": "string", "description": "optional text to filter elements by name"}}),
+            tool("click_ui", "Click an element from the last read_ui list, by number or by (partial) name. "
+                 "After clicking, call read_ui again (or look_at_screen) to confirm the page changed before the next step. "
+                 "To type into an input box: click it, then use type_text.",
+                 {"number": {"type": "integer"}, "name": s, "double": {"type": "boolean"}}),
+            tool("click_screen", "Click a point on the screen using pixel coordinates of the LAST look_at_screen image. "
+                 "Fallback when read_ui cannot find the element (games, canvas, images).",
+                 {"x": {"type": "integer"}, "y": {"type": "integer"}, "double": {"type": "boolean"},
+                  "right": {"type": "boolean"}}, ["x", "y"]),
+            tool("scroll", "Scroll the active window (or the app given) up or down.",
+                 {"direction": {"type": "string", "enum": ["up", "down"]},
+                  "amount": {"type": "integer", "description": "wheel notches, default 5"}, "app": s}, ["direction"]),
+            tool("brightness", "Get or change the display brightness (laptop screens; external monitors may not support it).",
+                 {"action": {"type": "string", "enum": ["get", "set", "up", "down"]},
+                  "level": {"type": "integer", "description": "0-100 for set; step for up/down (default 20)"}}, ["action"]),
             tool("save_screenshot", "Save a screenshot of the screen to the Pictures\\Jarvis folder."),
             tool("system_status", "Get CPU, memory, disk, battery, network and top processes."),
             tool("open_folder", "Open a folder in File Explorer. Accepts known names (바탕화면, 문서, 다운로드, 사진, 음악, 동영상, 홈) or an absolute path.",
@@ -195,6 +216,11 @@ class PCTools:
             "type_text": lambda: f"입력 · {a.get('text', '')[:30]}",
             "press_keys": lambda: f"단축키 · {a.get('keys')}",
             "look_at_screen": lambda: "화면 분석",
+            "read_ui": lambda: f"화면 읽기 · {a.get('app') or '활성 창'}" + (f" ({a['query']})" if a.get("query") else ""),
+            "click_ui": lambda: f"클릭 · {a.get('name') or '#' + str(a.get('number'))}",
+            "click_screen": lambda: f"화면 클릭 · ({a.get('x')}, {a.get('y')})",
+            "scroll": lambda: f"스크롤 · {a.get('direction')}",
+            "brightness": lambda: f"밝기 · {a.get('action')} {a.get('level', '')}".strip(),
             "save_screenshot": lambda: "스크린샷 저장",
             "system_status": lambda: "시스템 진단",
             "open_folder": lambda: f"폴더 열기 · {a.get('target')}",
@@ -417,7 +443,9 @@ class PCTools:
 
     def t_look_at_screen(self):
         img = self._grab().convert("RGB")
+        full_w = img.width
         img.thumbnail((1568, 1568))
+        self._shot_scale = full_w / img.width
         buf = io.BytesIO()
         img.save(buf, "JPEG", quality=72)
         data = base64.standard_b64encode(buf.getvalue()).decode()
@@ -425,6 +453,85 @@ class PCTools:
             {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": data}},
             {"type": "text", "text": f"사용자 화면 캡처 ({img.width}x{img.height}). 활성 창: {self.focus.last_title}"},
         ]
+
+    # --- 화면 조작 ---
+    def _target_window(self, app: str | None) -> int:
+        if app:
+            hits = self._match_windows(app)
+            if not hits:
+                raise ToolError(f"'{app}' 창이 열려 있지 않습니다.")
+            return hits[0]["hwnd"]
+        hwnd = self.focus.last_external
+        if not hwnd or not winutil.user32.IsWindow(hwnd):
+            raise ToolError("조작할 창이 없습니다. 먼저 앱이나 사이트를 여세요.")
+        return hwnd
+
+    def t_read_ui(self, app: str | None = None, query: str | None = None) -> str:
+        hwnd = self._target_window(app)
+        try:
+            return self.screen.read(hwnd, query or "")
+        except OSError as e:
+            raise ToolError(f"창 내용을 읽지 못했습니다: {e}")
+
+    def t_click_ui(self, number: int | None = None, name: str | None = None, double: bool = False) -> str:
+        if not number and not name:
+            raise ToolError("number 나 name 중 하나가 필요합니다.")
+        it = self.screen.find(number, name or "")
+        if it is None and name and self.screen.hwnd:
+            # 목록이 오래됐을 수 있으니 같은 창을 다시 읽고 이름으로 한 번 더 찾는다
+            self.screen.read(self.screen.hwnd)
+            it = self.screen.find(None, name)
+        if it is None:
+            raise ToolError("그 요소를 찾지 못했습니다. read_ui 로 목록을 다시 확인하세요.")
+        if uia.is_risky(it.name):
+            self._confirm("화면 클릭", f"'{it.name}' {it.kind} 을(를) 누릅니다.\n창: {self.screen.title}")
+        try:
+            out = self.screen.click(it, double=bool(double))
+        except Exception as e:   # 페이지가 바뀌어 요소가 사라진 경우 등
+            raise ToolError(f"누르지 못했습니다 ({e}). read_ui 로 다시 확인하세요.")
+        time.sleep(0.6)          # 페이지·창이 반응할 시간
+        return out + f" · 창: {winutil.window_title(self.screen.hwnd) or self.screen.title}"
+
+    def t_click_screen(self, x: int, y: int, double: bool = False, right: bool = False) -> str:
+        sx, sy = int(x * self._shot_scale), int(y * self._shot_scale)
+        uia.click_at(sx, sy, double=bool(double), right=bool(right))
+        time.sleep(0.5)
+        return f"({sx}, {sy}) 클릭함"
+
+    def t_scroll(self, direction: str, amount: int = 5, app: str | None = None) -> str:
+        if direction not in ("up", "down"):
+            raise ToolError("direction 은 up 또는 down")
+        hwnd = self._target_window(app)
+        uia.scroll(hwnd, direction, amount or 5)
+        time.sleep(0.3)
+        return f"{'위' if direction == 'up' else '아래'}로 스크롤함"
+
+    _NO_BRIGHT = "이 화면은 밝기 조절을 지원하지 않습니다. 외장 모니터는 모니터 버튼으로 조절해 주세요."
+
+    def _ps(self, cmd: str) -> str:
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", cmd], capture_output=True,
+                           timeout=10, creationflags=NO_WINDOW)
+        if r.returncode != 0:
+            raise ToolError(self._NO_BRIGHT)
+        return r.stdout.decode("utf-8", "replace").strip()
+
+    def t_brightness(self, action: str, level: int | None = None) -> str:
+        cur_s = self._ps("(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightness -ErrorAction Stop "
+                         "| Select-Object -First 1).CurrentBrightness")
+        try:
+            cur = int(cur_s)
+        except ValueError:
+            raise ToolError(self._NO_BRIGHT)
+        if action == "get":
+            return f"현재 밝기 {cur}%"
+        step = int(level or 20)
+        new = {"set": int(level if level is not None else cur), "up": cur + step, "down": cur - step}.get(action)
+        if new is None:
+            raise ToolError("지원하지 않는 동작")
+        new = max(0, min(100, new))
+        self._ps("Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods -ErrorAction Stop | "
+                 f"Invoke-CimMethod -MethodName WmiSetBrightness -Arguments @{{Timeout=1; Brightness={new}}} | Out-Null")
+        return f"밝기 {cur}% → {new}%"
 
     def t_save_screenshot(self) -> str:
         pics = winutil.known_folder("사진") or Path.home() / "Pictures"
