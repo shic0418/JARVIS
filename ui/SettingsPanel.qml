@@ -36,6 +36,11 @@ Item {
     readonly property var efforts: [
         { v: "low", t: "빠르게 (low)" }, { v: "medium", t: "보통 (medium)" }, { v: "high", t: "깊게 (high)" }
     ]
+    readonly property var sttEngines: [
+        { v: "auto", t: "자동 — 대기 중엔 오프라인, 부른 뒤엔 Google (기본)" },
+        { v: "local", t: "오프라인 전용 — 소리가 PC 밖으로 안 나감" },
+        { v: "google", t: "Google 전용 — 가장 정확, 인터넷 필요" }
+    ]
     readonly property var voices: [
         { v: "ko-KR-InJoonNeural", t: "인준 — 남성 (기본)" },
         { v: "ko-KR-HyunsuMultilingualNeural", t: "현수 — 남성" },
@@ -61,6 +66,7 @@ Item {
         approveSw.checked = !!cfg.auto_approve
         sens.value = cfg.mic_sensitivity || 1.0
         noiseSw.checked = cfg.noise_robust !== false
+        sttBox.currentIndex = Math.max(0, sttEngines.findIndex(m => m.v === cfg.stt_engine))
         lockSw.checked = cfg.speaker_lock !== false
         ownerSw.checked = !!cfg.owner_only && jarvis.voiceEnrolled
         strict.value = cfg.speaker_threshold || 0.40
@@ -85,6 +91,7 @@ Item {
             auto_approve: approveSw.checked,
             mic_sensitivity: Math.round(sens.value * 10) / 10,
             noise_robust: noiseSw.checked,
+            stt_engine: sttEngines[sttBox.currentIndex].v,
             speaker_lock: lockSw.checked,
             owner_only: ownerSw.checked,
             speaker_threshold: Math.round(strict.value * 100) / 100
@@ -263,6 +270,9 @@ Item {
                 Label2 { text: "MIC SENSITIVITY  ·  " + sens.value.toFixed(1) }
                 HSlider { id: sens; from: 0.5; to: 3.0; stepSize: 0.1 }
                 Toggle { id: noiseSw; text: "소음 환경 모드 (시끄러운 곳에서 작은 목소리)" }
+                Label2 { text: "SPEECH RECOGNITION  ·  음성 인식" }
+                Combo { id: sttBox; model: sp.sttEngines }
+                Hint { text: sp.cfg.stt_status || ""; font.pixelSize: 11 }
                 Toggle { id: wakeSw; text: "“자비스” 호출어 상시 대기" }
 
                 Label2 { text: "VOICE ID  ·  화자 인식"; Layout.topMargin: 10 }

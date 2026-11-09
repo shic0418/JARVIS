@@ -135,7 +135,9 @@ class Bridge(QObject):
 
     @Slot(result=str)
     def settingsJson(self) -> str:
-        return json.dumps(self.core.cfg.public(), ensure_ascii=False)
+        out = self.core.cfg.public()
+        out["stt_status"] = self.core.stt_status()
+        return json.dumps(out, ensure_ascii=False)
 
     @Slot(str)
     def saveSettings(self, payload: str) -> None:
@@ -498,6 +500,18 @@ class Jarvis(QObject):
         self.listener.wake_prefix = (self.cfg["wake_words"] or ["자비스"])[0]
         if engine != "google" and start:
             self.local_stt.start_loading()
+
+    def stt_status(self) -> str:
+        st = self.local_stt.state
+        if (self.cfg["stt_engine"] or "auto") == "google":
+            return "말소리를 Google 서버로 보내 인식합니다. 인터넷이 끊기면 알아듣지 못합니다."
+        if st == "ready":
+            return "오프라인 인식 준비됨 — 인터넷이 끊겨도 알아듣습니다."
+        if st == "loading":
+            return "오프라인 인식 모델 준비 중 (처음 한 번 약 160MB 다운로드)… 그동안은 Google 로 인식합니다."
+        if st == "error":
+            return f"오프라인 인식 준비 실패 — Google 로 인식합니다 ({self.local_stt.error})"
+        return ""
 
     def _strip_wake(self, text: str) -> str | None:
         words = sorted((w for w in (self.cfg["wake_words"] or []) if w), key=len, reverse=True)
