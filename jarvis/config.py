@@ -29,6 +29,7 @@ DEFAULTS: dict = {
     "wake_word_enabled": True,        # '자비스' 호출어 상시 대기
     "wake_words": ["자비스", "쟈비스", "자비즈", "자비스야", "jarvis", "저비스"],
     "stt_language": "ko-KR",
+    "stt_engine": "auto",             # auto = 대기 중엔 오프라인 인식, 호출 후엔 Google | local = 항상 오프라인 | google
     "tts_voice": "ko-KR-InJoonNeural",
     "tts_rate": "+8%",
     "mic_device": None,               # None = 기본 마이크

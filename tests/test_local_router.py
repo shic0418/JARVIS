@@ -53,6 +53,12 @@ TOOL_CASES = [
     ("화면 밝기 50으로", "brightness", {"action": "set", "level": 50}),
     ("화면 밝기 낮춰줘", "brightness", {"action": "down"}),
     ("화면 좀 밝게 해줘", "brightness", {"action": "up"}),
+    # 오프라인 음성 인식(SenseVoice) 표기
+    ("카카오톡 열어져", "open_app", {"name": "카카오톡"}),
+    ("다운로드 폴더 열어 죠", "open_folder", {"target": "다운로드"}),
+    ("다음 꼭 틀어 줘", "media_control", {"action": "next"}),
+    ("볼륨 30으로 해줘", "volume", {"action": "set", "level": 30}),
+    ("5분 뒤에 알려줘", "set_timer", {"seconds": 300}),
 ]
 
 

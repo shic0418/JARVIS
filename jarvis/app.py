@@ -31,6 +31,7 @@ from .brain import Brain, situation_text
 from .config import DATA_DIR, ROOT, UI_DIR, Config
 from .hotkey import GlobalHotkey
 from .listener import Listener
+from .local_stt import LocalSTT
 from .noise import NoiseModels
 from .speech import TTS, Speaker
 from .tools import Hooks, PCTools
@@ -265,6 +266,12 @@ class Jarvis(QObject):
         self.listener.noise_robust = bool(self.cfg["noise_robust"])
         if self.listener.noise_robust and not args.no_mic:
             self.noise_models.start_loading()
+        # ---- 오프라인 음성 인식 (호출어 대기 중 주변 소리를 밖으로 보내지 않음, 인터넷 끊겨도 동작) ----
+        self.local_stt = LocalSTT()
+        self.listener.local_stt = self.local_stt
+        self.listener.wake_needed = self._wake_needed
+        self.listener.has_wake = self._has_wake
+        self._apply_stt_engine(start=not args.no_mic)
         # ---- 화자 인식 (누가 말했는지) ----
         self.voiceid = VoiceID(on_status=self.sig_voice.emit)
         self.profile = VoiceProfile()
@@ -473,6 +480,24 @@ class Jarvis(QObject):
         else:
             self.bridge.toast.emit("warn", msg)
         return False
+
+    def _wake_needed(self) -> bool:
+        """(인식 스레드에서 호출) 지금 들린 말이 호출어 없이는 무시되는 상태인가."""
+        return not (self._active() or self._speech_while_active or self._pending_confirm
+                    or self._enroll or self.busy)
+
+    _WAKE_LOOSE = re.compile(r"[자쟈재저]\s*[비빗]\s*[스즈수]|jarvis", re.I)
+
+    def _has_wake(self, text: str) -> bool:
+        # 오프라인 인식은 '자비스'를 '재비스'처럼 적기도 하므로 조금 느슨하게 본다
+        return self._strip_wake(text) is not None or bool(self._WAKE_LOOSE.search(text or ""))
+
+    def _apply_stt_engine(self, start: bool = True) -> None:
+        engine = self.cfg["stt_engine"] or "auto"
+        self.listener.stt_engine = engine
+        self.listener.wake_prefix = (self.cfg["wake_words"] or ["자비스"])[0]
+        if engine != "google" and start:
+            self.local_stt.start_loading()
 
     def _strip_wake(self, text: str) -> str | None:
         words = sorted((w for w in (self.cfg["wake_words"] or []) if w), key=len, reverse=True)
@@ -842,6 +867,7 @@ class Jarvis(QObject):
         self.listener.noise_robust = bool(self.cfg["noise_robust"])
         if self.listener.noise_robust:
             self.noise_models.start_loading()
+        self._apply_stt_engine(start=self.mic_ok)
         self.brain.reset()
         self._refresh_link()
         if "wake_word_enabled" in values:

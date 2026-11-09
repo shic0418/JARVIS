@@ -37,8 +37,14 @@ def obj(word: str) -> str:
     return f"{word}{'을' if has_batchim(word) else '를'}"
 
 
+# 오프라인 음성 인식이 자주 쓰는 다른 표기: '열어 죠/열어져' → '열어 줘', '다음 꼭' → '다음 곡'
+_STT_FIX = [(re.compile(r"([어아])\s*(?:죠|져|조)$"), r"\1 줘"), (re.compile(r"(다음|이전|앞|전)\s*꼭"), r"\1 곡")]
+
+
 def normalize(text: str) -> str:
     t = _PUNCT.sub("", text.strip())
+    for pat, rep in _STT_FIX:
+        t = pat.sub(rep, t)
     t = re.sub(r"^(자비스|쟈비스|jarvis)\s*(야|아)?[,\s]*", "", t, flags=re.I)
     for _ in range(2):
         t = _PUNCT.sub("", _TAIL.sub("", t))
@@ -156,7 +162,7 @@ class LocalRouter:
             return self._bright_speech(*self._run("brightness", {"action": "get"}))
 
         # ---- 미디어 ----
-        if re.fullmatch(r"(다음\s*(?:곡|노래|트랙|영상)(?:으로)?|넘겨|스킵|skip)", lc):
+        if re.fullmatch(r"(다음\s*(?:곡|노래|트랙|영상)(?:으로)?(?:\s*(?:틀어|재생|넘겨))?|넘겨|스킵|skip)", lc):
             self._run("media_control", {"action": "next"})
             return "다음 곡입니다."
         if re.fullmatch(r"(이전\s*(?:곡|노래|트랙|영상)|전\s*곡|앞\s*곡)(?:으로)?", c):

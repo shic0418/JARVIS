@@ -1,7 +1,13 @@
 """마이크 입력 → 음성 구간 감지(VAD) → 음성 인식(STT).
 
-sounddevice 로 16kHz 모노 PCM 을 받아 에너지 기반으로 발화를 잘라내고,
-SpeechRecognition 의 Google 웹 음성 API 로 한국어 텍스트로 변환한다.
+sounddevice 로 16kHz 모노 PCM 을 받아 에너지 기반으로 발화를 잘라내고 한국어 텍스트로 변환한다.
+
+인식 엔진 (stt_engine):
+- auto  : 호출어 대기 중에는 오프라인 인식(local_stt.py)으로만 듣고, '자비스'가 들렸을 때만
+          Google 웹 음성 API 로 정확하게 다시 받아 적는다 → 주변 대화는 PC 밖으로 나가지 않음.
+          대화 중(호출 직후·이어 말하기·승인 대기)에는 Google 우선. 인터넷이 끊기면 오프라인 인식으로 대체.
+- local : 항상 오프라인 인식 (인터넷 불필요, 소리가 밖으로 나가지 않음)
+- google: 항상 Google (오프라인 모델을 받지 않음. 인터넷이 끊기면 인식 불가)
 STT 요청이 오가는 동안 같은 오디오로 화자 임베딩(누가 말했는지)을 로컬에서 계산한다.
 
 작은 목소리 대응:
@@ -26,6 +32,7 @@ from typing import Any, Callable
 
 import numpy as np
 
+from .local_stt import LocalSTT
 from .noise import NoiseModels, StreamVad, vad_threshold
 
 log = logging.getLogger("jarvis.listener")
@@ -50,6 +57,7 @@ NOISE_WIN_BLOCKS = 80      # 소음 추정 창 2.4초
 STT_HPF_HZ = 80            # 이 아래 저주파(험·진동) 제거
 STT_TARGET_PEAK = 16000.0  # 약 -6dBFS 까지 증폭
 STT_MAX_GAIN = 10.0        # 최대 +20dB (잡음만 과하게 키우지 않도록 제한)
+GOOGLE_RETRY_SEC = 30      # Google 연결 실패 후 이 시간 동안은 오프라인 인식만 사용
 
 _WIN = np.hanning(BLOCK).astype(np.float32)
 _WIN_POW = float(np.mean(_WIN ** 2))
@@ -117,6 +125,13 @@ class Listener:
         self._emb_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="voiceid")
         self.noise_models: NoiseModels | None = None   # 시끄러운 환경용 AI (app 이 넣어 줌)
         self.noise_robust = True      # False 면 음성 감지 AI·소음 제거를 쓰지 않음
+        self.stt_engine = "auto"      # auto | local | google
+        self.local_stt: LocalSTT | None = None
+        self.wake_needed: Callable[[], bool] = lambda: False   # 지금 호출어 없이는 명령을 받지 않는 상태인가
+        self.has_wake: Callable[[str], bool] = lambda t: True   # 텍스트에 호출어가 있는가
+        self.wake_prefix = "자비스"
+        self.last_engine = ""         # 마지막 발화를 인식한 엔진 (HUD 표시·로그용)
+        self._google_down_until = 0.0
 
     # ---------- lifecycle ----------
     def start(self) -> bool:
@@ -270,6 +285,58 @@ class Listener:
             log.warning("STT 연결 끊김: %s", e)
             raise
 
+    def _with_denoise(self, fn: Callable[[np.ndarray], str | None], pcm: np.ndarray, ai_heard: bool) -> str | None:
+        """원본으로 먼저 인식하고, 실패했는데 음성 감지 AI 가 분명히 말소리를 들었으면 소음을 지워서 한 번 더.
+        (인식기는 소음에 강하게 학습되어 있어 보통은 원본이 더 잘 된다. 시험: 0dB 에서 원본 우세)"""
+        text = fn(prepare_for_stt(pcm))
+        nm = self.noise_models if self.noise_robust else None
+        if text is None and ai_heard and nm is not None and nm.ready:
+            clean = nm.denoise(pcm)
+            if clean is not pcm:
+                text = fn(prepare_for_stt(clean))
+        return text
+
+    def _google(self, rec, sr, pcm: np.ndarray, ai_heard: bool) -> tuple[str | None, bool]:
+        """(텍스트, 연결 성공 여부). 연결이 안 되면 잠시 Google 을 건너뛴다."""
+        if time.monotonic() < self._google_down_until:
+            return None, False
+        try:
+            text = self._with_denoise(lambda x: self._recognize(rec, sr, x), pcm, ai_heard)
+            self.error = None
+            return text, True
+        except (sr.RequestError, OSError):
+            self._google_down_until = time.monotonic() + GOOGLE_RETRY_SEC
+            return None, False
+
+    def _local(self, pcm: np.ndarray, ai_heard: bool) -> str | None:
+        return self._with_denoise(self.local_stt.recognize, pcm, ai_heard)
+
+    def _transcribe(self, rec, sr, pcm: np.ndarray, ai_heard: bool) -> str | None:
+        engine = self.stt_engine
+        local_ok = self.local_stt is not None and self.local_stt.ready
+        if engine == "local" and local_ok:
+            self.last_engine = "local"
+            return self._local(pcm, ai_heard)
+        if engine == "auto" and local_ok and self.wake_needed():
+            # 호출어 대기: 로컬로 먼저 듣고, 호출어가 없으면 여기서 끝 (외부 전송 없음)
+            lt = self._local(pcm, ai_heard)
+            if not lt or not self.has_wake(lt):
+                self.last_engine = "local"
+                return None
+            gt, online = self._google(rec, sr, pcm, ai_heard)
+            if gt:
+                self.last_engine = "google"
+                # 로컬은 '자비스'를 들었는데 Google 이 다르게 적었으면 호출어를 붙여 준다
+                return gt if self.has_wake(gt) else f"{self.wake_prefix} {gt}"
+            self.last_engine = "local"
+            return lt
+        gt, online = self._google(rec, sr, pcm, ai_heard)
+        if online or not local_ok or engine == "google":
+            self.last_engine = "google"
+            return gt
+        self.last_engine = "local"     # 인터넷 끊김 → 오프라인 인식으로 대체
+        return self._local(pcm, ai_heard)
+
     def _stt_loop(self) -> None:
         import speech_recognition as sr
         rec = sr.Recognizer()
@@ -281,18 +348,9 @@ class Listener:
             emb_job = None
             if self.embedder is not None:
                 emb_job = self._emb_pool.submit(self.embedder, pcm[:max(0, len(pcm) - tail)])
-            nm = self.noise_models if self.noise_robust else None
             text = None
             try:
-                # 구글 인식기는 소음에 강하게 학습되어 있어 보통은 원본이 더 잘 된다 (시험: 0dB 에서 원본 우세).
-                # 원본이 실패했는데 음성 감지 AI 가 분명히 말소리를 들었으면 → 소음을 지워서 한 번 더 시도
-                text = self._recognize(rec, sr, prepare_for_stt(pcm))
-                if text is None and ai_heard and nm is not None and nm.ready:
-                    clean = nm.denoise(pcm)
-                    if clean is not pcm:
-                        text = self._recognize(rec, sr, prepare_for_stt(clean))
-            except (sr.RequestError, OSError):
-                text = None
+                text = self._transcribe(rec, sr, pcm, ai_heard)
             except Exception as e:
                 log.exception("STT 오류: %s", e)
                 text = None
