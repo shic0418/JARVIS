@@ -82,6 +82,8 @@ def main() -> int:
     # QML 화면을 먼저 정리해야 종료 시 'jarvis is null' 경고가 나지 않는다
     import shiboken6
     core.win.hide()
+    if core.overlay is not None:
+        core.overlay.hide()
     shiboken6.delete(core.engine)
     return code
 

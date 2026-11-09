@@ -36,7 +36,7 @@ class ToolError(Exception):
 class Hooks:
     confirm: Callable[[str, str], bool]          # (제목, 상세) -> 승인 여부 (블로킹)
     schedule_timer: Callable[[int, str], None]   # (초, 라벨)
-    hud_hwnd: Callable[[], int]
+    hud_hwnd: Callable[[], "int | list[int]"]   # 스크린샷에서 뺄 자비스 창 (하나 또는 여러 개)
     notify: Callable[[str], None] = lambda msg: None   # 백그라운드 작업이 사용자에게 말로 알림
 
 
@@ -460,13 +460,16 @@ class PCTools:
     # --- 화면 ---
     def _grab(self):
         from PIL import ImageGrab
-        hwnd = self.hooks.hud_hwnd()
-        winutil.set_capture_excluded(hwnd, True)
+        hwnds = self.hooks.hud_hwnd()   # 자비스 HUD 창들 (작은 HUD + 액티브 모드 화면)
+        hwnds = hwnds if isinstance(hwnds, (list, tuple)) else [hwnds]
+        for h in hwnds:
+            winutil.set_capture_excluded(h, True)
         try:
             time.sleep(0.05)
             return ImageGrab.grab()
         finally:
-            winutil.set_capture_excluded(hwnd, False)
+            for h in hwnds:
+                winutil.set_capture_excluded(h, False)
 
     def t_look_at_screen(self):
         img = self._grab().convert("RGB")

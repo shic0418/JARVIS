@@ -71,6 +71,7 @@ class Bridge(QObject):
     voiceStatusChanged = Signal()
     voiceEnrolledChanged = Signal()
     chatModeChanged = Signal()
+    activeModeChanged = Signal()
 
     actionEvent = Signal(str, str, str, str)     # id, label, status(run|ok|error), detail
     confirmRequest = Signal(str, str, str)       # id, title, detail
@@ -93,6 +94,7 @@ class Bridge(QObject):
     voiceStatus = _ro("voiceStatus", str, voiceStatusChanged)
     voiceEnrolled = _ro("voiceEnrolled", bool, voiceEnrolledChanged)
     chatMode = _ro("chatMode", bool, chatModeChanged)
+    activeMode = _ro("activeMode", bool, activeModeChanged)
 
     def __init__(self, core: "Jarvis") -> None:
         super().__init__()
@@ -113,6 +115,7 @@ class Bridge(QObject):
         self._voiceStatus = ""
         self._voiceEnrolled = False
         self._chatMode = False
+        self._activeMode = False
 
     def set(self, name: str, value) -> None:
         if getattr(self, "_" + name) != value:
@@ -193,7 +196,7 @@ class Jarvis(QObject):
     sig_stream = Signal(int, str)      # (명령 번호, 답 조각) — 대화 모드에서 답이 만들어지는 대로
     sig_mode = Signal(bool)            # 자유 대화 모드 켜짐/꺼짐
     sig_notify = Signal(str)           # 백그라운드 작업(작업 감시 등)의 알림
-    sig_hud = Signal(str)              # 말로 HUD 보기 방식 바꾸기 (small | big | hide)
+    sig_hud = Signal(str)              # 말로 HUD 보기 방식 바꾸기 (small | big | hide | active_on | active_off)
 
     def __init__(self, app: QApplication, args) -> None:
         super().__init__()
@@ -219,6 +222,8 @@ class Jarvis(QObject):
         self._enroll_when_ready = False
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="brain")
         self._hwnd = 0
+        self.overlay = None            # 액티브 모드 전체 화면 HUD (처음 켤 때 불러옴)
+        self._overlay_hwnd = 0
         self._stream_gen = -1          # 지금 흘러 들어오는 답의 명령 번호
         self._stream_buf = ""          # 아직 문장이 덜 끝난 조각
         self._stream_text = ""         # 지금까지 받은 답 전체 (HUD 표시용)
@@ -244,7 +249,7 @@ class Jarvis(QObject):
         self.tools = PCTools(self.cfg, self.focus, Hooks(
             confirm=self._confirm_blocking,
             schedule_timer=lambda s, l: self.sig_timer.emit(int(s), str(l)),
-            hud_hwnd=lambda: self._hwnd,
+            hud_hwnd=lambda: [h for h in (self._hwnd, self._overlay_hwnd) if h],
             notify=lambda msg: self.sig_notify.emit(str(msg)),
         ))
         self.brain = Brain(self.cfg, self.tools,
@@ -768,6 +773,37 @@ class Jarvis(QObject):
             self.set_compact(False)
         elif action == "hide":
             QTimer.singleShot(2500, lambda: self.toggle_visible(False))   # 대답을 들려준 뒤 숨김
+        elif action in ("active_on", "active_off"):
+            self.set_active(action == "active_on")
+
+    # ================================================================== 액티브 모드 (전체 화면 HUD)
+    def set_active(self, on: bool) -> None:
+        """화면 전체에 헬멧 시야 HUD 를 펼치거나 접는다. 입력은 아래 창으로 통과하므로 켠 채로 PC 를 쓸 수 있다."""
+        on = bool(on)
+        if on and self.overlay is None:
+            self.engine.load(QUrl.fromLocalFile(str(UI_DIR / "ActiveMode.qml")))
+            roots = [o for o in self.engine.rootObjects() if o.objectName() == "activeMode"]
+            if not roots:
+                log.error("액티브 모드 화면(ActiveMode.qml) 로드 실패")
+                self.bridge.toast.emit("error", "액티브 모드 화면을 불러오지 못했습니다")
+                return
+            self.overlay = roots[0]
+            self._overlay_hwnd = int(self.overlay.winId())
+            self.focus.own_hwnds.add(self._overlay_hwnd)
+        if on:
+            screen = self.win.screen() or QGuiApplication.primaryScreen()
+            self.overlay.setGeometry(screen.geometry())
+        self.brain.active_hud = on
+        if hasattr(self, "act_active") and self.act_active.isChecked() != on:
+            self.act_active.setChecked(on)
+        if on == self.bridge._activeMode:
+            return
+        self.bridge.set("activeMode", on)   # 펼치기 / 접기 연출과 창 보이기 · 숨기기는 QML 이 맡는다
+        log.info("액티브 모드 %s", "켜짐" if on else "꺼짐")
+        if on:
+            self.chime.play()
+            if self.win.isVisible():   # 작은 HUD 는 전체 화면 HUD 위에 둔다
+                QTimer.singleShot(60, self.win.raise_)
 
     @Slot(str)
     def _on_notify(self, msg: str) -> None:
@@ -1092,6 +1128,9 @@ class Jarvis(QObject):
         self.act_chat = QAction("자유 대화 모드", menu, checkable=True)
         self.act_chat.toggled.connect(lambda on: on != self.brain.chat_mode and self.toggle_chat())
         menu.addAction(self.act_chat)
+        self.act_active = QAction("액티브 모드 (전체 화면 HUD)", menu, checkable=True)
+        self.act_active.toggled.connect(lambda on: on != self.bridge._activeMode and self.set_active(on))
+        menu.addAction(self.act_active)
         menu.addAction("목소리 등록 (주인 인식)", self.start_enroll)
         self.act_startup = QAction("Windows 시작 시 자동 실행", menu, checkable=True)
         self.act_startup.setChecked(_startup_link().exists())

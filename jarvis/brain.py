@@ -122,6 +122,10 @@ HUD_SMALL = re.compile(r"(?:자비스\s*|홀로그램\s*)?(?:작게|축소|미�
 HUD_BIG = re.compile(r"(?:자비스\s*|홀로그램\s*)?(?:크게|전체|확대)\s*(?:보기|모드)(?:\s*(?:보기|모드))?"
                      r"(?:\s*(?:로|으로))?(?:\s*(?:해|바꿔|전환|켜))?")
 HUD_HIDE = re.compile(r"(?:자비스\s*|홀로그램\s*|hud\s*)?(?:숨겨|숨기기|사라져|트레이로\s*(?:가|숨겨))", re.I)
+# 액티브 모드: 화면 전체에 헬멧 시야 HUD 를 펼친다 ('엑티브', '액티비' 처럼 적혀도 받는다)
+_ACTIVE = r"(?:[액엑애]\s*티\s*[브비]|active)\s*(?:모드|mode|hud|화면)"
+ACTIVE_ON = re.compile(_ACTIVE + r"(?:\s*(?:로|으로))?(?:\s*(?:켜|켜기|시작|시작해|전환|전환해|가동|가동해|작동|on|온|들어가|해))?", re.I)
+ACTIVE_OFF = re.compile(_ACTIVE + r"\s*(?:꺼|끄기|꺼져|끝|끝내|종료|종료해|해제|해제해|그만|닫아|off|오프)", re.I)
 
 
 class Brain:
@@ -151,7 +155,8 @@ class Brain:
         # ---- 자유 대화 모드 ----
         self.chat_mode = False
         self.on_mode: Callable[[bool], None] = lambda on: None   # app 이 설정
-        self.on_hud: Callable[[str], None] = lambda action: None  # app 이 설정 (small | big | hide)
+        self.on_hud: Callable[[str], None] = lambda action: None  # app 이 설정 (small | big | hide | active_on | active_off)
+        self.active_hud = False                                   # 액티브 모드(전체 화면 HUD) 켜짐 — app 이 맞춰 둠
         # 음성 인식 후보 고르기용: 실제로 실행하지 않고 '알아들을 수 있는 명령인가'만 본다
         self._dry = LocalRouter(self._dry_execute, lambda: "주인님")
         self.chat_session: ClaudeSession | None = None           # Pro 계정: 계속 켜 두는 Claude Code
@@ -274,6 +279,16 @@ class Brain:
         if HUD_HIDE.fullmatch(c):
             self.on_hud("hide")
             return "트레이로 숨겠습니다. 부르시면 다시 나타날게요."
+        if ACTIVE_OFF.fullmatch(c):
+            if not self.active_hud:
+                return "액티브 모드는 이미 꺼져 있어요."
+            self.on_hud("active_off")
+            return "액티브 모드를 해제합니다."
+        if ACTIVE_ON.fullmatch(c):
+            if self.active_hud:
+                return "이미 액티브 모드입니다."
+            self.on_hud("active_on")
+            return f"액티브 모드 가동합니다, {self.cfg['user_title'] or '주인님'}."
         return None
 
     # ------------------------------------------------------------------ 음성 인식 후보 고르기
@@ -294,7 +309,8 @@ class Brain:
         if not c:
             return False
         if CHAT_ON.fullmatch(c) or CHAT_OFF.fullmatch(c) or (len(c) <= 20 and (
-                HUD_SMALL.fullmatch(c) or HUD_BIG.fullmatch(c) or HUD_HIDE.fullmatch(c))):
+                HUD_SMALL.fullmatch(c) or HUD_BIG.fullmatch(c) or HUD_HIDE.fullmatch(c)
+                or ACTIVE_ON.fullmatch(c) or ACTIVE_OFF.fullmatch(c))):
             return True
         try:
             return self._dry.try_handle(text, fallback=True) is not None
