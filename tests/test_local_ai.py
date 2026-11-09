@@ -30,6 +30,13 @@ def o(intent, target="", number=0):
     ("화면이 너무 밝아", o("brightness_down"), "화면 밝기 낮춰"),
     ("눈부셔", o("brightness_down"), "화면 밝기 낮춰"),
     ("화면이 너무 어두워", o("brightness_up"), "화면 밝기 올려"),
+    # 실제 로그에서 나온 실수: 밝기 얘기를 볼륨으로 분류 → 절대 볼륨을 건드리면 안 됨
+    ("화면이 신경 안쓰이게 밝기 낮춰", o("volume_set", number=25), "화면 밝기 낮춰"),
+    ("화면이 너무 밝아", o("volume_down"), "화면 밝기 낮춰"),
+    ("모니터가 너무 어둡네", o("volume_up"), "화면 밝기 올려"),
+    ("화면 밝기 40으로", o("volume_set", number=40), "화면 밝기 40"),
+    ("화면이 너무 밝아", o("brightness_up"), "화면 밝기 낮춰"),      # 방향은 말 속 단서가 우선
+    ("노래 소리 좀 낮춰", o("volume_down"), "볼륨 내려"),             # 소리 얘기는 그대로
 ])
 def test_to_command(text, out, cmd):
     assert to_command(out, text) == cmd

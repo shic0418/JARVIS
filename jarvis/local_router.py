@@ -158,6 +158,11 @@ class LocalRouter:
             up = m.group(2) in ("올려", "높여", "밝게", "키워")
             return self._bright_speech(*self._run("brightness", {"action": "up" if up else "down",
                                                                  "level": 30 if m.group(1) else 20}))
+        m = re.fullmatch(r"(?:(?:화면|모니터)\s*(?:이|가)?\s*(?:너무|좀|많이|되게)?\s*(밝아|밝네|밝다|어두워|어둡네|어둡다)"
+                         r"|(눈\s*(?:이\s*)?부셔|눈부셔|눈부시네))", c)
+        if m:
+            up = bool(m.group(1)) and m.group(1).startswith("어")
+            return self._bright_speech(*self._run("brightness", {"action": "up" if up else "down", "level": 20}))
         if re.fullmatch(r"(?:화면|모니터)?\s*밝기\s*(?:가|는)?\s*(?:몇|얼마)(?:야|이야|니|지|예요)?", c):
             return self._bright_speech(*self._run("brightness", {"action": "get"}))
 

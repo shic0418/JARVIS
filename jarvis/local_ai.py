@@ -84,6 +84,11 @@ FEWSHOT = [
 
 _UP = re.compile(r"작아|작다|작네|안\s*들|들려|들리|크게|키워|키우|올려|높여|업")
 _DOWN = re.compile(r"커|크다|크네|시끄|줄여|줄이|낮춰|낮게|작게|조용|귀\s*아|내려|다운")
+# 화면 밝기 얘기인지 / 소리 얘기인지 (작은 모델이 '밝기 낮춰'를 볼륨으로 바꾸는 실수 방지)
+_SCREEN = re.compile(r"화면|밝기|밝아|밝다|밝네|모니터|눈\s*부|눈부|어두|어둡")
+_SOUND = re.compile(r"소리|볼륨|음량|시끄|들려|들리|음악|노래|스피커")
+_BRIGHT_UP = re.compile(r"어두|어둡|올려|높여|밝게|키워|안\s*보")
+_BRIGHT_DOWN = re.compile(r"밝아|밝다|밝네|눈\s*부|눈부|낮춰|내려|줄여|어둡게|낮게")
 _FOLDERS = {"다운로드", "문서", "내문서", "바탕화면", "사진", "음악", "동영상", "비디오"}
 
 
@@ -205,6 +210,16 @@ def to_command(out: dict, text: str) -> str | None:
         "lock_screen": "화면 잠가", "screenshot": "스크린샷 찍어",
         "brightness_up": "화면 밝기 올려", "brightness_down": "화면 밝기 낮춰",
     }
+    # 화면 밝기 얘기를 볼륨으로 잘못 분류한 경우 → 밝기 명령으로 (방향은 말 속 단서로)
+    if intent and (intent.startswith("volume") or intent in ("mute", "unmute")) \
+            and _SCREEN.search(text) and not _SOUND.search(text):
+        intent = "brightness_set" if intent == "volume_set" and re.search(r"\d", text) else "brightness_dir"
+    if intent in ("brightness_up", "brightness_down", "brightness_dir"):
+        up, down = bool(_BRIGHT_UP.search(text)), bool(_BRIGHT_DOWN.search(text))
+        if up != down:
+            return "화면 밝기 올려" if up else "화면 밝기 낮춰"
+        if intent == "brightness_dir":
+            return None
     # 작은 모델은 '키워/줄여' 방향을 자주 헷갈린다. 모델은 '볼륨 얘기'라는 것만 판단하고,
     # 방향은 말 속 단서로 정한다. 숫자를 말하지 않았는데 volume_set 을 고른 경우도 여기서 처리.
     if intent in ("volume_up", "volume_down") or (intent == "volume_set" and not re.search(r"\d", text)
