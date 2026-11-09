@@ -1,0 +1,976 @@
+"""오케스트레이터: 음성 → 두뇌 → 행동 → 음성 흐름과 HUD/트레이/단축키를 연결한다."""
+from __future__ import annotations
+
+import json
+import logging
+import math
+import os
+import re
+import sys
+import tempfile
+import threading
+import time
+import uuid
+import wave
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+import numpy as np
+import psutil
+from PySide6.QtCore import (Property, QObject, QPointF, QRect, QTimer, QUrl, Signal,
+                            Slot)
+from PySide6.QtGui import (QAction, QColor, QGuiApplication, QIcon, QPainter, QPen,
+                           QPixmap, QRadialGradient)
+from PySide6.QtMultimedia import QSoundEffect
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuick import QQuickWindow  # noqa: F401  (루트 객체를 QQuickWindow 로 받기 위해 필요)
+from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
+
+from . import winutil
+from .brain import Brain, situation_text
+from .config import DATA_DIR, ROOT, UI_DIR, Config
+from .hotkey import GlobalHotkey
+from .listener import Listener
+from .noise import NoiseModels
+from .speech import TTS, Speaker
+from .tools import Hooks, PCTools
+from .toolserver import ToolServer
+from .voiceid import Enrollment, SpeakerGate, VoiceID, VoiceProfile
+
+log = logging.getLogger("jarvis.app")
+
+EXPANDED = (420, 724)
+COMPACT = (230, 268)
+MARGIN = 14
+
+YES_RE = re.compile(r"(승인|확인|실행해|진행|응|네|예|그래|좋아|오케이|ok|yes)", re.I)
+NO_RE = re.compile(r"(취소|아니|거부|하지\s*마|안\s*돼|중지|no|노)", re.I)
+CANCEL_RE = re.compile(r"(취소|그만|멈춰|중지|스톱|stop)", re.I)
+
+
+def _ro(name: str, typ, sig):
+    return Property(typ, lambda self: getattr(self, "_" + name), notify=sig)
+
+
+class Bridge(QObject):
+    """QML 에 노출되는 객체 (QML 에서는 `jarvis`)."""
+    stateChanged = Signal()
+    statusTextChanged = Signal()
+    micLevelChanged = Signal()
+    voiceLevelChanged = Signal()
+    userTextChanged = Signal()
+    replyTextChanged = Signal()
+    wakeEnabledChanged = Signal()
+    compactChanged = Signal()
+    hasApiKeyChanged = Signal()
+    statsJsonChanged = Signal()
+    hotkeyTextChanged = Signal()
+    modelNameChanged = Signal()
+    linkTextChanged = Signal()
+    voiceStatusChanged = Signal()
+    voiceEnrolledChanged = Signal()
+
+    actionEvent = Signal(str, str, str, str)     # id, label, status(run|ok|error), detail
+    confirmRequest = Signal(str, str, str)       # id, title, detail
+    confirmClosed = Signal(str)
+    toast = Signal(str, str)                     # level(info|warn|error), text
+
+    state = _ro("state", str, stateChanged)
+    statusText = _ro("statusText", str, statusTextChanged)
+    micLevel = _ro("micLevel", float, micLevelChanged)
+    voiceLevel = _ro("voiceLevel", float, voiceLevelChanged)
+    userText = _ro("userText", str, userTextChanged)
+    replyText = _ro("replyText", str, replyTextChanged)
+    wakeEnabled = _ro("wakeEnabled", bool, wakeEnabledChanged)
+    compact = _ro("compact", bool, compactChanged)
+    hasApiKey = _ro("hasApiKey", bool, hasApiKeyChanged)
+    statsJson = _ro("statsJson", str, statsJsonChanged)
+    hotkeyText = _ro("hotkeyText", str, hotkeyTextChanged)
+    modelName = _ro("modelName", str, modelNameChanged)
+    linkText = _ro("linkText", str, linkTextChanged)
+    voiceStatus = _ro("voiceStatus", str, voiceStatusChanged)
+    voiceEnrolled = _ro("voiceEnrolled", bool, voiceEnrolledChanged)
+
+    def __init__(self, core: "Jarvis") -> None:
+        super().__init__()
+        self.core = core
+        self._state = "boot"
+        self._statusText = "INITIALIZING"
+        self._micLevel = 0.0
+        self._voiceLevel = 0.0
+        self._userText = ""
+        self._replyText = ""
+        self._wakeEnabled = True
+        self._compact = False
+        self._hasApiKey = False
+        self._statsJson = "{}"
+        self._hotkeyText = ""
+        self._modelName = ""
+        self._linkText = ""
+        self._voiceStatus = ""
+        self._voiceEnrolled = False
+
+    def set(self, name: str, value) -> None:
+        if getattr(self, "_" + name) != value:
+            setattr(self, "_" + name, value)
+            getattr(self, name + "Changed").emit()
+
+    # ---- QML → Python ----
+    @Slot(str)
+    def submitText(self, text: str) -> None:
+        self.core.run_command(text)
+
+    @Slot()
+    def activate(self) -> None:
+        self.core.activate()
+
+    @Slot(bool)
+    def setWake(self, on: bool) -> None:
+        self.core.set_wake(on)
+
+    @Slot(str, bool)
+    def answerConfirm(self, cid: str, approved: bool) -> None:
+        self.core.answer_confirm(cid, approved)
+
+    @Slot(result=str)
+    def settingsJson(self) -> str:
+        return json.dumps(self.core.cfg.public(), ensure_ascii=False)
+
+    @Slot(str)
+    def saveSettings(self, payload: str) -> None:
+        self.core.save_settings(json.loads(payload))
+
+    @Slot()
+    def startEnroll(self) -> None:
+        self.core.start_enroll()
+
+    @Slot()
+    def clearVoice(self) -> None:
+        self.core.clear_voice()
+
+    @Slot(bool)
+    def setCompact(self, on: bool) -> None:
+        self.core.set_compact(on)
+
+    @Slot()
+    def hideHud(self) -> None:
+        self.core.toggle_visible(False)
+
+    @Slot()
+    def quitApp(self) -> None:
+        self.core.quit()
+
+    @Slot()
+    def clearConversation(self) -> None:
+        self.core.brain.reset()
+        self.set("userText", "")
+        self.set("replyText", "")
+        self.toast.emit("info", "새 대화를 시작합니다")
+
+
+class Jarvis(QObject):
+    # 다른 스레드 → 메인 스레드 전달용 시그널 (반드시 @Slot 메서드에 연결)
+    sig_mic = Signal(float)
+    sig_speech_start = Signal()
+    sig_utterance = Signal(object, object)
+    sig_voice = Signal()
+    sig_reply = Signal(object, int)
+    sig_action = Signal(str, str, str, str)
+    sig_confirm = Signal(str, str, str)
+    sig_confirm_close = Signal(str)
+    sig_timer = Signal(int, str)
+    sig_hotkey = Signal()
+
+    def __init__(self, app: QApplication, args) -> None:
+        super().__init__()
+        self.app = app
+        self.args = args
+        self.cfg = Config()
+        self.focus = winutil.FocusTracker()
+        self.bridge = Bridge(self)
+        self.bridge.set("wakeEnabled", bool(self.cfg["wake_word_enabled"]))
+        self.bridge.set("compact", bool(self.cfg["compact"]))
+        self.bridge.set("hasApiKey", bool(self.cfg.api_key()))
+        self.bridge.set("hotkeyText", self.cfg["hotkey"].upper())
+        self.bridge.set("modelName", self.cfg["model"])
+
+        self.busy = False
+        self.active_until = 0.0
+        self._speech_while_active = False
+        self._gen = 0
+        self._cancel = threading.Event()
+        self._confirms: dict[str, list] = {}
+        self._pending_confirm: str | None = None
+        self._enroll: Enrollment | None = None
+        self._enroll_when_ready = False
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="brain")
+        self._hwnd = 0
+
+        for sig, slot in ((self.sig_mic, self._on_mic), (self.sig_speech_start, self._on_speech_start),
+                          (self.sig_utterance, self._on_utterance), (self.sig_reply, self._on_reply),
+                          (self.sig_action, self._on_action), (self.sig_confirm, self._on_confirm),
+                          (self.sig_confirm_close, self._on_confirm_close), (self.sig_timer, self._on_timer_req),
+                          (self.sig_hotkey, self.activate), (self.sig_voice, self._on_voice_status)):
+            sig.connect(slot)
+
+        # ---- 음성 출력 ----
+        self.speaker = Speaker(self)
+        self.speaker.level.connect(self._on_voice_level)
+        self.speaker.started.connect(self._on_speak_start)
+        self.speaker.finished.connect(self._on_speak_end)
+        self.tts = TTS(self.speaker, lambda: (self.cfg["tts_voice"], self.cfg["tts_rate"]), self)
+        self.chime = self._make_chime()
+
+        # ---- 손 + 두뇌 ----
+        self.tools = PCTools(self.cfg, self.focus, Hooks(
+            confirm=self._confirm_blocking,
+            schedule_timer=lambda s, l: self.sig_timer.emit(int(s), str(l)),
+            hud_hwnd=lambda: self._hwnd,
+        ))
+        self.brain = Brain(self.cfg, self.tools,
+                           on_action=lambda *a: self.sig_action.emit(*a),
+                           context_fn=lambda: situation_text(self.focus.last_title))
+        # Pro 계정 모드: Claude Code 가 MCP 로 부르는 로컬 도구 서버
+        self.toolserver = ToolServer(self.brain.mcp_tools, lambda n, a: self.brain.execute(n, a))
+        self.brain.tool_server = self.toolserver
+        self._refresh_link()
+        # 로컬 AI 모델을 미리 메모리에 올려 둠 (없으면 조용히 건너뜀)
+        threading.Thread(target=self.brain.local_ai.warmup, daemon=True, name="local-ai-warmup").start()
+
+        # ---- HUD ----
+        self.engine = QQmlApplicationEngine()
+        self.engine.rootContext().setContextProperty("jarvis", self.bridge)
+        self.engine.load(QUrl.fromLocalFile(str(UI_DIR / "Main.qml")))
+        if not self.engine.rootObjects():
+            raise RuntimeError("UI(QML) 로드 실패 — data/jarvis.log 를 확인하세요")
+        self.win = self.engine.rootObjects()[0]
+        self._place(initial=True)
+        self._hwnd = int(self.win.winId())
+        self.focus.own_hwnds.add(self._hwnd)
+
+        self._make_tray()
+
+        # ---- 마이크 ----
+        self.listener = Listener(
+            self.cfg["stt_language"],
+            on_level=self.sig_mic.emit,
+            on_speech_start=self.sig_speech_start.emit,
+            on_utterance=self.sig_utterance.emit,
+            device=self.cfg["mic_device"],
+            sensitivity=self.cfg["mic_sensitivity"],
+        )
+        # ---- 시끄러운 환경용 AI (음성 감지 + 소음 제거) ----
+        self.noise_models = NoiseModels()
+        self.listener.noise_models = self.noise_models
+        self.listener.noise_robust = bool(self.cfg["noise_robust"])
+        if self.listener.noise_robust and not args.no_mic:
+            self.noise_models.start_loading()
+        # ---- 화자 인식 (누가 말했는지) ----
+        self.voiceid = VoiceID(on_status=self.sig_voice.emit)
+        self.profile = VoiceProfile()
+        self.gate = SpeakerGate(self.voiceid, self.profile, self.cfg)
+        self.listener.embedder = self.voiceid.embed
+        if self.cfg["owner_only"] and not self.profile.exists:
+            self.cfg.update({"owner_only": False})
+        self._on_voice_status()
+        self.mic_ok = False
+        if not args.no_mic:
+            self.mic_ok = self.listener.start()
+            if self.cfg["speaker_lock"] or self.cfg["owner_only"]:
+                self.voiceid.start_loading()
+
+        # ---- 전역 단축키 ----
+        self.hotkey = GlobalHotkey(self.cfg["hotkey"], self.sig_hotkey.emit)
+        self.hotkey.start()
+
+        # ---- 주기 작업 ----
+        self._tick = QTimer(self)
+        self._tick.setInterval(200)
+        self._tick.timeout.connect(self._on_tick)
+        self._tick.start()
+        self._stats_timer = QTimer(self)
+        self._stats_timer.setInterval(1000)
+        self._stats_timer.timeout.connect(self._update_stats)
+        self._stats_timer.start()
+        self._net_last = (psutil.net_io_counters(), time.monotonic())
+        self._stat_n = 0
+        self._bat = None
+        self._disk = 0.0
+        psutil.cpu_percent(None)
+
+        QTimer.singleShot(2300, self._boot_done)
+
+    # ================================================================== 부팅
+    def _boot_done(self) -> None:
+        self._to_idle()
+        if not self.mic_ok and not self.args.no_mic:
+            self.bridge.toast.emit("error", self.listener.error or "마이크를 사용할 수 없습니다")
+        if not self.hotkey.ok:
+            self.bridge.toast.emit("warn", f"단축키 {self.cfg['hotkey']} 등록 실패 — 다른 앱이 사용 중")
+        if self.args.no_greet:
+            return
+        hour = time.localtime().tm_hour
+        part = "좋은 아침입니다" if 5 <= hour < 12 else "좋은 오후입니다" if hour < 18 else "좋은 저녁입니다"
+        title = self.cfg["user_title"] or "주인님"
+        if self.cfg["brain"] == "local":
+            msg = f"{part}, {title}. 자비스 온라인. 로컬 모드로 기본 명령을 처리합니다."
+        elif self.bridge._hasApiKey:
+            msg = f"{part}, {title}. 자비스 온라인. 모든 시스템이 정상입니다."
+        elif self.cfg["brain"] == "pro":
+            msg = f"{part}, {title}. 자비스 온라인. Claude Code를 찾을 수 없어 기본 명령만 가능합니다."
+        else:
+            msg = f"{part}, {title}. 자비스 온라인. 설정에서 Claude API 키를 등록해 주세요."
+        self.bridge.set("replyText", msg)
+        self.say(msg, follow_up=False)
+
+    # ================================================================== 상태
+    def _set_state(self, state: str, status: str | None = None) -> None:
+        self.bridge.set("state", state)
+        if status is None:
+            status = {
+                "listening": "듣고 있습니다…",
+                "thinking": "분석 중…",
+                "speaking": "응답 중",
+            }.get(state, "")
+        self.bridge.set("statusText", status)
+        self._sync_listener()
+
+    def _to_idle(self) -> None:
+        if self.busy:
+            self._set_state("thinking")
+            return
+        self.gate.reset()   # 대기 상태로 돌아가면 세션 종료 → 다음에 부르는 사람이 새 주인
+        if not self.mic_ok:
+            self._set_state("offline", "마이크 꺼짐 · 텍스트로 명령하세요")
+        elif self.bridge._wakeEnabled:
+            self._set_state("standby", "“자비스”라고 불러주세요")
+        else:
+            self._set_state("standby", f"{self.cfg['hotkey'].upper()} 또는 코어 클릭")
+
+    def _active(self) -> bool:
+        return time.monotonic() < self.active_until
+
+    def _sync_listener(self) -> None:
+        if hasattr(self, "listener"):
+            self.listener.enabled = bool(self.bridge._wakeEnabled or self._active() or self._pending_confirm
+                                         or self._enroll)
+
+    def _arm(self, seconds: float = 8.0, chime: bool = True) -> None:
+        self.active_until = time.monotonic() + seconds
+        self.listener.force_capture = True
+        if chime:
+            self.chime.play()
+        self._set_state("listening")
+
+    # ================================================================== 입력 처리
+    @Slot()
+    def activate(self) -> None:
+        """코어 클릭 / 단축키."""
+        if not self.win.isVisible():
+            self.toggle_visible(True)
+        if self._enroll:
+            self.cancel_enroll()
+            return
+        if self.speaker.playing:
+            self.tts.cancel()
+            self.gate.reset()
+            self._arm()
+            return
+        if self.busy:
+            self.bridge.toast.emit("info", "처리 중입니다… (‘취소’라고 말하면 중단)")
+            return
+        if not self.mic_ok:
+            self.bridge.toast.emit("warn", "마이크를 사용할 수 없어 텍스트 입력만 가능합니다")
+            return
+        if self._active() and self.bridge._state == "listening":
+            self.active_until = 0
+            self._to_idle()
+            return
+        self.gate.reset()   # 버튼/단축키로 부르면 처음 말하는 사람이 이번 대화의 주인
+        self._arm()
+
+    @Slot(float)
+    def _on_mic(self, level: float) -> None:
+        self.bridge.set("micLevel", round(level, 3))
+
+    @Slot(float)
+    def _on_voice_level(self, level: float) -> None:
+        self.bridge.set("voiceLevel", round(level, 3))
+
+    @Slot()
+    def _on_speech_start(self) -> None:
+        self._speech_while_active = self._active()
+        if self._speech_while_active:
+            self.active_until = time.monotonic() + 16   # 말하는 도중 만료되지 않도록
+
+    @Slot(object, object)
+    def _on_utterance(self, text, voice=None) -> None:
+        if self._enroll:
+            self._enroll_feed(text, voice)
+            return
+        was_active = self._speech_while_active or self._active()
+        self._speech_while_active = False
+        if self._pending_confirm:
+            if text:
+                if NO_RE.search(text):
+                    if self._voice_ok(voice):
+                        self.answer_confirm(self._pending_confirm, False)
+                elif YES_RE.search(text):
+                    if self._voice_ok(voice):
+                        self.answer_confirm(self._pending_confirm, True)
+            return
+        if not text:
+            if was_active and not self.busy and not self.speaker.playing:
+                self.active_until = time.monotonic() + 5
+                self._set_state("listening", "잘 못 들었습니다. 다시 말씀해 주세요")
+            return
+        if self.speaker.playing:
+            return
+        if self.busy:
+            if CANCEL_RE.search(text) and self._voice_ok(voice):
+                self._cancel_busy()
+            return
+        cmd = self._strip_wake(text)
+        if cmd is not None:
+            if not self._voice_ok(voice, wake=True, wake_only=not cmd):
+                return
+            if cmd:
+                self.run_command(cmd)
+            else:
+                self._arm()
+            return
+        if was_active and self._voice_ok(voice):
+            self.run_command(text)
+
+    def _voice_ok(self, voice, wake: bool = False, wake_only: bool = False) -> bool:
+        """명령을 실행하기 직전에 목소리 확인 (주인 전용 / 세션 잠금)."""
+        v = self.gate.check(voice, wake=wake, wake_only=wake_only)
+        if v.score is not None:   # 발화 내용은 남기지 않고 점수만 기록 (기준값 조정용)
+            log.info("화자 확인(%s): 유사도 %.2f / 기준 %.2f → %s", v.mode, v.score, v.threshold,
+                     "통과" if v.ok else "거부")
+        if v.ok:
+            return True
+        if v.reason == "short":
+            msg = "목소리를 확인하기에 너무 짧습니다. 조금 길게 말씀해 주세요"
+        elif v.reason == "owner":
+            msg = f"등록된 목소리가 아니라서 무시했습니다 (유사도 {v.score:.2f})"
+        else:
+            msg = f"호출한 분의 목소리가 아니라서 무시했습니다 (유사도 {v.score:.2f})"
+        if self.bridge._state == "listening":
+            self.bridge.set("statusText", msg)
+        else:
+            self.bridge.toast.emit("warn", msg)
+        return False
+
+    def _strip_wake(self, text: str) -> str | None:
+        words = sorted((w for w in (self.cfg["wake_words"] or []) if w), key=len, reverse=True)
+        for w in words:
+            pat = r"\s*".join(re.escape(ch) for ch in w.replace(" ", ""))
+            m = re.search(pat, text, re.I)
+            if m:
+                rest = (text[:m.start()] + " " + text[m.end():])
+                return rest.strip(" ,.!?~야아").strip()
+        return None
+
+    def run_command(self, text: str) -> None:
+        text = (text or "").strip()
+        if not text:
+            return
+        if self.busy:
+            self.bridge.toast.emit("info", "이전 명령을 처리 중입니다")
+            return
+        self._enroll = None          # 등록 도중 입력창으로 명령하면 등록은 조용히 중단
+        self.tts.cancel()
+        self.active_until = 0
+        self.listener.force_capture = False
+        log.info("명령: %s", text)   # 자비스에게 한 명령만 기록 (주변 대화는 기록하지 않음)
+        self.bridge.set("userText", text)
+        self.bridge.set("replyText", "")
+        self.busy = True
+        self._gen += 1
+        gen = self._gen
+        self._cancel = threading.Event()
+        cancel = self._cancel
+        self._set_state("thinking")
+        self._executor.submit(self._work, text, gen, cancel)
+
+    def _work(self, text: str, gen: int, cancel: threading.Event) -> None:
+        try:
+            reply = self.brain.handle(text, cancel)
+        except Exception as e:
+            log.exception("두뇌 오류")
+            reply = f"오류가 발생했습니다: {e}"
+        self.sig_reply.emit(reply, gen)
+
+    def _cancel_busy(self) -> None:
+        self._cancel.set()
+        self._gen += 1
+        self.busy = False
+        for cid in list(self._confirms):
+            self.answer_confirm(cid, False)
+        self.bridge.set("replyText", "작업을 취소했습니다.")
+        self.say("취소했습니다.", follow_up=False)
+
+    @Slot(object, int)
+    def _on_reply(self, reply, gen: int) -> None:
+        if gen != self._gen:
+            return
+        self.busy = False
+        if not reply:
+            self._to_idle()
+            return
+        self.bridge.set("replyText", reply)
+        self.say(reply)
+
+    # ================================================================== 말하기
+    def say(self, text: str, follow_up: bool = True) -> None:
+        self._follow_up = follow_up
+        self.tts.say(text)
+
+    @Slot()
+    def _on_speak_start(self) -> None:
+        self.listener.muted = True
+        self._set_state("speaking")
+
+    @Slot()
+    def _on_speak_end(self) -> None:
+        QTimer.singleShot(350, self._unmute)
+        if self._enroll:
+            self._enroll_prompt()
+            return
+        if self.busy:
+            self._set_state("thinking")
+        elif (getattr(self, "_follow_up", True) or self._pending_confirm) and self.mic_ok:
+            self.active_until = time.monotonic() + float(self.cfg["follow_up_seconds"] or 7)
+            self.listener.force_capture = True
+            self._set_state("listening", "이어서 말씀하셔도 됩니다")
+        else:
+            self._to_idle()
+
+    def _unmute(self) -> None:
+        if not self.speaker.playing:
+            self.listener.muted = False
+
+    # ================================================================== 도구 이벤트
+    @Slot(str, str, str, str)
+    def _on_action(self, aid: str, label: str, status: str, detail: str) -> None:
+        self.bridge.actionEvent.emit(aid, label, status, detail[:300])
+
+    def _confirm_blocking(self, title: str, detail: str) -> bool:
+        """두뇌 스레드에서 호출: HUD/음성으로 승인 받을 때까지 대기."""
+        cid = uuid.uuid4().hex[:8]
+        ev = threading.Event()
+        self._confirms[cid] = [ev, False]
+        self.sig_confirm.emit(cid, title, detail)
+        answered = ev.wait(45)
+        result = self._confirms.pop(cid, [None, False])[1] if answered else False
+        self._confirms.pop(cid, None)
+        self.sig_confirm_close.emit(cid)
+        return bool(result)
+
+    @Slot(str, str, str)
+    def _on_confirm(self, cid: str, title: str, detail: str) -> None:
+        self._pending_confirm = cid
+        self.bridge.confirmRequest.emit(cid, title, detail)
+        if not self.win.isVisible():
+            self.toggle_visible(True)
+        self.say(f"{title}, 승인하시겠습니까?", follow_up=True)
+
+    @Slot(str)
+    def _on_confirm_close(self, cid: str) -> None:
+        if self._pending_confirm == cid:
+            self._pending_confirm = None
+            self.active_until = 0
+            if self.busy:
+                self._set_state("thinking")
+        self.bridge.confirmClosed.emit(cid)
+
+    def answer_confirm(self, cid: str, approved: bool) -> None:
+        entry = self._confirms.get(cid)
+        if entry:
+            entry[1] = approved
+            entry[0].set()
+        if self._pending_confirm == cid:
+            self._pending_confirm = None
+            self.tts.cancel()
+            self.active_until = 0
+        self.bridge.confirmClosed.emit(cid)
+        if self.busy:
+            self._set_state("thinking")
+
+    @Slot(int, str)
+    def _on_timer_req(self, seconds: int, label: str) -> None:
+        QTimer.singleShot(seconds * 1000, lambda l=label: self._timer_fired(l))
+
+    def _timer_fired(self, label: str) -> None:
+        self.chime.play()
+        title = self.cfg["user_title"] or "주인님"
+        self.bridge.toast.emit("warn", f"⏰ {label}")
+        self.bridge.actionEvent.emit(uuid.uuid4().hex[:8], f"타이머 완료 · {label}", "ok", "")
+        if not self.win.isVisible():
+            self.toggle_visible(True)
+        msg = f"{title}, {label} 시간입니다."
+        self.bridge.set("replyText", msg)
+        self.say(msg, follow_up=False)
+
+    # ================================================================== 주기 작업
+    def _on_tick(self) -> None:
+        if self._enroll and not self._active() and not self.speaker.playing:
+            self.cancel_enroll("목소리 등록 시간이 초과되어 취소했습니다.")
+        if (self.bridge._state == "listening" and not self._active() and not self.busy
+                and not self.speaker.playing and not self._pending_confirm):
+            self.listener.force_capture = False
+            self._to_idle()
+        self._sync_listener()
+
+    def _update_stats(self) -> None:
+        now_net, now_t = psutil.net_io_counters(), time.monotonic()
+        last_net, last_t = self._net_last
+        dt = max(0.001, now_t - last_t)
+        down = (now_net.bytes_recv - last_net.bytes_recv) / dt
+        up = (now_net.bytes_sent - last_net.bytes_sent) / dt
+        self._net_last = (now_net, now_t)
+        if self._stat_n % 15 == 0:
+            try:
+                b = psutil.sensors_battery()
+                self._bat = (b.percent, b.power_plugged) if b else None
+            except Exception:
+                self._bat = None
+        if self._stat_n % 30 == 0:
+            try:
+                self._disk = psutil.disk_usage(os.environ.get("SystemDrive", "C:") + "\\").percent
+            except Exception:
+                pass
+        self._stat_n += 1
+        self.bridge.set("statsJson", json.dumps({
+            "cpu": psutil.cpu_percent(None),
+            "ram": psutil.virtual_memory().percent,
+            "disk": self._disk,
+            "down": down, "up": up,
+            "bat": self._bat[0] if self._bat else -1,
+            "plugged": bool(self._bat[1]) if self._bat else True,
+        }))
+
+    # ================================================================== 화자 인식 / 목소리 등록
+    @Slot()
+    def _on_voice_status(self) -> None:
+        """모델/프로필 상태를 HUD 설정 화면에 반영 (모델 로더 스레드 → 시그널로 호출됨)."""
+        vid, prof = self.voiceid, self.profile
+        if prof.exists:
+            who = f"등록됨 · 문장 {len(prof.samples)}개" + (f" · {prof.created[:10]}" if prof.created else "")
+        else:
+            who = "목소리 미등록"
+        model = {
+            "off": "화자 인식 꺼짐",
+            "downloading": f"음성 모델 다운로드 중 {vid.progress}%",
+            "loading": "음성 모델 준비 중…",
+            "error": f"모델 오류: {vid.error}",
+        }.get(vid.state, "")
+        self.bridge.set("voiceStatus", f"{who} · {model}" if model else who)
+        self.bridge.set("voiceEnrolled", prof.exists)
+        if vid.state in ("downloading", "loading"):
+            self._voice_err_shown = False
+        elif vid.state == "error":
+            self._enroll_when_ready = False
+            if not getattr(self, "_voice_err_shown", False):
+                self._voice_err_shown = True
+                self.bridge.toast.emit("error", f"화자 인식을 쓸 수 없습니다 — {vid.error}")
+        elif vid.ready and self._enroll_when_ready:
+            self._enroll_when_ready = False
+            self.start_enroll()
+
+    def start_enroll(self) -> None:
+        if self._enroll:
+            return
+        if not self.mic_ok:
+            self.bridge.toast.emit("warn", "마이크를 사용할 수 없어 목소리를 등록할 수 없습니다")
+            return
+        if self.busy or self._pending_confirm:
+            self.bridge.toast.emit("info", "지금 하는 작업이 끝난 뒤 다시 시도해 주세요")
+            return
+        if not self.voiceid.ready:
+            self._enroll_when_ready = True
+            self.voiceid.start_loading()
+            self.bridge.toast.emit("info", "음성 모델을 준비하는 중입니다 (처음 한 번 약 28MB 다운로드). "
+                                           "준비되면 바로 등록을 시작합니다")
+            return
+        self._enroll = Enrollment()
+        self.gate.reset()
+        # 안내 음성을 합성하는 동안(재생 전) 시간 초과로 취소되지 않도록 미리 대기 시간을 잡는다
+        self.active_until = time.monotonic() + 30
+        if self.bridge._compact:
+            self.set_compact(False)
+        self.toggle_visible(True)
+        self.bridge.set("userText", "")
+        msg = (f"목소리 등록을 시작합니다. 화면에 나오는 문장 {self._enroll.n}개를 "
+               "평소 말투로 하나씩 읽어 주세요.")
+        self.bridge.set("replyText", msg)
+        self.say(msg, follow_up=False)          # 말이 끝나면 _on_speak_end → 첫 문장 표시
+
+    def _enroll_prompt(self) -> None:
+        e = self._enroll
+        self.bridge.set("replyText", f"“{e.sentence}”")
+        self.active_until = time.monotonic() + 30
+        self.listener.force_capture = True
+        self._set_state("listening", f"목소리 등록 {e.index + 1}/{e.n} · 위 문장을 읽어 주세요 (코어 클릭 시 취소)")
+
+    def _enroll_feed(self, text, voice) -> None:
+        e = self._enroll
+        if self.speaker.playing:
+            return
+        if text and CANCEL_RE.search(text):
+            self.cancel_enroll()
+            return
+        result, msg = e.feed(voice)
+        if result == "ok":
+            self._enroll_prompt()
+        elif result == "retry":
+            self.bridge.set("statusText", msg)
+            self.say(msg, follow_up=False)      # 안내가 끝나면 같은 문장을 다시 표시
+        elif result == "abort":
+            self._enroll = None
+            self.active_until = 0
+            self.listener.force_capture = False
+            self.bridge.set("replyText", msg)
+            self.say(msg, follow_up=False)
+        elif result == "done":
+            self._enroll = None
+            self.active_until = 0
+            self.listener.force_capture = False
+            try:
+                self.profile.save(e.samples)
+            except Exception as ex:
+                log.exception("목소리 프로필 저장 실패")
+                msg = f"목소리 프로필을 저장하지 못했습니다: {ex}"
+            else:
+                self.cfg.update({"owner_only": True})
+                self.gate.reset()
+                title = self.cfg["user_title"] or "주인님"
+                msg = f"목소리 등록을 마쳤습니다. 이제 {title}의 목소리에만 반응합니다."
+                log.info("목소리 등록 완료 (샘플 %d개)", len(e.samples))
+            self._on_voice_status()
+            self.bridge.set("replyText", msg)
+            self.say(msg, follow_up=False)
+
+    def cancel_enroll(self, msg: str = "목소리 등록을 취소했습니다.") -> None:
+        if not self._enroll:
+            return
+        self._enroll = None
+        self.active_until = 0
+        self.listener.force_capture = False
+        self.bridge.set("replyText", msg)
+        self.say(msg, follow_up=False)
+
+    def clear_voice(self) -> None:
+        self.profile.clear()
+        self.cfg.update({"owner_only": False})
+        self.gate.reset()
+        self._on_voice_status()
+        self.bridge.toast.emit("info", "등록된 목소리를 삭제했습니다 — 이제 누구나 부를 수 있습니다")
+
+    # ================================================================== 창/트레이
+    def _place(self, initial: bool = False) -> None:
+        w, h = COMPACT if self.bridge._compact else EXPANDED
+        geo = QGuiApplication.primaryScreen().availableGeometry()
+        if initial:
+            x = geo.right() - w - MARGIN + 1
+            y = (geo.top() + MARGIN) if self.cfg["position"] == "top-right" else (geo.bottom() - h - MARGIN + 1)
+        else:  # 현재 위치 기준으로 오른쪽 모서리(위/아래) 고정
+            g = self.win.geometry()
+            x = g.x() + g.width() - w
+            y = g.y() if self.cfg["position"] == "top-right" else g.y() + g.height() - h
+            x = max(geo.left(), min(x, geo.right() - w))
+            y = max(geo.top(), min(y, geo.bottom() - h))
+        self.win.setGeometry(QRect(x, y, w, h))
+
+    def set_compact(self, on: bool) -> None:
+        self.bridge.set("compact", bool(on))
+        self.cfg.update({"compact": bool(on)})
+        self._place()
+
+    def set_wake(self, on: bool) -> None:
+        self.bridge.set("wakeEnabled", bool(on))
+        self.cfg.update({"wake_word_enabled": bool(on)})
+        if hasattr(self, "act_wake"):
+            self.act_wake.setChecked(bool(on))
+        if not self.busy and not self.speaker.playing and self.bridge._state in ("standby", "listening"):
+            self._to_idle()
+        self.bridge.toast.emit("info", "호출어 대기 켜짐 — “자비스”" if on else
+                               f"호출어 대기 꺼짐 — {self.cfg['hotkey'].upper()} 로 호출")
+
+    def toggle_visible(self, show: bool | None = None) -> None:
+        show = (not self.win.isVisible()) if show is None else show
+        if show:
+            self.win.show()
+            self.win.raise_()
+        else:
+            self.win.hide()
+
+    def save_settings(self, values: dict) -> None:
+        old_hotkey = self.cfg["hotkey"]
+        if not values.get("anthropic_api_key"):
+            values.pop("anthropic_api_key", None)   # 빈 칸이면 기존 키 유지
+        if values.pop("clear_api_key", False):
+            values["anthropic_api_key"] = ""
+        for key, lo, hi in (("mic_sensitivity", 0.3, 3.0), ("speaker_threshold", 0.2, 0.7)):
+            if key in values:
+                try:
+                    values[key] = max(lo, min(hi, float(values[key])))
+                except (TypeError, ValueError):
+                    values.pop(key)
+        if values.get("owner_only") and not self.profile.exists:
+            values["owner_only"] = False
+            self.bridge.toast.emit("warn", "주인 전용 모드는 목소리를 먼저 등록해야 켜집니다")
+        self.cfg.update(values)
+        if self.cfg["speaker_lock"] or self.cfg["owner_only"]:
+            self.voiceid.start_loading()
+        self.gate.reset()
+        self._on_voice_status()
+        self.listener.sensitivity = float(self.cfg["mic_sensitivity"] or 1.0)
+        self.listener.noise_robust = bool(self.cfg["noise_robust"])
+        if self.listener.noise_robust:
+            self.noise_models.start_loading()
+        self.brain.reset()
+        self._refresh_link()
+        if "wake_word_enabled" in values:
+            self.set_wake(bool(values["wake_word_enabled"]))
+        msg = "설정을 저장했습니다"
+        if self.cfg["hotkey"] != old_hotkey:
+            self.hotkey.stop()
+            self.hotkey = GlobalHotkey(self.cfg["hotkey"], self.sig_hotkey.emit)
+            self.hotkey.start()
+            self.bridge.set("hotkeyText", self.cfg["hotkey"].upper())
+            if not self.hotkey.ok:
+                msg += f" (단축키 {self.cfg['hotkey']} 등록 실패)"
+        self.bridge.toast.emit("info", msg)
+        if not self.busy and not self.speaker.playing:
+            self._to_idle()
+
+    def _icon(self) -> QIcon:
+        pm = QPixmap(64, 64)
+        pm.fill(QColor(0, 0, 0, 0))
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        g = QRadialGradient(QPointF(32, 32), 30)
+        g.setColorAt(0.0, QColor(255, 255, 255, 255))
+        g.setColorAt(0.35, QColor(62, 230, 255, 230))
+        g.setColorAt(1.0, QColor(62, 230, 255, 0))
+        p.setBrush(g)
+        p.setPen(QPen(QColor(62, 230, 255), 3))
+        p.drawEllipse(QPointF(32, 32), 27, 27)
+        p.setBrush(QColor(0, 0, 0, 0))
+        p.setPen(QPen(QColor(200, 250, 255), 2))
+        p.drawEllipse(QPointF(32, 32), 15, 15)
+        p.end()
+        ico = DATA_DIR / "jarvis.ico"
+        if not ico.exists():
+            pm.save(str(ico))
+        return QIcon(pm)
+
+    def _refresh_link(self) -> None:
+        """두뇌 연결 상태를 HUD 에 반영."""
+        if self.cfg["brain"] == "local":
+            ok, text, model = False, "LOCAL ONLY · NO TOKENS", "LOCAL"
+        elif (self.cfg["brain"] or "pro") == "pro":
+            ok = bool(Brain.claude_exe())
+            text = "AI LINK · PRO ACCOUNT" if ok else "CLAUDE CODE NOT FOUND"
+            model = f"PRO · {self.cfg['pro_model'] or 'haiku'}"
+        else:
+            ok = bool(self.cfg.api_key())
+            text = "AI LINK · API" if ok else "LOCAL MODE · NO API KEY"
+            model = self.cfg["model"] or ""
+        self.bridge.set("hasApiKey", ok)
+        self.bridge.set("linkText", text)
+        self.bridge.set("modelName", model)
+
+    def _make_tray(self) -> None:
+        icon = self._icon()
+        self.app.setWindowIcon(icon)
+        self.tray = QSystemTrayIcon(icon, self)
+        self.tray.setToolTip("J.A.R.V.I.S")
+        menu = QMenu()
+        menu.addAction("HUD 보이기 / 숨기기", lambda: self.toggle_visible())
+        menu.addAction("지금 듣기", self.activate)
+        self.act_wake = QAction("“자비스” 호출어 대기", menu, checkable=True)
+        self.act_wake.setChecked(bool(self.cfg["wake_word_enabled"]))
+        self.act_wake.toggled.connect(lambda on: on != self.bridge._wakeEnabled and self.set_wake(on))
+        menu.addAction(self.act_wake)
+        menu.addAction("목소리 등록 (주인 인식)", self.start_enroll)
+        self.act_startup = QAction("Windows 시작 시 자동 실행", menu, checkable=True)
+        self.act_startup.setChecked(_startup_link().exists())
+        self.act_startup.toggled.connect(self._toggle_startup)
+        menu.addAction(self.act_startup)
+        menu.addAction("데이터 폴더 열기", lambda: os.startfile(str(DATA_DIR)))
+        menu.addSeparator()
+        menu.addAction("종료", self.quit)
+        self._menu = menu
+        self.tray.setContextMenu(menu)
+        self.tray.activated.connect(self._tray_activated)
+        self.tray.show()
+
+    def _tray_activated(self, reason) -> None:
+        if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):
+            self.toggle_visible()
+
+    def _toggle_startup(self, on: bool) -> None:
+        link = _startup_link()
+        try:
+            if on:
+                import win32com.client
+                exe = Path(sys.executable)
+                pyw = exe.with_name("pythonw.exe")
+                sc = win32com.client.Dispatch("WScript.Shell").CreateShortcut(str(link))
+                sc.TargetPath = str(pyw if pyw.exists() else exe)
+                sc.Arguments = f'"{ROOT / "main.py"}"'
+                sc.WorkingDirectory = str(ROOT)
+                sc.IconLocation = str(DATA_DIR / "jarvis.ico")
+                sc.Description = "J.A.R.V.I.S"
+                sc.Save()
+                self.bridge.toast.emit("info", "Windows 시작 시 자동 실행됩니다")
+            else:
+                link.unlink(missing_ok=True)
+                self.bridge.toast.emit("info", "자동 실행을 해제했습니다")
+        except Exception as e:
+            self.bridge.toast.emit("error", f"자동 실행 설정 실패: {e}")
+
+    # ================================================================== 기타
+    def _make_chime(self) -> QSoundEffect:
+        path = Path(tempfile.gettempdir()) / "jarvis_chime.wav"
+        if not path.exists():
+            sr = 44100
+            parts = []
+            for f, d in ((880, 0.07), (1320, 0.11)):
+                t = np.arange(int(sr * d)) / sr
+                env = np.minimum(1, t / 0.005) * np.exp(-t * 18)
+                tone = np.sin(2 * math.pi * f * t) + 0.3 * np.sin(2 * math.pi * f * 2 * t)
+                parts.append(tone * env)
+            audio = (np.concatenate(parts) * 0.35 * 32767).astype(np.int16)
+            with wave.open(str(path), "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(sr)
+                w.writeframes(audio.tobytes())
+        fx = QSoundEffect(self)
+        fx.setSource(QUrl.fromLocalFile(str(path)))
+        fx.setVolume(0.45)
+        return fx
+
+    def show_external(self) -> None:
+        self.toggle_visible(True)
+
+    def quit(self) -> None:
+        try:
+            self.listener.stop()
+            self.toolserver.stop()
+            self.hotkey.stop()
+            self.focus.stop()
+            self._cancel.set()
+            for cid in list(self._confirms):
+                self.answer_confirm(cid, False)
+            self.tray.hide()
+        finally:
+            self.app.quit()
+
+
+def _startup_link() -> Path:
+    return Path(os.environ.get("APPDATA", "")) / r"Microsoft\Windows\Start Menu\Programs\Startup\JARVIS.lnk"

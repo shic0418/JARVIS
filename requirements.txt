@@ -1,0 +1,12 @@
+PySide6-Essentials>=6.8
+PySide6-Addons>=6.8
+anthropic>=2.0
+SpeechRecognition>=3.11
+sounddevice>=0.5
+edge-tts>=7.0
+pycaw>=20240316
+Pillow>=10
+psutil>=5.9
+numpy>=1.26
+pywin32>=306
+sherpa-onnx>=1.12

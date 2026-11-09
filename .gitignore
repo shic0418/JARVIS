@@ -1,0 +1,8 @@
+# API 키와 개인 기록이 들어 있으므로 공유하지 마세요
+data/
+__pycache__/
+*.pyc
+
+# 수동 백업은 git 이 대신함
+backup/
+.pytest_cache/
