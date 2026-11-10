@@ -147,8 +147,15 @@ class LocalAI:
 
     def warmup(self) -> None:
         """모델을 미리 메모리에 올려 첫 명령도 빠르게 (백그라운드에서 호출)."""
-        if not self.cfg["local_ai"] or not self.available() or self._warming:
+        if not self.cfg["local_ai"] or self._warming:
             return
+        if not self.available():
+            # PC 를 막 켰을 때는 Ollama 가 아직 안 떠 있을 수 있다 → 조금 기다렸다 한 번 더
+            # (기록: 시작 직후 '연결 안 됨' → 첫 명령이 로컬 AI 없이 Claude 로 넘어감)
+            time.sleep(8)
+            self._down_until = 0.0
+            if not self.available():
+                return
         self._warming = True
         try:
             self.classify("안녕", timeout=120)

@@ -44,6 +44,14 @@ SCAN_WINDOW_SECONDS = 2.0    # 주변 대화 상태: 발화를 이 길이 창으
 SCAN_HOP_SECONDS = 0.5
 OWNER_SLACK = 0.08           # 주인 전용: 같은 대화에서 확인된 목소리와 아주 비슷하면 기준보다 이만큼 낮아도 통과
 SHORT_WAKE_SECONDS = 1.2     # 이보다 짧은 "자비스" 한 마디는 주인 확인을 다음 명령으로 미룸
+# ---- 집중 듣기: 주인이 "자비스"라고 부른 뒤에는 그 목소리만 듣는다 ----
+FOCUS_SAME = 0.50            # 방금 부른 목소리와 이 정도 닮으면 같은 사람 (같은 마이크·같은 소음에서 잰 값이라 프로필보다 정확)
+FOCUS_SLACK = 0.12           # 집중 듣기 중: 방금 부른 목소리와 같으면 프로필 점수는 기준보다 이만큼 낮아도 통과
+FOCUS_OTHER = 0.25           # 집중 듣기 중: 방금 부른 목소리와 이보다 덜 닮으면 '다른 사람' — 인식조차 하지 않음
+SPAN_MIN_SECONDS = 3.5       # 이보다 긴 발화에서만 주인이 말한 부분을 잘라낸다
+SPAN_CUT = 0.12              # 기준보다 이만큼 넘게 낮은 창은 주인 목소리가 아닌 부분으로 본다
+SPAN_PAD_SECONDS = 0.4       # 잘라낼 때 앞뒤로 남겨 두는 여유 (말의 첫·끝 음절 보존)
+SPAN_KEEP_RATIO = 0.85       # 주인 부분이 발화의 이 비율을 넘으면 자르지 않는다 (거의 다 주인 말)
 # 기준값 근거 (실제 녹음 3명으로 측정): 등록 프로필 vs 1.5초 발화 → 0.40에서 오거부 2%·오수락 1%,
 # 발화 1개 vs 발화 1개(세션 잠금) → 0.40에서 오거부 0~7%·오수락 1~5%. 실제 마이크·소음 환경에서는 달라질 수 있다.
 
@@ -60,6 +68,7 @@ ENROLL_SENTENCES = [
 class Voice:
     emb: np.ndarray      # 길이 1로 정규화된 임베딩
     seconds: float
+    span: tuple[int, int] | None = None   # (선택) 발화 안에서 받을 사람의 목소리가 들린 구간 (샘플 위치)
 
 
 def cosine(a: np.ndarray, b: np.ndarray) -> float:
@@ -255,6 +264,7 @@ class SpeakerGate:
         self.cfg = cfg
         self.session: np.ndarray | None = None
         self._weight = 0.0
+        self.focused = False         # 주인이 "자비스"라고 불러 확인된 대화 중인가 (그동안은 그 목소리만 듣는다)
 
     def owner_mode(self) -> bool:
         return bool(self.cfg["owner_only"]) and self.profile.exists
@@ -265,38 +275,68 @@ class SpeakerGate:
         except (TypeError, ValueError):
             return 0.40
 
+    def _owner_score(self, voice: Voice) -> float:
+        return self.profile.score(voice)
+
     def maybe_allowed(self, voice: Voice | None) -> bool:
-        """(인식 스레드) 인식하기 전에 미리 보는 확인. 확실히 주인이 아닐 때만 False.
+        """(인식 스레드) 인식하기 전에 미리 보는 확인. 확실히 받지 않을 목소리일 때만 False.
         애매하면 True — 최종 판단은 check() 가 한다. 주인 전용 모드가 아니면 항상 True."""
         if not self.owner_mode() or not self.vid.ready or voice is None:
             return True
         if voice.seconds < SHORT_WAKE_SECONDS:
             return True              # 짧은 "자비스" 한 마디는 지문이 부정확하다 — check() 도 다음 명령으로 미룬다
-        return self.profile.score(voice) >= self.threshold() - PREFILTER_MARGIN
+        s = self._owner_score(voice)
+        th = self.threshold()
+        if s >= th - PREFILTER_MARGIN:
+            return True
+        session = self.session
+        if self.focused and session is not None:
+            # 집중 듣기: 방금 부른 주인 목소리와 같으면 프로필 점수가 낮아도 인식해 본다
+            return s >= th - FOCUS_SLACK and cosine(voice.emb, session) >= FOCUS_SAME
+        return False
 
     def best_voice(self, pcm: np.ndarray) -> Voice | None:
-        """(인식 스레드) 주변 대화 상태용: 발화를 2초 창으로 훑어 주인 프로필과 가장 닮은 창의 지문을 돌려준다.
+        """(인식 스레드) 발화를 2초 창으로 훑어 기준 목소리(주인 프로필)와 가장 닮은 창의 지문을 돌려준다.
         시끄러운 곳에서는 한 구간에 주인 말과 남의 큰 소리가 같이 들어간다 — 통째로 비교하면 주인도 낮게 나온다
         (기록: 교실에서 "자비스 액티브 모드" 가 0.05, 같은 사람의 바로 다음 말은 0.50).
         '이 구간 어딘가에서 주인이 말했는가'를 보는 것이므로, 주인이 말하는 중에 옆 사람이 한 말이 통과할 수 있다.
+        → 돌려주는 Voice.span 에 주인 목소리가 들린 구간을 적어 준다. 듣는 쪽이 그 부분만 인식하면 남의 말은 빠진다.
         주인 전용 모드가 아니면 None (호출한 쪽이 평소 방식으로 계산)."""
         if not self.owner_mode() or not self.vid.ready:
             return None
         win, hop = int(SCAN_WINDOW_SECONDS * RATE), int(SCAN_HOP_SECONDS * RATE)
         if len(pcm) < win + hop:
             return self.vid.embed(pcm)
-        best, best_s = None, -2.0
+        best, best_s, scored = None, -2.0, []
         for i in range(0, len(pcm) - win + 1, hop):
             v = self.vid.embed(pcm[i:i + win])
             if v is not None:
-                s = self.profile.score(v)
+                s = self._owner_score(v)
+                scored.append((i, s))
                 if s > best_s:
                     best, best_s = v, s
+        if best is not None:
+            best.span = self._span(scored, best_s, len(pcm), win)
         return best
+
+    def _span(self, scored: list[tuple[int, float]], best_s: float, n: int, win: int) -> tuple[int, int] | None:
+        """창별 점수 → 받을 사람의 목소리가 들린 구간. 자를 만큼 뚜렷하지 않으면 None (통째로 인식)."""
+        th = self.threshold()
+        if n < SPAN_MIN_SECONDS * RATE or best_s < th:
+            return None              # 짧거나, 주인이 있는지조차 확실하지 않으면 자르지 않는다
+        keep = [i for i, s in scored if s >= th - SPAN_CUT]
+        if not keep:
+            return None
+        pad = int(SPAN_PAD_SECONDS * RATE)
+        a, b = max(0, keep[0] - pad), min(n, keep[-1] + win + pad)
+        if b - a >= n * SPAN_KEEP_RATIO:
+            return None
+        return a, b
 
     def reset(self) -> None:
         """세션 종료 (대기 상태로 돌아가면 호출)."""
         self.session, self._weight = None, 0.0
+        self.focused = False
 
     def _absorb(self, voice: Voice) -> None:
         """세션 기준에 같은 사람의 발화를 더해 점점 정확하게 만든다."""
@@ -321,16 +361,27 @@ class SpeakerGate:
                 return Verdict(True, "owner")
             if voice is None:
                 return Verdict(False, "owner", "short")
-            s = self.profile.score(voice)
-            if s >= th:
-                if s >= th + ABSORB_MARGIN:
+            s = self._owner_score(voice)
+            # 화면·로그에는 소수 둘째 자리로 보인다 — 0.3999 가 '0.40 / 기준 0.40 → 거부' 로 보이지 않게 같은 자리에서 비교
+            if round(s, 2) >= th:
+                if wake and voice.seconds >= SHORT_WAKE_SECONDS:
+                    # 주인이 불렀다 → 지금 이 마이크·이 소음에서의 주인 목소리를 새 기준으로 삼고 집중 듣기 시작
+                    if not self.focused:
+                        self.session, self._weight = None, 0.0
+                    self._absorb(voice)
+                    self.focused = True
+                elif s >= th + ABSORB_MARGIN or (self.focused and self.session is not None
+                                                 and cosine(voice.emb, self.session) >= FOCUS_SAME):
                     self._absorb(voice)          # 이번 대화에서 확실히 주인이었던 목소리
+                    self.focused = True
                 return Verdict(True, "owner", "", s, th)
-            # 기준에 아슬아슬하게 못 미쳐도, 같은 대화에서 이미 확인된 주인 목소리와 아주 비슷하면 통과
-            # (기록: 주인 점수는 0.47~0.89 인데 대화 중 0.37·0.40 으로 거부되어 명령이 무시됨)
-            if self.session is not None and s >= th - OWNER_SLACK:
+            # 기준에 못 미쳐도, 같은 대화에서 이미 확인된 주인 목소리와 아주 비슷하면 통과
+            # (기록: 주인 점수는 0.47~0.89 인데 대화 중 0.32~0.39 로 거부되어 명령이 무시됨)
+            if self.session is not None:
                 same = cosine(voice.emb, self.session)
-                if same >= th + ABSORB_MARGIN:
+                if self.focused and s >= th - FOCUS_SLACK and same >= FOCUS_SAME:
+                    return Verdict(True, "owner", "", s, th)
+                if s >= th - OWNER_SLACK and same >= th + ABSORB_MARGIN:
                     return Verdict(True, "owner", "", s, th)
             return Verdict(False, "owner", "owner", s, th)
         # ---- 세션 잠금 (주인 미등록) ----
@@ -341,7 +392,7 @@ class SpeakerGate:
             self._absorb(voice)                   # 이 사람이 이번 대화의 주인
             return Verdict(True, "session")
         s = cosine(voice.emb, self.session)
-        if s < th:
+        if round(s, 2) < th:
             return Verdict(False, "session", "session", s, th)
         if s >= th + ABSORB_MARGIN:
             # 확실히 같은 사람일 때만 기준에 더한다 — 아슬아슬하게 통과한 다른 사람이 섞이면 기준이 오염된다

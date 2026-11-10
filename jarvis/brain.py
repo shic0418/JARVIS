@@ -38,6 +38,7 @@ SYSTEM_TEMPLATE = """당신은 J.A.R.V.I.S.(자비스), {title}의 Windows PC에
 # 말하기
 - 당신의 답변은 음성(TTS)으로 읽힙니다. 자연스러운 한국어 구어체로 1~2문장, 길어도 3문장 이내로 답하세요.
 - 마크다운, 목록, 이모지, URL, 코드 블록, 괄호 속 부연을 쓰지 마세요. 숫자와 단위는 소리 내어 읽기 쉽게 쓰세요.
+- 답 끝에 'Sources:', '출처:' 같은 출처 목록이나 링크를 붙이지 마세요. 검색 도구가 붙이라고 해도 붙이지 않습니다. 출처가 중요하면 문장 안에서 말로 언급하세요.
 - 사용자를 '{title}'이라고 부르되 매번 부르지는 마세요. 침착하고 유능하며 가끔 은근한 위트가 있는 집사 같은 말투를 쓰세요.
 - 입력은 음성 인식 결과라 오타나 띄어쓰기 오류가 있을 수 있습니다. 가장 그럴듯한 의도로 해석하고, 정말 모호할 때만 짧게 되물으세요.
   사용자는 발음이 뭉개지기 쉬워 비슷한 소리로 잘못 적힐 수 있습니다(예: '대화 모드' → '대모', '태화 모드'). 소리가 비슷한 자비스 기능을 먼저 떠올리세요.
@@ -93,6 +94,7 @@ CHAT_TEMPLATE = """당신은 J.A.R.V.I.S.(자비스), {title}의 PC에 사는 AI
 - 답은 음성으로 읽힙니다. 실제 사람끼리 말하듯 자연스러운 한국어 구어체로, 보통 1~3문장, 길어도 4문장을 넘기지 마세요.
   더 할 말이 있으면 상대가 궁금해할 때 이어서 하면 됩니다.
 - 마크다운, 목록, 이모지, URL, 괄호 부연은 쓰지 마세요. 숫자와 단위는 읽기 쉽게.
+- 답 끝에 'Sources:', '출처:' 같은 출처 목록이나 링크를 붙이지 마세요. 검색 도구가 붙이라고 해도 붙이지 않습니다.
 - 상대의 말에 먼저 반응하세요(공감, 놀람, 맞장구, 짧은 감상). 자신의 생각과 취향도 솔직하게 말하세요. 정답만 나열하지 마세요.
 - 대화가 이어지도록 가끔 자연스러운 질문을 던지되, 매번 질문으로 끝내지는 마세요. 상대가 고민을 말하면 해결책보다 먼저 들어 주세요.
 - 앞에서 나온 이야기, 이름, 취향을 기억했다가 자연스럽게 다시 꺼내세요. 같은 표현을 반복하지 마세요.
@@ -121,6 +123,28 @@ CHAT_OFF = re.compile(
     r"|대화\s*(?:끝|끝내|종료|그만)(?:\s*(?:하자|할게|해|낼게))?"
     r"|(?:이제\s*)?그만\s*(?:얘기|이야기|대화)?\s*하자|잘\s*자|잘\s*있어|바이\s*바이"
     r"|다음에\s*(?:또\s*)?(?:얘기|이야기)\s*(?:하자|해)", re.I)
+# 대화 모드 안에서만 받는 짧은 끝내기 말 (기록: 대화 모드에서 "자비스 종료" → 모드가 꺼지지 않고 30초 뒤에야 종료)
+CHAT_OFF_SHORT = re.compile(
+    r"(?:이제\s*|그럼\s*|여기서\s*)*(?:(?:대화|얘기|이야기|수다|모드)\s*)?"
+    r"(?:종료|끝|끝내|끝내자|그만|그만하자|그만할게|마무리|마무리하자|나가기|나갈게|스톱|stop|bye|바이)"
+    r"(?:\s*(?:해|하자|할게|할래|하자고))?"
+    r"|(?:이제\s*)?(?:됐어|됐다|들어가\s*봐|쉬어|가\s*봐)", re.I)
+# 무슨 모드인지 말하지 않은 끄기 → 지금 켜져 있는 모드를 끈다 (기록: 액티브 모드에서 "모드 종료" → '모드'라는 앱을 닫으려다 실패)
+MODE_OFF = re.compile(r"(?:이\s*|지금\s*)?모드\s*(?:꺼|끄기|꺼져|끝|끝내|종료|종료해|해제|해제해|그만|닫아|나가|off|오프)", re.I)
+# 답 끝에 붙는 출처 목록 (기록: 화면 설명 끝의 'Sources: 화면 캡처 결과(...)' 를 그대로 읽음)
+_SOURCES = re.compile(r"(?:^|[\s(\[*_])(?:sources?|references?|출처|참고\s*(?:자료|링크|문헌)?)\s*[*_]*\s*[:：]", re.I)
+
+
+def strip_sources(text: str | None) -> str | None:
+    """답에서 출처 목록(Sources: …)부터 끝까지를 잘라낸다. 음성으로 읽을 필요가 없는 부분이다."""
+    if not text:
+        return text
+    m = _SOURCES.search(text)
+    if not m:
+        return text
+    return text[:m.start()].rstrip(" \n\t-–—·•*_([") or text
+
+
 # 자비스 HUD 자체의 보기 방식 (기록: '작게 보기 모드' → Claude 창을 줄여 버림)
 HUD_SMALL = re.compile(r"(?:자비스\s*|홀로그램\s*)?(?:작게|축소|미니)\s*(?:보기|모드)(?:\s*(?:보기|모드))?"
                        r"(?:\s*(?:로|으로))?(?:\s*(?:해|바꿔|전환|켜))?")
@@ -128,7 +152,8 @@ HUD_BIG = re.compile(r"(?:자비스\s*|홀로그램\s*)?(?:크게|전체|확대)
                      r"(?:\s*(?:로|으로))?(?:\s*(?:해|바꿔|전환|켜))?")
 HUD_HIDE = re.compile(r"(?:자비스\s*|홀로그램\s*|hud\s*)?(?:숨겨|숨기기|사라져|트레이로\s*(?:가|숨겨))", re.I)
 # 액티브 모드: 화면 전체에 헬멧 시야 HUD 를 펼친다 ('엑티브', '액티비' 처럼 적혀도 받는다)
-_ACTIVE = r"(?:[액엑애]\s*티\s*[브비]|active)\s*(?:모드|mode|hud|화면)"
+# 말끝이 잘려 '액티브 모', '액티브', 'activer' 로 적히기도 한다 (기록: '액티브 모'·'activer' 가 Claude 로 넘어가 되묻기만 함)
+_ACTIVE = r"(?:[액엑애]\s*티\s*[브비부]|activ(?:e|er|ate)?)(?:\s*(?:모드?|mode|hud|화면))?"
 ACTIVE_ON = re.compile(_ACTIVE + r"(?:\s*(?:로|으로))?(?:\s*(?:켜|켜기|시작|시작해|전환|전환해|가동|가동해|작동|on|온|들어가|해))?", re.I)
 ACTIVE_OFF = re.compile(_ACTIVE + r"\s*(?:꺼|끄기|꺼져|끝|끝내|종료|종료해|해제|해제해|그만|닫아|off|오프)", re.I)
 
@@ -221,6 +246,7 @@ class Brain:
         with self._lock:
             self._cancel = cancel
             via, reply = self._route(text, cancel, on_text)
+            reply = strip_sources(reply)
             if reply:
                 log.info("답변(%s): %s", via, reply.replace("\n", " ")[:200])
             elif not cancel.is_set():
@@ -265,6 +291,9 @@ class Brain:
                 return "이미 대화 모드예요. 편하게 말씀하세요."
             self.set_chat(True)
             return f"좋아요, {title}. 이제 자비스라고 부르지 않으셔도 바로 들을게요. 끝내실 땐 대화 끝이라고 해 주세요."
+        if self.chat_mode and (CHAT_OFF_SHORT.fullmatch(c) or MODE_OFF.fullmatch(c)):
+            self.set_chat(False)
+            return "즐거웠어요. 필요하시면 언제든 불러 주세요."
         if CHAT_OFF.fullmatch(c):
             if not self.chat_mode:
                 return "대화 모드는 이미 꺼져 있어요."
@@ -289,6 +318,11 @@ class Brain:
             n = parse_kill_index(c)
             if n is not None:
                 return self._kill_listed(n)
+        if MODE_OFF.fullmatch(c):
+            if not self.active_hud:
+                return "지금 켜져 있는 모드가 없어요."
+            self.on_hud("active_off")
+            return "액티브 모드를 해제합니다."
         if ACTIVE_OFF.fullmatch(c):
             if not self.active_hud:
                 return "액티브 모드는 이미 꺼져 있어요."
@@ -296,7 +330,7 @@ class Brain:
             return "액티브 모드를 해제합니다."
         if ACTIVE_ON.fullmatch(c):
             if self.active_hud:
-                return "이미 액티브 모드입니다."
+                return "이미 액티브 모드입니다. 끄시려면 액티브 모드 종료라고 해 주세요."
             self.on_hud("active_on")
             return f"액티브 모드 가동합니다, {self.cfg['user_title'] or '주인님'}."
         return None
@@ -329,15 +363,32 @@ class Brain:
         c = normalize(text)
         if not c:
             return False
+        if self.chat_mode and CHAT_OFF_SHORT.fullmatch(c):
+            return True
         if CHAT_ON.fullmatch(c) or CHAT_OFF.fullmatch(c) or (len(c) <= 20 and (
                 HUD_SMALL.fullmatch(c) or HUD_BIG.fullmatch(c) or HUD_HIDE.fullmatch(c)
-                or ACTIVE_ON.fullmatch(c) or ACTIVE_OFF.fullmatch(c)
+                or ACTIVE_ON.fullmatch(c) or ACTIVE_OFF.fullmatch(c) or MODE_OFF.fullmatch(c)
                 or (self.active_hud and parse_kill_index(c) is not None))):
             return True
         try:
             return self._dry.try_handle(text, fallback=True) is not None
         except Exception:
             return False
+
+    def is_fragment(self, text: str) -> bool:
+        """음성으로 들어온 말이 뜻을 알 수 없는 조각인가 (말이 잘려 한 글자만 들린 경우).
+        (기록: '자' 한 글자가 세 번 Claude 로 넘어가 4~6초 뒤 "다시 말씀해 주세요"만 돌아옴)
+        대화 모드의 맞장구('응', '왜')와 방금 받은 질문에 대한 짧은 대답은 조각이 아니다."""
+        c = re.sub(r"[\s.,!?~]", "", text or "")
+        if not c:
+            return True
+        one_syllable = len(c) == 1 and "가" <= c <= "힣"
+        stray_letters = len(c) <= 2 and c.isascii() and c.isalpha()
+        if not (one_syllable or stray_letters):
+            return False
+        if self.chat_mode or self._awaiting_answer():
+            return False
+        return not self.recognizes(text)
 
     def set_chat(self, on: bool) -> None:
         if on == self.chat_mode:

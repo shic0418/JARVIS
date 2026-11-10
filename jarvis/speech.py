@@ -47,15 +47,26 @@ def clean_for_speech(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+EDGE_TIMEOUT_SEC = 8       # 보통 1~2초면 끝난다. 이보다 오래 걸리면 연결이 안 되는 것
+EDGE_RETRY_SEC = 90        # 실패한 뒤 이 시간 동안은 바로 오프라인 음성(SAPI)으로 읽는다
+_edge_down_until = 0.0
+
+
 def synthesize(text: str, voice: str, rate: str) -> tuple[bytes, str]:
-    """(오디오 바이트, 확장자) 반환. 워커 스레드에서 호출."""
+    """(오디오 바이트, 확장자) 반환. 워커 스레드에서 호출.
+    edge-tts 가 실패하면 한동안은 시도하지 않고 바로 SAPI 로 읽는다
+    (기록: 인터넷이 불안할 때 문장마다 15초씩 기다린 뒤에야 소리가 남)."""
+    global _edge_down_until
     text = clean_for_speech(text)
     if not text:
         return b"", ".mp3"
-    try:
-        return _edge_tts(text, voice, rate), ".mp3"
-    except Exception as e:
-        log.warning("edge-tts 실패, SAPI로 대체: %s", e)
+    if time.monotonic() >= _edge_down_until:
+        try:
+            return _edge_tts(text, voice, rate), ".mp3"
+        except Exception as e:
+            _edge_down_until = time.monotonic() + EDGE_RETRY_SEC
+            log.warning("edge-tts 실패 (%s) — %d초 동안 오프라인 음성(SAPI)으로 읽습니다",
+                        str(e) or type(e).__name__, EDGE_RETRY_SEC)
     return _sapi(text), ".wav"
 
 
@@ -70,7 +81,7 @@ def _edge_tts(text: str, voice: str, rate: str) -> bytes:
                 buf += chunk["data"]
         return bytes(buf)
 
-    data = asyncio.run(asyncio.wait_for(run(), timeout=15))
+    data = asyncio.run(asyncio.wait_for(run(), timeout=EDGE_TIMEOUT_SEC))
     if not data:
         raise RuntimeError("빈 오디오")
     return data

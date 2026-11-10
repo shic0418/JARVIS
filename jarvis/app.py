@@ -27,10 +27,10 @@ from PySide6.QtQuick import QQuickWindow  # noqa: F401  (루트 객체를 QQuick
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from . import hud_feed, winutil
-from .brain import Brain, situation_text
+from .brain import _SOURCES, Brain, situation_text
 from .config import DATA_DIR, ROOT, UI_DIR, Config
 from .hotkey import GlobalHotkey
-from .listener import Listener
+from .listener import FILTERED, Listener
 from .local_stt import LocalSTT
 from .noise import NoiseModels
 from .speech import TTS, Speaker, split_sentences
@@ -257,6 +257,8 @@ class Jarvis(QObject):
         self._hud_for_confirm = False     # 액티브 모드 중 승인 카드 때문에 작은 HUD 를 잠깐 띄웠는지
         self._stream_gen = -1          # 지금 흘러 들어오는 답의 명령 번호
         self._stream_buf = ""          # 아직 문장이 덜 끝난 조각
+        self._stream_cut = False       # 흘러 들어오는 답에서 출처 목록이 시작되었는가
+        self._until_before = None      # 지금 들리는 소리 때문에 듣기 시간을 늘리기 전의 만료 시각
         self._stream_text = ""         # 지금까지 받은 답 전체 (HUD 표시용)
 
         for sig, slot in ((self.sig_mic, self._on_mic), (self.sig_speech_start, self._on_speech_start),
@@ -342,6 +344,8 @@ class Jarvis(QObject):
         self.gate = SpeakerGate(self.voiceid, self.profile, self.cfg)
         self.listener.embedder = self.voiceid.embed
         self.listener.prefilter = self.gate.maybe_allowed
+        # 주인이 불러서 확인된 대화 중에는 그 목소리에만 집중한다 (목소리 등록 중에는 쓰지 않음)
+        self.listener.focus = lambda: self.gate.focused and not self._enroll
         self.listener.embedder_babble = self.gate.best_voice
         if self.cfg["owner_only"] and not self.profile.exists:
             self.cfg.update({"owner_only": False})
@@ -485,8 +489,25 @@ class Jarvis(QObject):
     @Slot()
     def _on_speech_start(self) -> None:
         self._speech_while_active = self._active()
+        self._until_before = self.active_until if self._speech_while_active else None
         if self._speech_while_active:
             self.active_until = time.monotonic() + 16   # 말하는 도중 만료되지 않도록
+
+    def _undo_extend(self) -> None:
+        """방금 끝난 소리가 받을 목소리가 아니었다 → 그 소리 때문에 늘려 둔 듣기 시간을 되돌린다
+        (다른 사람이 계속 말하면 듣기 상태가 끝없이 이어지던 문제). 주인이 이어 말할 틈은 조금 남긴다."""
+        before, self._until_before = self._until_before, None
+        if before is not None and not self.busy and not self.speaker.playing:
+            self.active_until = min(self.active_until, max(before, time.monotonic() + 2.0))
+
+    def _is_fragment(self, text: str) -> bool:
+        """말이 잘려 들어온 조각인가: 호출어의 일부('자', '자비', '비스')이거나 뜻을 알 수 없는 한 글자."""
+        c = re.sub(r"[\s.,!?~]", "", text or "").lower()
+        if not c:
+            return True
+        if len(c) <= 2 and any(c in w.lower() and c != w.lower() for w in (self.cfg["wake_words"] or []) if w):
+            return True
+        return self.brain.is_fragment(text)
 
     @Slot(object, object)
     def _on_utterance(self, text, voice=None) -> None:
@@ -495,6 +516,10 @@ class Jarvis(QObject):
             return
         was_active = self._speech_while_active or self._active()
         self._speech_while_active = False
+        if voice is FILTERED:
+            # 목소리가 달라 인식하지 않은 소리 — 못 알아들은 것이 아니므로 "다시 말씀해 주세요" 도, 듣기 시간 연장도 없다
+            self._undo_extend()
+            return
         if self._pending_confirm:
             if text:
                 if NO_RE.search(text):
@@ -521,6 +546,10 @@ class Jarvis(QObject):
             # (기록: '아이언맨에 나오는 자비스를 만들 수 있을까' → '나오는  를'로 잘림)
             cmd = None
         if cmd is not None:
+            if cmd and self._is_fragment(cmd):
+                # '자비스' 뒤에 잘린 조각만 붙어 있다 → 호출만 한 것으로 보고 명령을 기다린다
+                log.info("호출어 뒤 잘린 조각(%d자) → 호출만 한 것으로 처리", len(cmd))
+                cmd = ""
             if not self._voice_ok(voice, wake=True, wake_only=not cmd):
                 return
             if cmd:
@@ -529,6 +558,12 @@ class Jarvis(QObject):
                 self._arm()
             return
         if was_active and self._voice_ok(voice):
+            if self._is_fragment(text):
+                log.info("잘린 조각(%d자) → 다시 듣기", len(text))
+                if not self.brain.chat_mode:
+                    self.active_until = time.monotonic() + 6
+                self._set_state("listening", "말씀이 끊겨 들렸습니다. 다시 말씀해 주세요")
+                return
             self.run_command(text)
 
     def _voice_ok(self, voice, wake: bool = False, wake_only: bool = False) -> bool:
@@ -539,6 +574,7 @@ class Jarvis(QObject):
                      "통과" if v.ok else "거부")
         if v.ok:
             return True
+        self._undo_extend()
         if v.reason == "short":
             msg = "목소리를 확인하기에 너무 짧습니다. 조금 길게 말씀해 주세요"
         elif v.reason == "owner":
@@ -561,8 +597,9 @@ class Jarvis(QObject):
     # 실제 녹음(교실)에서 "자비스, 크롬 열어 줘" 가 오프라인 인식에 적힌 모양:
     #   자비크롬 열어줘 · 잡비크롬 열어줘 · 잡비 스크롬 열어줘 · 사비 스크롬 열어줘 · 미스크롬 열어줘
     # '스' 가 뒤 단어에 붙거나 사라진다 → 문장 맨 앞의 '자비/잡비/사비' 는 '스' 없이도 호출로 본다
-    _WAKE_LOOSE = re.compile(r"[자쟈재저잠잡다사]\s*[비빗삐]\s*[스즈수쓰]|잠\s*이\s*스|jarvis"
-                             r"|^\s*[자쟈재저잠잡사]\s*[비빗삐]"
+    # '쟈비스' 처럼 부르면 '쟈비쓰·짜비스·챠비스·자비쯔' 로도 적힌다
+    _WAKE_LOOSE = re.compile(r"[자쟈재저잠잡다사짜쨔챠]\s*[비빗삐]\s*[스즈수쓰쯔]|잠\s*이\s*스|jarvis"
+                             r"|^\s*[자쟈재저잠잡사짜쨔챠]\s*[비빗삐]"
                              r"|^\s*[아어]?\s*[비미]\s*스", re.I)
 
     def _has_wake(self, text: str) -> bool:
@@ -676,10 +713,19 @@ class Jarvis(QObject):
             if not delta.strip():
                 return                      # 내용 없는 줄바꿈만 온 경우 아직 시작하지 않음
             self._stream_gen, self._stream_buf, self._stream_text = gen, "", ""
+            self._stream_cut = False
             self._follow_up = True
             self.tts.stream_begin()
+        if self._stream_cut:
+            return                          # 출처 목록이 시작된 뒤의 글은 읽지도 보여 주지도 않는다
         self._stream_buf += delta
         self._stream_text += delta
+        m = _SOURCES.search(self._stream_text)
+        if m:
+            drop = len(self._stream_text) - m.start()
+            self._stream_text = self._stream_text[:m.start()]
+            self._stream_buf = self._stream_buf[:max(0, len(self._stream_buf) - drop)]
+            self._stream_cut = True
         sentences, self._stream_buf = split_sentences(self._stream_buf)
         for sent in sentences:
             self.tts.stream_feed(sent)

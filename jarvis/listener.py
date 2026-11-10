@@ -78,6 +78,18 @@ STT_HPF_HZ = 80            # 이 아래 저주파(험·진동) 제거
 STT_TARGET_PEAK = 16000.0  # 약 -6dBFS 까지 증폭
 STT_MAX_GAIN = 10.0        # 최대 +20dB (잡음만 과하게 키우지 않도록 제한)
 GOOGLE_RETRY_SEC = 30      # Google 연결 실패 후 이 시간 동안은 오프라인 인식만 사용
+IGNORED_LOG_SEC = 60       # 호출어 없이 지나간 주변 소리는 한 줄씩 적지 않고 이 간격으로 묶어서 적는다
+MIN_SPAN_SECONDS = 1.0     # 주인 목소리 구간이 이보다 짧게 잡히면 자르지 않고 통째로 인식
+
+
+class _Filtered:
+    """on_utterance 의 voice 자리에 넣는 표시: 목소리가 달라 인식하지 않고 버린 소리 (못 알아들은 것과 구분)."""
+
+    def __repr__(self) -> str:
+        return "FILTERED"
+
+
+FILTERED = _Filtered()
 
 _WIN = np.hanning(BLOCK).astype(np.float32)
 _WIN_POW = float(np.mean(_WIN ** 2))
@@ -178,6 +190,11 @@ class Listener:
         # Google 이 준 인식 후보들 중 하나를 고른다 (기본: 첫 번째). app 이 '알아들을 수 있는 명령'을 고르게 바꾼다
         self.pick: Callable[[list[str]], str] = lambda alts: alts[0]
         self._google_down_until = 0.0
+        # 집중 듣기 중인가 (주인이 불러서 확인된 대화 중) — 그동안은 주변이 조용해도 목소리 지문을 먼저 보고,
+        # 다른 사람의 소리는 인식하지 않으며, 한 구간에 섞인 남의 말은 잘라내고 주인 부분만 인식한다
+        self.focus: Callable[[], bool] = lambda: False
+        self._ignored: collections.Counter = collections.Counter()
+        self._ignored_at = time.monotonic()
 
     # ---------- lifecycle ----------
     def start(self) -> bool:
@@ -471,8 +488,23 @@ class Listener:
         self.last_engine = "local"     # 인터넷 끊김 → 오프라인 인식으로 대체
         return self._local(pcm, ai_heard)
 
-    def _embed(self, pcm: np.ndarray, tail: int, near: np.ndarray | None):
-        if near is not None and self.embedder_babble is not None:
+    def _note_ignored(self, kind: str) -> None:
+        """호출어 대기 중 그냥 지나간 소리 — 건수만 모아 두었다가 묶어서 적는다
+        (기록: 교실에서 2~4초마다 한 줄씩 쌓여 하루 로그의 대부분을 차지함)."""
+        self._ignored[kind] += 1
+        now = time.monotonic()
+        if now - self._ignored_at >= IGNORED_LOG_SEC:
+            self._flush_ignored(now)
+
+    def _flush_ignored(self, now: float | None = None) -> None:
+        if self._ignored:
+            log.info("호출어 대기 중 지나간 소리 %d건 (%s)", sum(self._ignored.values()),
+                     ", ".join(f"{k} {n}" for k, n in self._ignored.most_common()))
+            self._ignored.clear()
+        self._ignored_at = time.monotonic() if now is None else now
+
+    def _embed(self, pcm: np.ndarray, tail: int, near: np.ndarray | None, scan: bool = False):
+        if (near is not None or scan) and self.embedder_babble is not None:
             v = self.embedder_babble(pcm[:max(0, len(pcm) - tail)])
             if v is not None:
                 return v
@@ -488,23 +520,41 @@ class Listener:
                 continue
             self.last_note = ""
             emb_job = None
+            standby = self.wake_needed()
+            try:
+                focus = not standby and bool(self.focus())
+            except Exception:
+                focus = False
+            scan = near is not None or focus
+            stt_pcm = pcm
             if self.embedder is not None:
-                emb_job = self._emb_pool.submit(self._embed, pcm, tail, near)
-            if near is not None and emb_job is not None and self.prefilter is not None:
-                # 주변 대화 상태: 큰 소리마다 구간이 잘리므로, 인식(느림)보다 목소리 지문(빠름)을 먼저 본다.
+                emb_job = self._emb_pool.submit(self._embed, pcm, tail, near, scan)
+            if scan and emb_job is not None and self.prefilter is not None:
+                # 주변 대화 상태·집중 듣기: 인식(느림)보다 목소리 지문(빠름)을 먼저 본다.
                 # 확실히 받지 않을 목소리면 인식도, 외부 전송도 하지 않는다
                 # (기록: 교실에서 2~4초마다 남의 말이 인식기에 들어가 주인의 말이 몇 초씩 밀림)
                 try:
                     v = emb_job.result(timeout=5)
                     if not self.prefilter(v):
-                        log.info("발화 %.1f초 · 주변 대화 상태 · 받지 않는 목소리 → 인식 생략", len(pcm) / RATE)
-                        self.on_utterance(None, None)
+                        if standby:
+                            self._note_ignored("다른 목소리")
+                        else:
+                            log.info("발화 %.1f초%s · 받지 않는 목소리 → 인식 생략", len(pcm) / RATE,
+                                     " · 주변 대화 상태" if near is not None else " · 집중 듣기")
+                        self.on_utterance(None, FILTERED)
                         continue
+                    span = getattr(v, "span", None)
+                    if span and span[1] - span[0] >= MIN_SPAN_SECONDS * RATE:
+                        # 한 구간에 남의 말이 앞뒤로 붙어 있다 → 주인 목소리가 들린 부분만 인식한다
+                        stt_pcm = pcm[span[0]:span[1]]
+                        self.last_note = ""
+                        log.info("발화 %.1f초 중 주인 목소리 구간 %.1f~%.1f초만 인식", len(pcm) / RATE,
+                                 span[0] / RATE, span[1] / RATE)
                 except Exception as e:
                     log.warning("목소리 사전 확인 실패: %s", e)
             text = None
             try:
-                text = self._transcribe(rec, sr, pcm, ai_heard)
+                text = self._transcribe(rec, sr, stt_pcm, ai_heard)
             except Exception as e:
                 log.exception("STT 오류: %s", e)
                 text = None
@@ -515,7 +565,12 @@ class Listener:
                 except Exception as e:
                     log.warning("화자 임베딩 실패: %s", e)
             # 진단용 기록 — 말의 내용은 남기지 않는다 (주변 대화가 로그에 쌓이지 않게)
-            log.info("발화 %.1f초 · 크기 %.0f / 배경 %.0f%s · %s · %s", len(pcm) / RATE, info[0], info[1],
-                     " · 주변 대화 상태" if info[2] else "", self.last_engine or "-",
-                     (self.last_note or "인식 실패") if not text else ("호출어 있음" if self.has_wake(text) else f"호출어 없음({len(text)}자)"))
+            wake = bool(text) and self.has_wake(text)
+            if standby and not wake:
+                self._note_ignored("인식 안 됨" if not text and not self.last_note else "호출어 없음")
+            else:
+                self._flush_ignored()
+                log.info("발화 %.1f초 · 크기 %.0f / 배경 %.0f%s · %s · %s", len(pcm) / RATE, info[0], info[1],
+                         " · 주변 대화 상태" if info[2] else "", self.last_engine or "-",
+                         (self.last_note or "인식 실패") if not text else ("호출어 있음" if wake else f"호출어 없음({len(text)}자)"))
             self.on_utterance(text.strip() if text else None, voice)

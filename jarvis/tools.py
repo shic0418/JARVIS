@@ -839,11 +839,18 @@ class PCTools:
         """현재 날씨 + 오늘 예보 (액티브 모드 화면과 get_weather 가 함께 씀)."""
         loc = location or self.cfg["home_city"] or "Seoul"
         url = f"https://wttr.in/{urllib.parse.quote(loc)}?format=j1&lang=ko"
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "curl/8"})
-            data = json.loads(urllib.request.urlopen(req, timeout=10).read().decode("utf-8"))
-        except Exception as e:
-            raise ToolError(f"날씨 정보를 가져오지 못했습니다: {e}")
+        data, err = None, None
+        for attempt in range(2):     # 연결이 한 번 끊겨도 바로 포기하지 않는다 (기록: SSL 연결 시간 초과)
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "curl/8"})
+                data = json.loads(urllib.request.urlopen(req, timeout=7).read().decode("utf-8"))
+                break
+            except Exception as e:
+                err = e
+                if attempt == 0:
+                    time.sleep(1.0)
+        if data is None:
+            raise ToolError(f"날씨 정보를 가져오지 못했습니다: {err}")
         cur = data["current_condition"][0]
         desc = _weather_ko((cur.get("lang_ko") or cur.get("weatherDesc") or [{"value": ""}])[0]["value"])
         today = data["weather"][0]
