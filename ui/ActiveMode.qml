@@ -3,7 +3,9 @@
 //            패널들이 헬멧 곡면을 따라 휘어진 채 가운데에서 날아가 자리를 잡는다. 글자는 암호가 풀리듯 나타난다.
 //   꺼질 때: 같은 과정을 거꾸로 — 모든 것이 가운데로 빨려 들어가며 사라진다.
 //   마우스 · 키보드 입력은 그대로 아래 창으로 통과한다 (켜 둔 채로 PC 를 쓸 수 있음).
+//   단, 아래 가운데의 채팅 입력 바만은 따로 뜬 창이라 눌러서 글로 명령할 수 있다.
 import QtQuick
+import QtQuick.Controls.Basic as QC
 import QtQuick.Shapes
 import QtQuick.Effects
 
@@ -1368,6 +1370,58 @@ Window {
                 GradientStop { position: 0.0; color: ov.c(0) }
                 GradientStop { position: 0.5; color: Qt.rgba(1, 1, 1, 0.55) }
                 GradientStop { position: 1.0; color: ov.c(0) }
+            }
+        }
+    }
+
+    // ---- 채팅 입력 바 ----
+    // 전체 화면 HUD 는 마우스 · 키보드를 아래 창으로 통과시키므로 그 안에서는 글을 칠 수 없다.
+    // 그래서 누를 수 있는 작은 창을 음성 파형 아래에 따로 띄운다 (음성 인식이 잘 안 될 때 글로 명령).
+    Window {
+        id: chatBar
+        objectName: "activeChat"
+        title: "J.A.R.V.I.S CHAT"
+        color: "transparent"
+        flags: Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
+        readonly property real e: ov.seg(0.62, 0.94)
+        visible: ov.visible && e > 0
+        width: Math.max(340, 420 * ov.u); height: Math.max(34, 36 * ov.u)
+        x: ov.x + ov.cx - width / 2
+        y: ov.y + Math.min(ov.height - height - 24 * ov.u, ov.cy + reticle.rr + 150 * ov.u)
+
+        Item {
+            anchors.fill: parent
+            opacity: chatBar.e * ov.flick
+            HoloPanel { anchors.fill: parent; accent: ov.accent; fillAlpha: chatBar.active ? 0.94 : 0.82; cut: 9 }
+            HText {
+                id: chatCaret
+                x: 14; anchors.verticalCenter: parent.verticalCenter
+                text: "›"
+                color: ov.accent
+                font.family: "Bahnschrift"; font.pixelSize: Math.max(17, 17 * ov.u); font.weight: Font.DemiBold
+            }
+            QC.TextField {
+                id: chatInput
+                anchors.left: chatCaret.right; anchors.right: chatHint.left
+                anchors.rightMargin: 8
+                anchors.verticalCenter: parent.verticalCenter
+                color: ov.hot
+                font.pixelSize: Math.max(13, 13 * ov.u)
+                leftPadding: 8; rightPadding: 0; topPadding: 0; bottomPadding: 0
+                placeholderText: chatBar.active ? "명령 입력…" : "여기를 눌러 글로 명령…"
+                placeholderTextColor: Qt.rgba(0.75, 0.93, 1, 0.5)
+                selectionColor: ov.c(0.5)
+                background: Item {}
+                // 처리 중이라 받지 못한 명령은 지우지 않고 남겨 둔다
+                onAccepted: if (text.trim() !== "" && jarvis.submitText(text)) text = ""
+                Keys.onEscapePressed: { text = ""; jarvis.releaseFocus() }
+            }
+            Label {
+                id: chatHint
+                anchors.right: parent.right; anchors.rightMargin: 14
+                anchors.verticalCenter: parent.verticalCenter
+                text: ov.st === "thinking" ? "PROCESSING" : chatBar.active ? "ENTER · ESC" : "CHAT"
+                font.pixelSize: Math.max(9, 9 * ov.u)
             }
         }
     }

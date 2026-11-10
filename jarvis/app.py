@@ -41,7 +41,7 @@ from .voiceid import Enrollment, SpeakerGate, VoiceID, VoiceProfile
 log = logging.getLogger("jarvis.app")
 
 EXPANDED = (420, 724)
-COMPACT = (230, 268)
+COMPACT = (230, 356)     # 엠블럼 + 상태 + 채팅 입력 + 마지막 대답
 MARGIN = 14
 
 YES_RE = re.compile(r"(승인|확인|실행해|진행|응|네|예|그래|좋아|오케이|ok|yes)", re.I)
@@ -135,9 +135,15 @@ class Bridge(QObject):
             getattr(self, name + "Changed").emit()
 
     # ---- QML → Python ----
-    @Slot(str)
-    def submitText(self, text: str) -> None:
-        self.core.run_command(text)
+    @Slot(str, result=bool)
+    def submitText(self, text: str) -> bool:
+        """글로 친 명령. 받아들였으면 True (처리 중이라 못 받았으면 False → 입력창이 글을 남겨 둔다)."""
+        return self.core.run_command(text)
+
+    @Slot()
+    def releaseFocus(self) -> None:
+        """입력창에서 Esc: 키보드 포커스를 사용자의 작업 창으로 돌려준다."""
+        self.core.focus.restore()
 
     @Slot()
     def activate(self) -> None:
@@ -604,13 +610,14 @@ class Jarvis(QObject):
                 return rest.strip(" ,.!?~야아").strip()
         return None
 
-    def run_command(self, text: str) -> None:
+    def run_command(self, text: str) -> bool:
+        """명령을 실행에 넘긴다. 넘겼으면 True, 빈 글이거나 처리 중이라 못 받았으면 False."""
         text = (text or "").strip()
         if not text:
-            return
+            return False
         if self.busy:
             self.bridge.toast.emit("info", "이전 명령을 처리 중입니다")
-            return
+            return False
         self._enroll = None          # 등록 도중 입력창으로 명령하면 등록은 조용히 중단
         self.tts.cancel()
         self.active_until = 0
@@ -625,6 +632,7 @@ class Jarvis(QObject):
         cancel = self._cancel
         self._set_state("thinking")
         self._executor.submit(self._work, text, gen, cancel)
+        return True
 
     def _work(self, text: str, gen: int, cancel: threading.Event) -> None:
         try:
@@ -830,6 +838,9 @@ class Jarvis(QObject):
             self.overlay = roots[0]
             self._overlay_hwnd = int(self.overlay.winId())
             self.focus.own_hwnds.add(self._overlay_hwnd)
+            for w in QGuiApplication.allWindows():      # 채팅 입력 바 (추적 박스가 이 창을 '지금 창'으로 잡지 않게)
+                if w.objectName() == "activeChat":
+                    self.focus.own_hwnds.add(int(w.winId()))
         if on:
             screen = self.win.screen() or QGuiApplication.primaryScreen()
             self.overlay.setGeometry(screen.geometry())

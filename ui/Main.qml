@@ -104,6 +104,59 @@ Window {
                 }
             }
 
+            // 채팅 입력 — 음성 인식이 잘 안 될 때 글로 명령
+            HoloPanel {
+                id: miniBar
+                x: 8; width: parent.width - 16; height: 30
+                y: statusCol.y + statusCol.height + 12
+                accent: win.accent
+                fillAlpha: miniInput.activeFocus ? 0.9 : 0.72
+                cut: 7
+
+                Text {
+                    id: miniCaret
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "›"
+                    color: win.accent
+                    font.family: "Bahnschrift"; font.pixelSize: 16; font.weight: Font.DemiBold
+                }
+                TextField {
+                    id: miniInput
+                    anchors.left: miniCaret.right; anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    color: "#e9fcff"
+                    font.pixelSize: 12
+                    leftPadding: 5; rightPadding: 0; topPadding: 0; bottomPadding: 0
+                    placeholderText: "명령 입력…  (Enter)"
+                    placeholderTextColor: Qt.rgba(0.75, 0.93, 1, 0.42)
+                    selectionColor: win.c(0.5)
+                    background: Item {}
+                    // 처리 중이라 받지 못한 명령은 지우지 않고 남겨 둔다
+                    onAccepted: if (text.trim() !== "" && jarvis.submitText(text)) text = ""
+                    Keys.onEscapePressed: { text = ""; jarvis.releaseFocus() }
+                }
+            }
+            Rectangle {   // 마지막 대답 (글로 물었을 때 읽을 수 있게)
+                visible: jarvis.replyText !== ""
+                x: 8; width: parent.width - 16
+                y: miniBar.y + miniBar.height + 5
+                height: miniReply.height + 10
+                radius: 4
+                color: Qt.rgba(0.0, 0.03, 0.06, 0.74)
+                border.color: win.c(0.25); border.width: 1
+                Text {
+                    id: miniReply
+                    x: 8; y: 5
+                    width: parent.width - 16
+                    text: jarvis.replyText
+                    wrapMode: Text.Wrap
+                    maximumLineCount: 3
+                    elide: Text.ElideRight
+                    color: Qt.rgba(0.85, 0.97, 1, 0.92)
+                    font.pixelSize: 11
+                }
+            }
+
             IconButton {
                 visible: hover.hovered
                 accent: win.accent
