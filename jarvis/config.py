@@ -35,6 +35,8 @@ DEFAULTS: dict = {
     "mic_device": None,               # None = 기본 마이크
     "mic_sensitivity": 1.0,           # 높을수록 작은 소리에도 반응
     "noise_robust": True,             # 소음 환경 모드: 음성 감지 AI + 소음 제거 AI (시끄러운 곳에서 작은 목소리)
+    "beamforming": True,              # 마이크가 2개 이상이면 정면에서 온 목소리만 강조 (옆 사람·TV 소리 줄임)
+    "agc": True,                      # 자동 음량 조절: 멀리서 작게 들어오는 목소리를 실시간으로 키움
     "follow_up_seconds": 7,           # 대답 후 호출어 없이 이어 말할 수 있는 시간
     # --- 자유 대화 모드 ---
     "chat_idle_seconds": 40,          # 대화 모드에서 이 시간 동안 아무 말이 없으면 대화 모드 종료

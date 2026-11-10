@@ -161,6 +161,7 @@ class Bridge(QObject):
     def settingsJson(self) -> str:
         out = self.core.cfg.public()
         out["stt_status"] = self.core.stt_status()
+        out["mic_status"] = self.core.listener.frontend_status() if self.core.mic_ok else ""
         return json.dumps(out, ensure_ascii=False)
 
     @Slot(str)
@@ -324,6 +325,8 @@ class Jarvis(QObject):
         self.noise_models = NoiseModels()
         self.listener.noise_models = self.noise_models
         self.listener.noise_robust = bool(self.cfg["noise_robust"])
+        self.listener.beamforming = bool(self.cfg["beamforming"])
+        self.listener.agc = bool(self.cfg["agc"])
         if self.listener.noise_robust and not args.no_mic:
             self.noise_models.start_loading()
         # ---- 오프라인 음성 인식 (호출어 대기 중 주변 소리를 밖으로 보내지 않음, 인터넷 끊겨도 동작) ----
@@ -338,6 +341,8 @@ class Jarvis(QObject):
         self.profile = VoiceProfile()
         self.gate = SpeakerGate(self.voiceid, self.profile, self.cfg)
         self.listener.embedder = self.voiceid.embed
+        self.listener.prefilter = self.gate.maybe_allowed
+        self.listener.embedder_babble = self.gate.best_voice
         if self.cfg["owner_only"] and not self.profile.exists:
             self.cfg.update({"owner_only": False})
         self._on_voice_status()
@@ -551,11 +556,18 @@ class Jarvis(QObject):
         return not (self._active() or self._speech_while_active or self._pending_confirm
                     or self._enroll or self.busy)
 
-    _WAKE_LOOSE = re.compile(r"[자쟈재저]\s*[비빗]\s*[스즈수]|jarvis", re.I)
+    # 소음 속에서는 오프라인 인식이 '잠비스·다비스·잡비스·잠이스' 로 적기도 한다 (교실 소음 시험에서 확인)
+    # 첫 음절이 소음에 묻히면 문장 맨 앞이 '비스 …', '아미스 …', '미스 …' 로 적힌다 → 맨 앞에 있을 때만 호출로 본다
+    # 실제 녹음(교실)에서 "자비스, 크롬 열어 줘" 가 오프라인 인식에 적힌 모양:
+    #   자비크롬 열어줘 · 잡비크롬 열어줘 · 잡비 스크롬 열어줘 · 사비 스크롬 열어줘 · 미스크롬 열어줘
+    # '스' 가 뒤 단어에 붙거나 사라진다 → 문장 맨 앞의 '자비/잡비/사비' 는 '스' 없이도 호출로 본다
+    _WAKE_LOOSE = re.compile(r"[자쟈재저잠잡다사]\s*[비빗삐]\s*[스즈수쓰]|잠\s*이\s*스|jarvis"
+                             r"|^\s*[자쟈재저잠잡사]\s*[비빗삐]"
+                             r"|^\s*[아어]?\s*[비미]\s*스", re.I)
 
     def _has_wake(self, text: str) -> bool:
         # 오프라인 인식은 '자비스'를 '재비스'처럼 적기도 하므로 조금 느슨하게 본다
-        return self._strip_wake(text) is not None or bool(self._WAKE_LOOSE.search(text or ""))
+        return self._strip_wake(text or "") is not None
 
     def _apply_stt_engine(self, start: bool = True) -> None:
         engine = self.cfg["stt_engine"] or "auto"
@@ -582,7 +594,8 @@ class Jarvis(QObject):
             m = re.search(pat, text, re.I)
             if m and m.start() <= 3:
                 return True
-        return False
+        m = self._WAKE_LOOSE.search(text or "")
+        return bool(m and m.start() <= 3)
 
     def _pick_alt(self, alts: list[str]) -> str:
         """(인식 스레드) Google 이 준 후보 중 자비스가 알아들을 수 있는 명령을 고른다.
@@ -608,6 +621,9 @@ class Jarvis(QObject):
             if m:
                 rest = (text[:m.start()] + " " + text[m.end():])
                 return rest.strip(" ,.!?~야아").strip()
+        m = self._WAKE_LOOSE.search(text or "")   # 뭉개져 적힌 호출어도 호출로 받는다 (_has_wake 와 같은 기준)
+        if m:
+            return (text[:m.start()] + " " + text[m.end():]).strip(" ,.!?~야아").strip()
         return None
 
     def run_command(self, text: str) -> bool:
@@ -1270,6 +1286,8 @@ class Jarvis(QObject):
         self._on_voice_status()
         self.listener.sensitivity = float(self.cfg["mic_sensitivity"] or 1.0)
         self.listener.noise_robust = bool(self.cfg["noise_robust"])
+        self.listener.beamforming = bool(self.cfg["beamforming"])
+        self.listener.agc = bool(self.cfg["agc"])
         if self.listener.noise_robust:
             self.noise_models.start_loading()
         self._apply_stt_engine(start=self.mic_ok)

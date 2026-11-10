@@ -66,6 +66,8 @@ Item {
         approveSw.checked = !!cfg.auto_approve
         sens.value = cfg.mic_sensitivity || 1.0
         noiseSw.checked = cfg.noise_robust !== false
+        beamSw.checked = cfg.beamforming !== false
+        agcSw.checked = cfg.agc !== false
         sttBox.currentIndex = Math.max(0, sttEngines.findIndex(m => m.v === cfg.stt_engine))
         lockSw.checked = cfg.speaker_lock !== false
         ownerSw.checked = !!cfg.owner_only && jarvis.voiceEnrolled
@@ -91,6 +93,8 @@ Item {
             auto_approve: approveSw.checked,
             mic_sensitivity: Math.round(sens.value * 10) / 10,
             noise_robust: noiseSw.checked,
+            beamforming: beamSw.checked,
+            agc: agcSw.checked,
             stt_engine: sttEngines[sttBox.currentIndex].v,
             speaker_lock: lockSw.checked,
             owner_only: ownerSw.checked,
@@ -270,6 +274,9 @@ Item {
                 Label2 { text: "MIC SENSITIVITY  ·  " + sens.value.toFixed(1) }
                 HSlider { id: sens; from: 0.5; to: 3.0; stepSize: 0.1 }
                 Toggle { id: noiseSw; text: "소음 환경 모드 (시끄러운 곳에서 작은 목소리)" }
+                Toggle { id: beamSw; text: "빔포밍 (정면 목소리 강조 · 마이크 2개 이상)" }
+                Toggle { id: agcSw; text: "자동 음량 조절 (멀리서 말해도 키워서 듣기)" }
+                Hint { text: sp.cfg.mic_status || ""; font.pixelSize: 11 }
                 Label2 { text: "SPEECH RECOGNITION  ·  음성 인식" }
                 Combo { id: sttBox; model: sp.sttEngines }
                 Hint { text: sp.cfg.stt_status || ""; font.pixelSize: 11 }

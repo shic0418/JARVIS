@@ -39,6 +39,9 @@ MIN_SECONDS = 0.5            # 이보다 짧은 소리는 판별하지 않음
 ENROLL_MIN_SECONDS = 1.0     # 등록 문장은 최소 이만큼은 말해야 함
 ENROLL_CONSISTENCY = 0.40    # 등록 중 앞 녹음들과 이 정도는 닮아야 같은 사람으로 봄
 ABSORB_MARGIN = 0.15         # 세션 기준보다 이만큼 더 높게 일치할 때만 세션 기준을 보강
+PREFILTER_MARGIN = 0.08      # 주인 전용: 기준보다 이만큼 넘게 낮으면 '확실히 다른 사람' — 인식조차 하지 않음
+SCAN_WINDOW_SECONDS = 2.0    # 주변 대화 상태: 발화를 이 길이 창으로 훑어 주인과 가장 닮은 부분으로 판별
+SCAN_HOP_SECONDS = 0.5
 OWNER_SLACK = 0.08           # 주인 전용: 같은 대화에서 확인된 목소리와 아주 비슷하면 기준보다 이만큼 낮아도 통과
 SHORT_WAKE_SECONDS = 1.2     # 이보다 짧은 "자비스" 한 마디는 주인 확인을 다음 명령으로 미룸
 # 기준값 근거 (실제 녹음 3명으로 측정): 등록 프로필 vs 1.5초 발화 → 0.40에서 오거부 2%·오수락 1%,
@@ -261,6 +264,35 @@ class SpeakerGate:
             return float(self.cfg["speaker_threshold"])
         except (TypeError, ValueError):
             return 0.40
+
+    def maybe_allowed(self, voice: Voice | None) -> bool:
+        """(인식 스레드) 인식하기 전에 미리 보는 확인. 확실히 주인이 아닐 때만 False.
+        애매하면 True — 최종 판단은 check() 가 한다. 주인 전용 모드가 아니면 항상 True."""
+        if not self.owner_mode() or not self.vid.ready or voice is None:
+            return True
+        if voice.seconds < SHORT_WAKE_SECONDS:
+            return True              # 짧은 "자비스" 한 마디는 지문이 부정확하다 — check() 도 다음 명령으로 미룬다
+        return self.profile.score(voice) >= self.threshold() - PREFILTER_MARGIN
+
+    def best_voice(self, pcm: np.ndarray) -> Voice | None:
+        """(인식 스레드) 주변 대화 상태용: 발화를 2초 창으로 훑어 주인 프로필과 가장 닮은 창의 지문을 돌려준다.
+        시끄러운 곳에서는 한 구간에 주인 말과 남의 큰 소리가 같이 들어간다 — 통째로 비교하면 주인도 낮게 나온다
+        (기록: 교실에서 "자비스 액티브 모드" 가 0.05, 같은 사람의 바로 다음 말은 0.50).
+        '이 구간 어딘가에서 주인이 말했는가'를 보는 것이므로, 주인이 말하는 중에 옆 사람이 한 말이 통과할 수 있다.
+        주인 전용 모드가 아니면 None (호출한 쪽이 평소 방식으로 계산)."""
+        if not self.owner_mode() or not self.vid.ready:
+            return None
+        win, hop = int(SCAN_WINDOW_SECONDS * RATE), int(SCAN_HOP_SECONDS * RATE)
+        if len(pcm) < win + hop:
+            return self.vid.embed(pcm)
+        best, best_s = None, -2.0
+        for i in range(0, len(pcm) - win + 1, hop):
+            v = self.vid.embed(pcm[i:i + win])
+            if v is not None:
+                s = self.profile.score(v)
+                if s > best_s:
+                    best, best_s = v, s
+        return best
 
     def reset(self) -> None:
         """세션 종료 (대기 상태로 돌아가면 호출)."""
