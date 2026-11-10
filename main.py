@@ -16,7 +16,7 @@ from logging.handlers import RotatingFileHandler
 os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
 os.environ.setdefault("QSG_RHI_BACKEND", "d3d11")
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QtMsgType, QTimer, Qt, qInstallMessageHandler
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication
@@ -33,6 +33,12 @@ def setup_logging() -> None:
         handlers.append(logging.StreamHandler())
     logging.basicConfig(level=logging.INFO, handlers=handlers,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # Qt · QML 경고도 로그 파일에 남긴다 (pythonw 로 켜면 콘솔이 없어 QML 오류 원인을 볼 수 없음)
+    qt_log = logging.getLogger("qt")
+    levels = {QtMsgType.QtDebugMsg: logging.DEBUG, QtMsgType.QtInfoMsg: logging.INFO,
+              QtMsgType.QtWarningMsg: logging.WARNING, QtMsgType.QtCriticalMsg: logging.ERROR,
+              QtMsgType.QtFatalMsg: logging.CRITICAL}
+    qInstallMessageHandler(lambda mode, ctx, msg: qt_log.log(levels.get(mode, logging.WARNING), "%s", msg))
 
 
 def already_running() -> bool:

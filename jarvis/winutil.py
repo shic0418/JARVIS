@@ -238,3 +238,14 @@ def set_capture_excluded(hwnd: int, excluded: bool) -> None:
         user32.SetWindowDisplayAffinity(hwnd, 0x11 if excluded else 0x0)
     except Exception:
         pass
+
+
+def reduce_motion() -> bool:
+    """Windows 설정 '애니메이션 효과' 가 꺼져 있으면 True (액티브 모드 HUD 가 회전 · 스캔 연출을 멈춤)."""
+    try:
+        on = wt.BOOL()
+        if user32.SystemParametersInfoW(0x1042, 0, ctypes.byref(on), 0):   # SPI_GETCLIENTAREAANIMATION
+            return not bool(on.value)
+    except Exception:
+        pass
+    return False

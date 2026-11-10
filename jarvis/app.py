@@ -845,6 +845,10 @@ class Jarvis(QObject):
         """화면 전체에 헬멧 시야 HUD 를 펼치거나 접는다. 입력은 아래 창으로 통과하므로 켠 채로 PC 를 쓸 수 있다."""
         on = bool(on)
         if on and self.overlay is None:
+            # 움직임 줄이기: 설정 hud_motion (auto 면 Windows '애니메이션 효과' 꺼짐일 때 회전 · 스캔 연출을 멈춤)
+            motion = str(self.cfg.get("hud_motion", "auto")).lower()
+            calm = motion == "off" or (motion not in ("on", "true", "1") and winutil.reduce_motion())
+            self.engine.rootContext().setContextProperty("reduceMotion", calm)
             self.engine.load(QUrl.fromLocalFile(str(UI_DIR / "ActiveMode.qml")))
             roots = [o for o in self.engine.rootObjects() if o.objectName() == "activeMode"]
             if not roots:

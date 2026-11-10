@@ -53,6 +53,7 @@ DEFAULTS: dict = {
     # --- 화면 ---
     "position": "bottom-right",       # bottom-right | top-right
     "compact": False,
+    "hud_motion": "auto",             # 액티브 모드 회전 · 스캔 연출: auto = Windows '애니메이션 효과' 설정을 따름 | on | off
 }
 
 _lock = threading.Lock()
