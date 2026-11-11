@@ -26,7 +26,7 @@ from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickWindow  # noqa: F401  (루트 객체를 QQuickWindow 로 받기 위해 필요)
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
-from . import hud_feed, winutil
+from . import approval, hearing, hud_feed, winutil
 from .brain import _SOURCES, Brain, situation_text
 from .config import DATA_DIR, ROOT, UI_DIR, Config
 from .hotkey import GlobalHotkey
@@ -44,8 +44,6 @@ EXPANDED = (420, 724)
 COMPACT = (230, 356)     # 엠블럼 + 상태 + 채팅 입력 + 마지막 대답
 MARGIN = 14
 
-YES_RE = re.compile(r"(승인|확인|실행해|진행|응|네|예|그래|좋아|오케이|ok|yes)", re.I)
-NO_RE = re.compile(r"(취소|아니|거부|하지\s*마|안\s*돼|중지|no|노)", re.I)
 CANCEL_RE = re.compile(r"(취소|그만|멈춰|중지|스톱|stop)", re.I)
 
 
@@ -73,7 +71,6 @@ class Bridge(QObject):
     chatModeChanged = Signal()
     activeModeChanged = Signal()
     timersJsonChanged = Signal()
-    procsJsonChanged = Signal()
     weatherJsonChanged = Signal()
     targetJsonChanged = Signal()
 
@@ -100,7 +97,6 @@ class Bridge(QObject):
     chatMode = _ro("chatMode", bool, chatModeChanged)
     activeMode = _ro("activeMode", bool, activeModeChanged)
     timersJson = _ro("timersJson", str, timersJsonChanged)      # 돌고 있는 타이머 [{label, end(ms), total(s)}]
-    procsJson = _ro("procsJson", str, procsJsonChanged)         # 액티브 모드: 무거운 프로그램 상위 5개
     weatherJson = _ro("weatherJson", str, weatherJsonChanged)   # 액티브 모드: 날씨
     targetJson = _ro("targetJson", str, targetJsonChanged)      # 액티브 모드: 추적 박스 (지금 창 / 짚은 위치)
 
@@ -125,7 +121,6 @@ class Bridge(QObject):
         self._chatMode = False
         self._activeMode = False
         self._timersJson = "[]"
-        self._procsJson = "[]"
         self._weatherJson = "{}"
         self._targetJson = "{}"
 
@@ -336,6 +331,8 @@ class Jarvis(QObject):
         self.listener.local_stt = self.local_stt
         self.listener.wake_needed = self._wake_needed
         self.listener.has_wake = self._has_wake
+        self.listener.retry_cut = self._retry_cut
+        self.listener.understands = self.brain.recognizes
         self.listener.pick = self._pick_alt
         self._apply_stt_engine(start=not args.no_mic)
         # ---- 화자 인식 (누가 말했는지) ----
@@ -450,6 +447,7 @@ class Jarvis(QObject):
         if chime:
             self.chime.play()
         self._set_state("listening")
+        self.brain.prewarm()   # 말하는 동안 Claude Code 를 미리 띄워 둔다
 
     # ================================================================== 입력 처리
     @Slot()
@@ -521,13 +519,10 @@ class Jarvis(QObject):
             self._undo_extend()
             return
         if self._pending_confirm:
-            if text:
-                if NO_RE.search(text):
-                    if self._voice_ok(voice):
-                        self.answer_confirm(self._pending_confirm, False)
-                elif YES_RE.search(text):
-                    if self._voice_ok(voice):
-                        self.answer_confirm(self._pending_confirm, True)
+            # 문장 전체가 승인/거부 표현일 때만 대답으로 받는다 (approval.py). 그 밖의 말은 무시 — 카드는 그대로
+            verdict = approval.answer(text) if text else None
+            if verdict is not None and self._voice_ok(voice):
+                self.answer_confirm(self._pending_confirm, verdict)
             return
         if not text:
             if was_active and not self.busy and not self.speaker.playing:
@@ -592,19 +587,9 @@ class Jarvis(QObject):
         return not (self._active() or self._speech_while_active or self._pending_confirm
                     or self._enroll or self.busy)
 
-    # 소음 속에서는 오프라인 인식이 '잠비스·다비스·잡비스·잠이스' 로 적기도 한다 (교실 소음 시험에서 확인)
-    # 첫 음절이 소음에 묻히면 문장 맨 앞이 '비스 …', '아미스 …', '미스 …' 로 적힌다 → 맨 앞에 있을 때만 호출로 본다
-    # 실제 녹음(교실)에서 "자비스, 크롬 열어 줘" 가 오프라인 인식에 적힌 모양:
-    #   자비크롬 열어줘 · 잡비크롬 열어줘 · 잡비 스크롬 열어줘 · 사비 스크롬 열어줘 · 미스크롬 열어줘
-    # '스' 가 뒤 단어에 붙거나 사라진다 → 문장 맨 앞의 '자비/잡비/사비' 는 '스' 없이도 호출로 본다
-    # '쟈비스' 처럼 부르면 '쟈비쓰·짜비스·챠비스·자비쯔' 로도 적힌다
-    _WAKE_LOOSE = re.compile(r"[자쟈재저잠잡다사짜쨔챠]\s*[비빗삐]\s*[스즈수쓰쯔]|잠\s*이\s*스|jarvis"
-                             r"|^\s*[자쟈재저잠잡사짜쨔챠]\s*[비빗삐]"
-                             r"|^\s*[아어]?\s*[비미]\s*스", re.I)
-
     def _has_wake(self, text: str) -> bool:
-        # 오프라인 인식은 '자비스'를 '재비스'처럼 적기도 하므로 조금 느슨하게 본다
-        return self._strip_wake(text or "") is not None
+        # 오프라인 인식은 '자비스'를 '잠비스 · 잡비스'처럼 적기도 하므로 조금 느슨하게 본다 (hearing.py)
+        return hearing.find_wake(text or "", self.cfg["wake_words"]) is not None
 
     def _apply_stt_engine(self, start: bool = True) -> None:
         engine = self.cfg["stt_engine"] or "auto"
@@ -626,13 +611,7 @@ class Jarvis(QObject):
         return ""
 
     def _wake_at_start(self, text: str) -> bool:
-        for w in (w for w in (self.cfg["wake_words"] or []) if w):
-            pat = r"\s*".join(re.escape(ch) for ch in w.replace(" ", ""))
-            m = re.search(pat, text, re.I)
-            if m and m.start() <= 3:
-                return True
-        m = self._WAKE_LOOSE.search(text or "")
-        return bool(m and m.start() <= 3)
+        return hearing.wake_at_start(text or "", self.cfg["wake_words"])
 
     def _pick_alt(self, alts: list[str]) -> str:
         """(인식 스레드) Google 이 준 후보 중 자비스가 알아들을 수 있는 명령을 고른다.
@@ -650,18 +629,18 @@ class Jarvis(QObject):
                 return a
         return alts[0]
 
+    def _retry_cut(self, text: str, tokens: list, stamps: list) -> float | None:
+        """(인식 스레드) 오프라인 인식이 호출어는 들었는데 명령은 못 알아들은 경우, 호출어가 끝나는 시각.
+        listener 가 그 뒤쪽 소리만 다시 받아 적는다. 다시 볼 필요가 없으면 None."""
+        cmd = self._strip_wake(text)
+        if not cmd or self.brain.recognizes(cmd):
+            return None
+        return hearing.wake_end_time(tokens, stamps, self.cfg["wake_words"])
+
     def _strip_wake(self, text: str) -> str | None:
-        words = sorted((w for w in (self.cfg["wake_words"] or []) if w), key=len, reverse=True)
-        for w in words:
-            pat = r"\s*".join(re.escape(ch) for ch in w.replace(" ", ""))
-            m = re.search(pat, text, re.I)
-            if m:
-                rest = (text[:m.start()] + " " + text[m.end():])
-                return rest.strip(" ,.!?~야아").strip()
-        m = self._WAKE_LOOSE.search(text or "")   # 뭉개져 적힌 호출어도 호출로 받는다 (_has_wake 와 같은 기준)
-        if m:
-            return (text[:m.start()] + " " + text[m.end():]).strip(" ,.!?~야아").strip()
-        return None
+        """호출어를 뗀 명령 (호출어만 말했으면 ''), 호출어가 없으면 None. 뭉개져 적힌 호출어도 받는다.
+        양 끝의 '야 · 아' 는 지우지 않는다 ('자비스, 아이유 노래 틀어 줘' 가 '이유 노래…' 로 바뀌던 문제)."""
+        return hearing.strip_wake(text or "", self.cfg["wake_words"])
 
     def run_command(self, text: str) -> bool:
         """명령을 실행에 넘긴다. 넘겼으면 True, 빈 글이거나 처리 중이라 못 받았으면 False."""
@@ -706,7 +685,7 @@ class Jarvis(QObject):
 
     @Slot(int, str)
     def _on_stream(self, gen: int, delta: str) -> None:
-        """대화 모드: 답이 만들어지는 대로 화면에 보이고, 문장이 완성될 때마다 바로 읽는다."""
+        """답이 만들어지는 대로 화면에 보이고, 문장이 완성될 때마다 바로 읽는다 (대화 모드 · Claude 명령)."""
         if gen != self._gen:
             return
         if self._stream_gen != gen:
@@ -958,20 +937,16 @@ class Jarvis(QObject):
             self._focus_timer.stop()
         self._point_until = 0.0
         self._target_hwnd = 0
-        self.brain.hud_procs = []
         self.bridge.set("targetJson", "{}")
 
     def _proc_loop(self, stop: threading.Event) -> None:
-        """무거운 프로그램 상위 목록 (2초마다). 첫 측정은 CPU 값이 없어 곧바로 한 번 더 잰다."""
+        """프로세스별 CPU · 메모리 측정 (2초마다, 추적 박스용). 첫 측정은 CPU 값이 없어 곧바로 한 번 더 잰다."""
         if self._proc_watch is None:
             self._proc_watch = hud_feed.ProcWatch()
         first = True
         while not stop.is_set():
             try:
-                rows = self._proc_watch.sample()
-                if not stop.is_set():
-                    self.brain.hud_procs = rows
-                    self.sig_feed.emit("procsJson", json.dumps(rows, ensure_ascii=False))
+                self._proc_watch.sample()   # 추적 박스에 보여 줄 창별 CPU · 메모리
             except Exception:
                 log.exception("프로세스 목록 실패")
             if stop.wait(0.6 if first else 2.0):
@@ -992,8 +967,6 @@ class Jarvis(QObject):
 
     @Slot(str, str)
     def _on_feed(self, name: str, value: str) -> None:
-        if name == "procsJson" and not self.bridge._activeMode:
-            return
         self.bridge.set(name, value)
 
     def _overlay_dpr(self) -> float:
@@ -1481,6 +1454,7 @@ class Jarvis(QObject):
     def quit(self) -> None:
         try:
             self.listener.stop()
+            self.brain.shutdown()
             self.toolserver.stop()
             self.hotkey.stop()
             self.focus.stop()

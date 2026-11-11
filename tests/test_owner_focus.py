@@ -343,9 +343,7 @@ def test_edge_failure_skips_edge_for_a_while(monkeypatch):
 def test_wake_variants():
     import pathlib
     import re
-    src = pathlib.Path(__file__).resolve().parent.parent.joinpath("jarvis", "app.py").read_text(encoding="utf-8")
-    body = src.split("_WAKE_LOOSE = re.compile(", 1)[1].split(", re.I)", 1)[0]
-    loose = re.compile(eval("(" + body + ")"), re.I)
+    from jarvis.hearing import WAKE_LOOSE as loose
     for t in ("쟈비스 크롬 열어 줘", "쟈비쓰", "짜비스 날씨", "챠비스 볼륨 올려", "쟈비 크롬 열어"):
         assert loose.search(t), t
     for t in ("서비스 센터 알려 줘", "차비 얼마야", "크롬 열어 줘"):

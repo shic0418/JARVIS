@@ -1,4 +1,4 @@
-"""계속 켜 두는 Claude Code 대화 세션 (자유 대화 모드용).
+"""계속 켜 두는 Claude Code 대화 세션 (자유 대화 모드 · 일반 명령 공용).
 
 매 질문마다 `claude -p` 를 새로 띄우면 프로세스 시작에만 2~5초가 걸린다. 대화 모드에서는
 프로세스 하나를 켜 두고 stdin 으로 말을 계속 넣는다(stream-json 입력). 답은 글자 단위로
@@ -28,6 +28,12 @@ class ClaudeSession:
         self.session_id: str | None = None
         self._err: collections.deque[str] = collections.deque(maxlen=40)
         self._lock = threading.Lock()
+        self._req = 0
+
+    @property
+    def busy(self) -> bool:
+        """지금 질문을 처리하는 중인가."""
+        return self._lock.locked()
 
     @property
     def alive(self) -> bool:
@@ -50,6 +56,57 @@ class ClaudeSession:
         with self._lock:
             if not self.alive:
                 self._start()
+
+    def close_if_idle(self) -> bool:
+        """질문을 처리하는 중이 아니면 프로세스를 닫는다 (대화는 다음에 --resume 으로 이어짐). 닫았으면 True."""
+        if not self._lock.acquire(blocking=False):
+            return False
+        try:
+            was = self.alive
+            self.close()
+            return was
+        finally:
+            self._lock.release()
+
+    def set_model(self, model: str, timeout: float = 4.0) -> bool:
+        """켜져 있는 프로세스의 모델을 바꾼다 (같은 대화를 이어 간다). 안 되면 False —
+        그때는 프로세스를 끄고, 다음 질문 때 새 모델로 다시 켜서 대화를 이어 가면 된다."""
+        with self._lock:
+            if not self.alive:
+                return False
+            proc = self.proc
+            self._req += 1
+            rid = f"jarvis_{self._req}"
+            msg = {"type": "control_request", "request_id": rid, "request": {"subtype": "set_model", "model": model}}
+            try:
+                proc.stdin.write((json.dumps(msg) + "\n").encode("utf-8"))
+                proc.stdin.flush()
+            except OSError:
+                self.close()
+                return False
+            done = threading.Event()
+
+            def watchdog():
+                if not done.wait(timeout):
+                    proc.kill()                   # 대답이 없다 (control_request 를 모르는 예전 버전) → 다시 켜서 바꾼다
+            threading.Thread(target=watchdog, daemon=True, name="claude-setmodel").start()
+            ok = False
+            try:
+                for raw in proc.stdout:
+                    try:
+                        ev = json.loads(raw.decode("utf-8", "replace"))
+                    except json.JSONDecodeError:
+                        continue
+                    if ev.get("type") == "control_response":
+                        r = ev.get("response") or {}
+                        if r.get("request_id") == rid:
+                            ok = r.get("subtype") == "success"
+                            break
+            finally:
+                done.set()
+            if not ok:
+                self.close()
+            return ok
 
     def close(self, forget: bool = False) -> None:
         p, self.proc = self.proc, None
@@ -114,6 +171,8 @@ class ClaudeSession:
                                 last_text = b["text"].strip()
                         if on_event:
                             on_event(ev)
+                    elif t == "system" and on_event and ev.get("model"):
+                        on_event(ev)              # 처음 켜질 때 알려 주는 실제 모델 이름
                     elif t == "result":
                         result = ev.get("result")
                         is_error = bool(ev.get("is_error")) or ev.get("subtype") != "success"

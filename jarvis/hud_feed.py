@@ -1,8 +1,7 @@
 """액티브 모드(전체 화면 HUD)에 띄우는 실시간 정보.
 
-- ProcWatch: PC 를 느리게 하는 프로그램 상위 목록 (같은 이름의 프로세스는 묶어서)
+- ProcWatch: 프로세스별 CPU · 메모리 측정 (추적 박스에 지금 창의 사용량을 보여 줌)
 - foreground_window: 지금 쓰고 있는 창의 위치 · 제목 · 프로그램
-- parse_kill_index: "1번 꺼줘" 같은 말에서 번호 뽑기
 """
 from __future__ import annotations
 
@@ -36,19 +35,6 @@ FRIENDLY = {
     "python.exe": "파이썬", "pythonw.exe": "파이썬", "node.exe": "Node.js", "javaw.exe": "자바",
     "ollama.exe": "올라마", "ollama app.exe": "올라마",
 }
-
-_NUM = {"1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "일": 1, "이": 2, "삼": 3, "사": 4, "오": 5,
-        "하나": 1, "한": 1, "첫": 1, "둘": 2, "두": 2, "셋": 3, "세": 3, "넷": 4, "네": 4, "다섯": 5}
-KILL_RE = re.compile(r"(1|2|3|4|5|일|이|삼|사|오|하나|한|첫|둘|두|셋|세|넷|네|다섯)\s*(?:번째|번)\s*"
-                     r"(?:프로그램|프로세스|거|것|꺼|앱)?\s*(?:을|를)?\s*"
-                     r"(?:꺼|끄기|종료|종료해|닫아|죽여|정리|정리해|강제\s*종료|강제\s*종료해)")
-
-
-def parse_kill_index(c: str) -> int | None:
-    """'1번 꺼', '첫 번째 거 종료', '이번 프로그램 닫아' → 1~5 (정규화된 문장 기준)."""
-    m = KILL_RE.fullmatch(c.strip())
-    return _NUM[m.group(1)] if m else None
-
 
 def display_name(exe: str) -> str:
     e = exe.lower()

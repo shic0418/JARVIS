@@ -214,9 +214,7 @@ def test_prefilter_only_blocks_clearly_different_voice():
 def test_loose_wake_word_matches_noisy_transcripts():
     import re
     import pathlib
-    src = pathlib.Path(__file__).resolve().parent.parent.joinpath("jarvis", "app.py").read_text(encoding="utf-8")
-    body = src.split("_WAKE_LOOSE = re.compile(", 1)[1].split(", re.I)", 1)[0]
-    loose = re.compile(eval("(" + body + ")"), re.I)
+    from jarvis.hearing import WAKE_LOOSE as loose
     for t in ("잠비스 크롬 열어줘", "잡비스 그럼 열어줘", "다비스 크롬 열어줘", "비스 크롬 열어 줘", "아미스 크롬 열어 줘", "재비스",
               # 실제 녹음(교실)에서 나온 모양
               "자비크롬 열어줘", "잡비크롬 열어줘", "잡비 스크롬 열어줘", "사비 스크롬 열어줘", "미스크롬 열어줘", "사비크롬 열어"):

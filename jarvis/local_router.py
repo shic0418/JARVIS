@@ -10,6 +10,8 @@ import re
 import time
 from typing import Callable
 
+from .hearing import digits, jamo, repair
+
 WEEKDAYS = "월화수목금토일"
 
 # 끝맺음 표현 제거: "열어 줘요" → "열어"
@@ -56,7 +58,7 @@ for _names, _label, _url in [
     ("위키백과 위키피디아", "위키백과", "https://ko.wikipedia.org"),
     ("파파고", "파파고", "https://papago.naver.com"),
     ("구글번역 번역기", "구글 번역", "https://translate.google.com"),
-    ("깃허브 github", "깃허브", "https://github.com"),
+    ("깃허브 github 깃헙 기터브", "깃허브", "https://github.com"),      # 소리 나는 대로 적히면 '기터브'
     ("네이버웹툰 웹툰", "네이버 웹툰", "https://comic.naver.com"),
     ("치지직", "치지직", "https://chzzk.naver.com"),
     ("트위치 twitch", "트위치", "https://www.twitch.tv"),
@@ -122,23 +124,6 @@ def find_site(name: str) -> tuple[str, str] | None:
     return hit
 
 
-_CHO = "ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ"
-_JUNG = "ㅏㅐㅑㅒㅓㅔㅕㅖㅗㅘㅙㅚㅛㅜㅝㅞㅟㅠㅡㅢㅣ"
-_JONG = " ㄱㄲㄳㄴㄵㄶㄷㄹㄺㄻㄼㄽㄾㄿㅀㅁㅂㅄㅅㅆㅇㅈㅊㅋㅌㅍㅎ"
-
-
-def jamo(s: str) -> str:
-    """한글을 자모로 풀어 쓴다 ('위' → 'ㅇㅟ'). 발음이 조금 다른 말을 비교할 때 글자 단위보다 정확하다."""
-    out = []
-    for ch in s:
-        o = ord(ch) - 0xAC00
-        if 0 <= o < 11172:
-            out.append(_CHO[o // 588] + _JUNG[(o % 588) // 28] + _JONG[o % 28].strip())
-        else:
-            out.append(ch)
-    return "".join(out)
-
-
 def has_batchim(word: str) -> bool:
     w = word.strip()
     if not w:
@@ -154,15 +139,14 @@ def obj(word: str) -> str:
     return f"{word}{'을' if has_batchim(word) else '를'}"
 
 
-# 오프라인 음성 인식이 자주 쓰는 다른 표기: '열어 죠/열어져' → '열어 줘', '다음 꼭' → '다음 곡'
-_STT_FIX = [(re.compile(r"([어아])\s*(?:죠|져|조)$"), r"\1 줘"), (re.compile(r"(다음|이전|앞|전)\s*꼭"), r"\1 곡")]
+_STUTTER = re.compile(r"([가-힣])\1")
 
 
 def normalize(text: str) -> str:
-    t = _PUNCT.sub("", dedupe(text))
-    for pat, rep in _STT_FIX:
-        t = pat.sub(rep, t)
-    t = re.sub(r"^(자비스|쟈비스|jarvis)\s*(야|아)?[,\s]*", "", t, flags=re.I)
+    # 음성 인식이 자주 다르게 적는 모양부터 바로잡는다: '열어죠' → '열어 줘', '다음 꼭' → '다음 곡' (hearing.repair)
+    t = repair(_PUNCT.sub("", dedupe(text)))
+    # 부름말 '야/아' 는 호출어에 붙어 있을 때만 뗀다 ('자비스 아이유 틀어 줘' 의 '아' 는 명령의 일부)
+    t = re.sub(r"^(자비스|쟈비스|jarvis)(?:[야아](?=[\s,]|$))?[,\s]*", "", t, flags=re.I)
     for _ in range(2):
         t = _PUNCT.sub("", _TAIL.sub("", t))
     return re.sub(r"\s+", " ", t).strip()
@@ -195,6 +179,11 @@ class LocalRouter:
         if not c or len(c) > 40:
             return None
         r = self._route(c, fallback)
+        if r is None:
+            # 음성 인식이 같은 글자를 한 번 더 적는 버릇: '볼륨 올려려줘', '음악악 멈춰' — 못 알아들었을 때만 겹친 글자를 줄여 다시 본다
+            c2 = _STUTTER.sub(r"\1", c)
+            if c2 != c:
+                r = self._route(c2, fallback)
         if r is not None:
             self.handled += 1
         return r
@@ -240,9 +229,12 @@ class LocalRouter:
         if r is not None:
             return r
 
+        # 한글로 적힌 수('십 분', '볼륨 삼십', '3십')는 타이머 · 음량 · 밝기 명령을 볼 때만 숫자로 읽는다
+        cn = digits(c)
+
         # ---- 타이머 (복합 문장 검사보다 먼저: '5분 후에 알려줘') ----
         m = re.fullmatch(r"(?:타이머\s*)?((?:\d+\s*(?:시간|분|초)\s*)+)(?:\s*(?:뒤에|후에|뒤|후))?"
-                         r"\s*(?:알려|알람|타이머|깨워|불러)?\s*(?:맞춰|설정|해|맞춰놔)?", c)
+                         r"\s*(?:알려|알람|타이머|깨워|불러)?\s*(?:맞춰|설정|해|맞춰놔)?", cn)
         if m and parse_duration(m.group(1)) > 0:
             secs = parse_duration(m.group(1))
             out, err = self._run("set_timer", {"seconds": secs, "label": "타이머"})
@@ -250,7 +242,7 @@ class LocalRouter:
 
         # ---- 집중 타이머 (뽀모도로) ----
         m = re.fullmatch(r"(?:뽀모도로|포모도로|뽀모|집중\s*타이머|집중\s*모드)\s*(?:(\d+)\s*분\s*)?"
-                         r"(?:으로\s*|로\s*)?(?:시작|시작해|켜|해|돌려|맞춰|가자)?", c)
+                         r"(?:으로\s*|로\s*)?(?:시작|시작해|켜|해|돌려|맞춰|가자)?", cn)
         if m:
             mins = int(m.group(1) or 25)
             out, err = self._run("set_timer", {"seconds": mins * 60, "label": "집중 시간 끝"})
@@ -285,7 +277,7 @@ class LocalRouter:
             return self._weather_speech(out)
 
         # ---- 볼륨 ----
-        m = re.fullmatch(r"(?:볼륨|소리|음량)\s*(?:을|를)?\s*(\d{1,3})\s*(?:퍼센트|%)?\s*(?:으로|로)?\s*(?:맞춰|해|설정|조절)?", c)
+        m = re.fullmatch(r"(?:볼륨|소리|음량)\s*(?:을|를)?\s*(\d{1,3})\s*(?:퍼센트|프로|%)?\s*(?:으로|로)?\s*(?:맞춰|해|설정|조절)?", cn)
         if m:
             return self._volume_speech(*self._run("volume", {"action": "set", "level": int(m.group(1))}))
         m = re.fullmatch(r"(?:볼륨|소리|음량)\s*(?:을|를)?\s*(많이\s*)?(?:좀\s*)?(?:더\s*)?(올려|키워|크게|높여|업|내려|줄여|작게|낮춰|다운)", c)
@@ -298,11 +290,11 @@ class LocalRouter:
         if re.fullmatch(r"(음소거\s*(?:해제|풀어|꺼)|소리\s*켜)", c):
             self._run("volume", {"action": "unmute"})
             return "음소거를 해제했습니다."
-        if re.fullmatch(r"(?:볼륨|소리|음량)\s*(?:이|은|는)?\s*(?:몇|얼마)(?:야|이야|니|지|예요)?", c):
+        if re.fullmatch(r"(?:볼륨|소리|음량)\s*(?:이|은|는)?\s*(?:몇|얼마)\s*(?:야|이야|니|지|예요)?", c):
             return self._volume_speech(*self._run("volume", {"action": "get"}))
 
         # ---- 화면 밝기 ----
-        m = re.fullmatch(r"(?:화면|모니터)?\s*밝기\s*(?:를|을)?\s*(\d{1,3})\s*(?:퍼센트|%)?\s*(?:으로|로)?\s*(?:맞춰|해|설정|조절)?", c)
+        m = re.fullmatch(r"(?:화면|모니터)?\s*밝기\s*(?:를|을)?\s*(\d{1,3})\s*(?:퍼센트|프로|%)?\s*(?:으로|로)?\s*(?:맞춰|해|설정|조절)?", cn)
         if m:
             return self._bright_speech(*self._run("brightness", {"action": "set", "level": int(m.group(1))}))
         m = re.fullmatch(r"(?:(?:화면|모니터)\s*(?:밝기)?|밝기)\s*(?:를|을|가)?\s*(?:좀\s*)?(?:더\s*)?(많이\s*)?(?:좀\s*)?"
@@ -310,12 +302,16 @@ class LocalRouter:
         if m:
             up = m.group(2) in ("올려", "높여", "밝게", "키워")
             return self._adjust("brightness", up, 30 if m.group(1) else 20)
+        # '화면' 을 말하지 않았거나 인식기가 놓친 경우: '좀 어둡게 해 줘' — 밝게/어둡게 할 수 있는 것은 화면뿐이다
+        m = re.fullmatch(r"(?:좀\s*)?(?:더\s*)?(많이\s*)?(?:좀\s*)?(밝게|어둡게)", c)
+        if m:
+            return self._adjust("brightness", m.group(2) == "밝게", 30 if m.group(1) else 20)
         m = re.fullmatch(r"(?:(?:화면|모니터)\s*(?:이|가)?\s*(?:너무|좀|많이|되게)?\s*(밝아|밝네|밝다|어두워|어둡네|어둡다)"
                          r"|(눈\s*(?:이\s*)?부셔|눈부셔|눈부시네))", c)
         if m:
             up = bool(m.group(1)) and m.group(1).startswith("어")
             return self._adjust("brightness", up, 20)
-        if re.fullmatch(r"(?:화면|모니터)?\s*밝기\s*(?:가|는)?\s*(?:몇|얼마)(?:야|이야|니|지|예요)?", c):
+        if re.fullmatch(r"(?:화면|모니터)?\s*밝기\s*(?:가|는)?\s*(?:몇|얼마)\s*(?:야|이야|니|지|예요)?", c):
             return self._bright_speech(*self._run("brightness", {"action": "get"}))
 
         # ---- 미디어 ----
@@ -364,10 +360,10 @@ class LocalRouter:
         if re.fullmatch(r"(바탕\s*화면\s*(?:보여|보기|으로)|창\s*(?:다|전부)\s*(?:내려|최소화))", c):
             self._run("window_action", {"action": "show_desktop"})
             return "바탕화면입니다."
-        if re.fullmatch(r"(?:화면|컴퓨터|피씨|pc)\s*(?:잠가|잠궈|잠금|잠금해|잠가놔)", lc):
+        if re.fullmatch(r"(?:(?:화면|컴퓨터|피씨|pc)\s*)?(?:잠가|잠궈|잠금|잠금해|잠가놔)", lc):   # 잠글 수 있는 것은 PC 뿐
             self._run("power", {"action": "lock"})
             return "잠갔습니다."
-        if re.fullmatch(r"(?:스크린\s*샷|화면\s*캡처|캡처)\s*(?:찍어|저장|해)?", c):
+        if re.fullmatch(r"(?:스크린\s*샷|화면\s*캡[처쳐]|캡[처쳐])\s*(?:찍어|저장|해)?", c):
             out, err = self._run("save_screenshot", {})
             return out if err else "스크린샷을 사진 폴더의 Jarvis에 저장했습니다."
         if re.fullmatch(r"(?:컴퓨터|시스템|피씨|pc)\s*(?:상태|성능)\s*(?:어때|알려|확인|체크)?|(?:cpu|씨피유|메모리|램)\s*(?:사용량|상태)?\s*(?:어때|알려|확인|몇)?", lc):

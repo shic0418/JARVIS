@@ -89,6 +89,8 @@ class LocalSTT:
         self.state = "off"          # off | loading | ready | error
         self.error = ""
         self.last_ms = 0
+        # 마지막으로 받아 적은 글 조각과 각 조각이 시작된 시각(초, 넘겨받은 소리 기준) — 호출어가 어디서 끝났는지 볼 때 쓴다
+        self.last: tuple[list[str], list[float]] = ([], [])
         self._rec = None
         self._lock = threading.Lock()
 
@@ -125,13 +127,18 @@ class LocalSTT:
             return None
         t0 = time.perf_counter()
         # 앞뒤 무음을 조금 붙이면 첫 글자·끝 글자를 덜 놓친다
-        x = np.concatenate([np.zeros(RATE // 8, np.float32), pcm.astype(np.float32) / 32768.0,
-                            np.zeros(RATE // 8, np.float32)])
+        pad = RATE // 8
+        x = np.concatenate([np.zeros(pad, np.float32), pcm.astype(np.float32) / 32768.0,
+                            np.zeros(pad, np.float32)])
         with self._lock:
             s = rec.create_stream()
             s.accept_waveform(RATE, x)
             rec.decode_stream(s)
             text = s.result.text
+            try:
+                self.last = (list(s.result.tokens), [float(t) - pad / RATE for t in s.result.timestamps])
+            except Exception:
+                self.last = ([], [])
         self.last_ms = int((time.perf_counter() - t0) * 1000)
         return clean(text)
 

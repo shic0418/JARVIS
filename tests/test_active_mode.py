@@ -38,45 +38,9 @@ def test_other_modes_untouched():
 
 
 # ---------------------------------------------------------------- 실용 기능
-from types import SimpleNamespace  # noqa: E402
-
-from jarvis.brain import Brain  # noqa: E402
-from jarvis.hud_feed import PROTECTED, display_name, parse_kill_index  # noqa: E402
+from jarvis.hud_feed import PROTECTED, display_name  # noqa: E402
 from jarvis.local_router import LocalRouter  # noqa: E402
 from jarvis.tools import _weather_ko  # noqa: E402
-
-
-@pytest.mark.parametrize("text,n", [
-    ("1번 꺼줘", 1), ("자비스 2번 종료해 줘", 2), ("첫 번째 거 꺼줘", 1), ("3번 프로그램 강제 종료", 3),
-    ("다섯 번째 거 닫아줘", 5), ("사번 정리해줘", 4),
-])
-def test_kill_index(text, n):
-    assert parse_kill_index(normalize(text)) == n
-
-
-@pytest.mark.parametrize("text", ["한 번 더", "1번 틀어줘", "6번 꺼줘", "볼륨 꺼줘", "2번 트랙 재생"])
-def test_kill_index_not_triggered(text):
-    assert parse_kill_index(normalize(text)) is None
-
-
-def _brain_stub(procs, result=("ok", False)):
-    calls = []
-    stub = SimpleNamespace(hud_procs=procs, execute=lambda n, a: (calls.append((n, a)) or result))
-    return stub, calls
-
-
-def test_kill_listed_uses_exe_from_list():
-    stub, calls = _brain_stub([{"exe": "chrome.exe", "name": "크롬"}, {"exe": "Code.exe", "name": "VS Code"}])
-    reply = Brain._kill_listed(stub, 2)
-    assert calls == [("end_process", {"name": "Code.exe"})]
-    assert "VS Code" in reply
-
-
-def test_kill_listed_out_of_range_and_refused():
-    stub, calls = _brain_stub([{"exe": "chrome.exe", "name": "크롬"}])
-    assert "없어요" in Brain._kill_listed(stub, 3) and calls == []
-    stub, _ = _brain_stub([{"exe": "chrome.exe", "name": "크롬"}], ("사용자가 실행을 거부했습니다.", True))
-    assert "그대로" in Brain._kill_listed(stub, 1)
 
 
 def test_system_processes_protected():
