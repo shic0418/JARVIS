@@ -58,6 +58,7 @@ DEFAULTS: dict = {
     # --- 화면 ---
     "position": "bottom-right",       # bottom-right | top-right
     "compact": False,
+    "self_guard": True,               # 자기 보호: 울트론 · 강제 종료 · 오류로 꺼지면 다시 켠다 (guard.py). 정상 종료는 그대로 둔다
     "hud_motion": "auto",             # 액티브 모드 회전 · 스캔 연출: auto = Windows '애니메이션 효과' 설정을 따름 | on | off
 }
 

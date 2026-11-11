@@ -393,6 +393,15 @@ class Jarvis(QObject):
         elif self.hotkey.ok and self.hotkey.active != self.cfg["hotkey"]:
             self.bridge.toast.emit("warn", f"{self.cfg['hotkey'].upper()} 는 다른 앱이 사용 중이라 "
                                            f"{self.hotkey.active.upper()} 로 대신 부릅니다")
+        if getattr(self.args, "revived", False):
+            # 강제로 꺼졌다가 감시 프로세스가 다시 켰다 (guard.py) — 긴 인사 대신 짧게 알린다
+            from . import guard
+            ultron = guard.ultron_running() if sys.platform == "win32" else False
+            msg = guard.revived_line(self.cfg["user_title"] or "주인님", ultron)
+            log.warning("강제 종료 뒤 다시 켜짐 (울트론 %s)", "켜져 있음" if ultron else "없음")
+            self.bridge.set("replyText", msg)
+            self.say(msg, follow_up=False)
+            return
         if self.args.no_greet:
             return
         hour = time.localtime().tm_hour

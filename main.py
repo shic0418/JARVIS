@@ -60,6 +60,7 @@ def main() -> int:
     parser.add_argument("--shot", metavar="PNG", help="(개발용) N초 후 HUD 화면을 PNG로 저장하고 종료")
     parser.add_argument("--shot-delay", type=float, default=4.0)
     parser.add_argument("--demo", action="store_true", help="(개발용) 상태 데모")
+    parser.add_argument("--revived", action="store_true", help=argparse.SUPPRESS)   # 감시 프로세스가 다시 켰음 (guard.py)
     args = parser.parse_args()
 
     setup_logging()
@@ -80,11 +81,16 @@ def main() -> int:
     server.listen(INSTANCE_KEY)
     server.newConnection.connect(lambda: (server.nextPendingConnection(), core.show_external()))
 
+    from jarvis import guard
     if args.demo or args.shot:
         from jarvis.demo import run_demo
         run_demo(core, args)
+    elif core.cfg["self_guard"] is not False:
+        # 자기 보호: 강제로 꺼지면 다시 켜 주는 창 없는 감시 프로세스 (guard.py)
+        guard.spawn(os.getpid(), [a for a in sys.argv[1:] if a != "--revived"])
 
     code = app.exec()
+    guard.mark_clean_exit()          # 정상 종료 — 감시 프로세스가 다시 켜지 않는다
     # QML 화면을 먼저 정리해야 종료 시 'jarvis is null' 경고가 나지 않는다
     import shiboken6
     core.win.hide()
