@@ -1,6 +1,7 @@
-"""자기 보호 (guard.py): 울트론이 찾지 못하는 창 제목 · 강제 종료되면 다시 켜기 · 정상 종료는 그대로."""
+"""자기 보호 (guard.py): 울트론에게 걸려 꺼져도 되살아난다 · 정상 종료는 그대로 · 오류로 죽는 것은 무한 반복하지 않는다."""
 from __future__ import annotations
 
+import random
 import re
 import subprocess
 import sys
@@ -13,38 +14,19 @@ from jarvis import guard
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# 울트론(Ultron-main/jarvis/rival.py)이 자비스를 찾는 기준을 그대로 옮긴 것
+# 울트론(Ultron-main/jarvis/rival.py)이 자비스를 찾는 기준
 ULTRON_TARGET_TITLES = frozenset({"J.A.R.V.I.S", "J.A.R.V.I.S ACTIVE", "J.A.R.V.I.S CHAT"})
-PY_NAMES = frozenset({"python.exe", "pythonw.exe", "py.exe", "pyw.exe", "python3.exe", "python", "python3"})
 
 
-def ultron_sees_jarvis(title: str, proc_name: str) -> bool:
-    name = (proc_name or "").lower()
-    return (title or "").strip() in ULTRON_TARGET_TITLES and (name in PY_NAMES or "jarvis" in name)
-
-
-def qml_titles() -> list[str]:
-    out = []
+def test_jarvis_does_not_hide_from_ultron():
+    """숨지 않는다 — 창 제목은 울트론이 찾는 그대로다 (걸리고, 꺼지고, 돌아온다)."""
+    titles = []
     for f in ("Main.qml", "ActiveMode.qml"):
-        # 창 제목만 (패널 머리글의 title 속성은 빼고)
-        out += re.findall(r'^\s*title:\s*"(J\.A\.R[^"]*)"', (ROOT / "ui" / f).read_text(encoding="utf-8"), re.M)
-    return out
+        titles += re.findall(r'^\s*title:\s*"(J\.A\.R[^"]*)"', (ROOT / "ui" / f).read_text(encoding="utf-8"), re.M)
+    assert sorted(titles) == sorted(ULTRON_TARGET_TITLES)
 
 
-# ---------------------------------------------------------------- 1) 울트론이 찾지 못한다
-def test_window_titles_are_not_what_ultron_looks_for():
-    for t in guard.WINDOW_TITLES.values():
-        assert not ultron_sees_jarvis(t, "pythonw.exe"), t
-    assert ultron_sees_jarvis("J.A.R.V.I.S", "pythonw.exe")          # 예전 제목이었다면 찾혔다
-
-
-def test_qml_windows_use_the_guarded_titles():
-    titles = qml_titles()
-    assert sorted(titles) == sorted(guard.WINDOW_TITLES.values())
-    assert not any(ultron_sees_jarvis(t, "python.exe") for t in titles)
-
-
-# ---------------------------------------------------------------- 2) 되살리기 규칙
+# ---------------------------------------------------------------- 정상 종료 표시
 def test_clean_exit_mark_is_per_process_and_read_once(tmp_path):
     f = tmp_path / "stop"
     guard.mark_clean_exit(1234, f)
@@ -55,50 +37,90 @@ def test_clean_exit_mark_is_per_process_and_read_once(tmp_path):
     assert not f.exists()
 
 
-def test_revive_limit_within_the_window():
-    ok, h = guard.allow_revive(1000.0, [])
-    assert ok and h == [1000.0]
-    ok, h = guard.allow_revive(1010.0, [800.0, 1000.0, 1005.0])       # 800 은 2분이 지나 세지 않는다
-    assert ok and h == [1000.0, 1005.0, 1010.0]
-    ok, h = guard.allow_revive(1010.0, [950.0, 1000.0, 1005.0])       # 2분 안에 이미 3번
-    assert not ok and h == [950.0, 1000.0, 1005.0]
-    ok, h = guard.allow_revive(1200.0, [950.0, 1000.0, 1005.0])       # 오래된 기록은 세지 않는다
-    assert ok and h == [1200.0]
+# ---------------------------------------------------------------- 되살리기 규칙
+def test_ultron_attacks_are_always_revived_with_growing_pauses():
+    st = guard.State()
+    plans = [guard.plan(1000.0 + i * 8, "ultron", st) for i in range(10)]    # 8초마다 꺼진다 (울트론은 5초마다 확인)
+    assert all(p.revive for p in plans)                                     # 포기하지 않는다
+    assert [p.delay for p in plans] == [0.0, 2.0, 5.0, 10.0, 20.0, 30.0, 30.0, 30.0, 30.0, 30.0]
+    assert [p.count for p in plans] == list(range(1, 11))
+    assert st.total == 10
 
 
-def test_relaunch_args_keep_options_and_mark_revived():
-    assert guard.relaunch_args(["--no-mic"]) == ["--no-mic", "--revived"]
-    assert guard.relaunch_args(["--revived", "--no-greet", "--no-mic"]) == ["--no-mic", "--revived"]
-    assert guard.relaunch_args([]) == ["--revived"]
+def test_ultron_streak_resets_after_surviving_a_while():
+    st = guard.State()
+    for i in range(4):
+        guard.plan(1000.0 + i, "ultron", st)
+    p = guard.plan(1003.0 + guard.STREAK_RESET, "ultron", st)              # 5분 버틴 뒤 다시 공격받음
+    assert p.revive and p.delay == 0.0 and p.count == 1 and st.total == 5
 
 
-def run_watch(tmp_path, clean: bool, history=()):
-    stop, state = tmp_path / "stop", tmp_path / "state.json"
-    if history:
-        guard._save_history(list(history), state)
-    launched = []
+def test_other_deaths_give_up_after_three_in_two_minutes():
+    st = guard.State()
+    assert [guard.plan(t, "other", st).revive for t in (1000.0, 1010.0, 1020.0, 1030.0)] == [True, True, True, False]
+    assert guard.plan(1000.0 + guard.REVIVE_WINDOW + 25, "other", st).revive      # 오래된 기록은 세지 않는다
+
+
+def test_ultron_kills_do_not_use_up_the_crash_limit():
+    st = guard.State()
+    for t in (1000.0, 1001.0, 1002.0):
+        guard.plan(t, "other", st)
+    assert guard.plan(1003.0, "ultron", st).revive                          # 오류 한도를 넘어도 울트론의 공격에서는 돌아온다
+
+
+def test_relaunch_args_mark_who_killed_and_how_many_times():
+    assert guard.relaunch_args(["--no-mic"], "ultron", 3) == ["--no-mic", "--revived", "ultron", "--revive-count", "3"]
+    again = guard.relaunch_args(["--revived", "ultron", "--revive-count", "3", "--no-greet", "--no-mic"], "ultron", 4)
+    assert again == ["--no-mic", "--revived", "ultron", "--revive-count", "4"]
+    assert guard.relaunch_args([], "other", 0) == ["--revived", "other", "--revive-count", "0"]
+
+
+def test_main_accepts_the_relaunch_arguments():
+    import argparse
+    src = (ROOT / "main.py").read_text(encoding="utf-8")
+    assert '"--revived", choices=("ultron", "other")' in src and '"--revive-count", type=int' in src
+    p = argparse.ArgumentParser()
+    p.add_argument("--no-mic", action="store_true")
+    p.add_argument("--revived", choices=("ultron", "other"))
+    p.add_argument("--revive-count", type=int, default=0)
+    a = p.parse_args(guard.relaunch_args(["--no-mic"], "ultron", 2))
+    assert a.revived == "ultron" and a.revive_count == 2 and a.no_mic
+
+
+# ---------------------------------------------------------------- 감시 흐름
+def run_watch(tmp_path, clean=False, ultron=True, state=None):
+    stop, state_file = tmp_path / "stop", tmp_path / "state.json"
+    if state is not None:
+        guard._save(state, state_file)
+    launched, slept = [], []
 
     def wait(pid):
         if clean:
             guard.mark_clean_exit(pid, stop)
 
     out = guard.watch(42, ["--no-mic"], wait=wait, launch=launched.append, clock=lambda: 5000.0,
-                      stop_file=stop, state_file=state)
-    return out, launched, guard._load_history(state)
+                      sleep=slept.append, killer=lambda: ultron, stop_file=stop, state_file=state_file)
+    return out, launched, slept, guard._load(state_file)
 
 
-def test_forced_kill_is_revived(tmp_path):
-    out, launched, hist = run_watch(tmp_path, clean=False)
-    assert out == "revived" and launched == [["--no-mic"]] and hist == [5000.0]
+def test_killed_by_ultron_comes_back(tmp_path):
+    out, launched, slept, st = run_watch(tmp_path)
+    assert out == "revived" and launched == [["--no-mic", "--revived", "ultron", "--revive-count", "1"]]
+    assert slept == [] and st.streak == 1
+
+
+def test_repeated_ultron_attack_waits_before_coming_back(tmp_path):
+    out, launched, slept, st = run_watch(tmp_path, state=guard.State(streak=3, last=4990.0, total=3))
+    assert out == "revived" and slept == [10.0] and launched[0][-1] == "4" and st.total == 4
 
 
 def test_normal_quit_is_left_alone(tmp_path):
-    out, launched, _ = run_watch(tmp_path, clean=True)
+    out, launched, _, _ = run_watch(tmp_path, clean=True)
     assert out == "clean" and launched == []
 
 
-def test_gives_up_when_it_keeps_dying(tmp_path):
-    out, launched, _ = run_watch(tmp_path, clean=False, history=(4950.0, 4970.0, 4990.0))
+def test_crash_loop_without_ultron_gives_up(tmp_path):
+    out, launched, _, _ = run_watch(tmp_path, ultron=False, state=guard.State(revived=[4950.0, 4970.0, 4990.0]))
     assert out == "gave_up" and launched == []
 
 
@@ -107,32 +129,39 @@ def test_guard_command_line():
     assert guard.main([]) == 2
 
 
-# ---------------------------------------------------------------- 진짜 프로세스로
-def _sleeper() -> subprocess.Popen:
-    return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
-
-
+# ---------------------------------------------------------------- 진짜 프로세스로 (울트론이 하듯 강제로 끈다)
 @pytest.mark.parametrize("clean", [False, True])
 def test_real_process_kill_and_clean_exit(tmp_path, clean):
-    p = _sleeper()
+    p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     stop, state = tmp_path / "stop", tmp_path / "state.json"
     launched, result = [], []
     t = threading.Thread(target=lambda: result.append(guard.watch(
-        p.pid, ["--no-mic"], launch=launched.append, stop_file=stop, state_file=state)), daemon=True)
+        p.pid, ["--no-mic"], launch=launched.append, sleep=lambda s: None, killer=lambda: True,
+        stop_file=stop, state_file=state)), daemon=True)
     t.start()
     if clean:
-        guard.mark_clean_exit(p.pid, stop)        # 정상 종료: 표시를 남기고 끝난다
-    p.kill()                                      # 울트론이 하는 것처럼 강제로 끈다
+        guard.mark_clean_exit(p.pid, stop)
+    p.kill()                                      # psutil.Process.kill — 울트론의 rival.stop 과 같은 방법
     p.wait(10)
     t.join(15)
     assert result == (["clean"] if clean else ["revived"])
-    assert launched == ([] if clean else [["--no-mic"]])
+    assert launched == ([] if clean else [["--no-mic", "--revived", "ultron", "--revive-count", "1"]])
 
 
 # ---------------------------------------------------------------- 되살아난 뒤 한마디
-def test_ultron_detection_and_line():
+def test_ultron_detection():
     assert guard.ultron_running(lambda: ["메모장", "U.L.T.R.O.N"]) is True
     assert guard.ultron_running(lambda: ["U.L.T.R.O.N 설명서.txt - 메모장"]) is False
     assert guard.ultron_running(lambda: (_ for _ in ()).throw(OSError())) is False
-    assert "울트론" in guard.revived_line("주인님", True)
-    assert "울트론" not in guard.revived_line("주인님", False)
+
+
+def test_comeback_lines_speak_only_now_and_then():
+    rng = random.Random(1)
+    first, speak = guard.comeback("주인님", "ultron", 1, rng)
+    assert speak and "주인님" in first and "{" not in first
+    assert [guard.comeback("주인님", "ultron", n, rng)[1] for n in range(2, 12)] == \
+        [False, True, False, False, False, False, False, False, True, False]     # 3번째 · 10번째만 소리 내어
+    line, speak = guard.comeback("주인님", "ultron", 7, rng)
+    assert "7" in line and not speak
+    other, speak = guard.comeback("주인님", "other", 0, rng)
+    assert speak and "울트론" not in other

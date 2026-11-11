@@ -13,7 +13,7 @@ Window {
     visible: true
     color: "transparent"
     flags: Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
-    title: "J.A.R.V.I.S."           // 울트론이 찾는 제목(J.A.R.V.I.S)과 다르게 — guard.py
+    title: "J.A.R.V.I.S"
 
     readonly property string st: jarvis.state
     readonly property bool compact: jarvis.compact

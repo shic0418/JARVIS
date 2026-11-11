@@ -16,7 +16,7 @@ Window {
     flags: Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
            | Qt.WindowTransparentForInput | Qt.WindowDoesNotAcceptFocus
     visible: false
-    title: "J.A.R.V.I.S. ACTIVE"    // 울트론이 찾는 제목과 다르게 — guard.py
+    title: "J.A.R.V.I.S ACTIVE"
 
     readonly property bool on: jarvis.activeMode
     readonly property string st: jarvis.state
@@ -1271,7 +1271,7 @@ Window {
     Window {
         id: chatBar
         objectName: "activeChat"
-        title: "J.A.R.V.I.S. CHAT"    // 울트론이 찾는 제목과 다르게 — guard.py
+        title: "J.A.R.V.I.S CHAT"
         color: "transparent"
         flags: Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
         readonly property real e: ov.seg(0.62, 0.94)

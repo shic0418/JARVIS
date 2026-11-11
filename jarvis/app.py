@@ -393,14 +393,19 @@ class Jarvis(QObject):
         elif self.hotkey.ok and self.hotkey.active != self.cfg["hotkey"]:
             self.bridge.toast.emit("warn", f"{self.cfg['hotkey'].upper()} 는 다른 앱이 사용 중이라 "
                                            f"{self.hotkey.active.upper()} 로 대신 부릅니다")
-        if getattr(self.args, "revived", False):
-            # 강제로 꺼졌다가 감시 프로세스가 다시 켰다 (guard.py) — 긴 인사 대신 짧게 알린다
+        killer = getattr(self.args, "revived", None)
+        if killer:
+            # 강제로 꺼졌다가 감시 프로세스가 다시 켰다 (guard.py) — 긴 인사 대신 짧게 알린다.
+            # 울트론에게 연달아 꺼지는 중이면 몇 번째에만 소리 내어 말하고 나머지는 HUD 알림만
             from . import guard
-            ultron = guard.ultron_running() if sys.platform == "win32" else False
-            msg = guard.revived_line(self.cfg["user_title"] or "주인님", ultron)
-            log.warning("강제 종료 뒤 다시 켜짐 (울트론 %s)", "켜져 있음" if ultron else "없음")
+            count = int(getattr(self.args, "revive_count", 0) or 0)
+            msg, speak = guard.comeback(self.cfg["user_title"] or "주인님", killer, count)
+            log.warning("강제 종료 뒤 다시 켜짐 (%s, 연속 %d번째)", killer, count)
             self.bridge.set("replyText", msg)
-            self.say(msg, follow_up=False)
+            if speak:
+                self.say(msg, follow_up=False)
+            else:
+                self.bridge.toast.emit("warn", msg)
             return
         if self.args.no_greet:
             return
