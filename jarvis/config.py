@@ -36,7 +36,9 @@ DEFAULTS: dict = {
     "stt_language": "ko-KR",
     "stt_engine": "auto",             # auto = 대기 중엔 오프라인 인식, 호출 후엔 Google | local = 항상 오프라인 | google
     "tts_voice": "ko-KR-InJoonNeural",
-    "tts_rate": "+8%",
+    "tts_rate": "+3%",               # 자비스는 서두르지 않지만 늘어지지도 않는다 — 또박또박 정확한 속도
+    "tts_pitch": "-3Hz",             # 조금 낮고 차분한 목소리 (edge-tts 음높이)
+    "voice_fx": True,                # 자비스 음색: 깨끗하게 다듬은 목소리 + 옅은 디지털 광택 + 짧은 공간감 (speech.jarvis_tone)
     "mic_device": None,               # None = 기본 마이크
     "mic_sensitivity": 1.0,           # 높을수록 작은 소리에도 반응
     "noise_robust": True,             # 소음 환경 모드: 음성 감지 AI + 소음 제거 AI (시끄러운 곳에서 작은 목소리)
@@ -65,6 +67,12 @@ DEFAULTS: dict = {
 _lock = threading.Lock()
 
 
+# 예전 버전의 기본값 → 지금 기본값으로 옮겨도 되는 값들
+_OLD_DEFAULTS = {
+    "tts_rate": ("+8%",),
+}
+
+
 class Config:
     def __init__(self) -> None:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -74,6 +82,10 @@ class Config:
                 loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
                 if isinstance(loaded, dict):
                     self._data.update(loaded)
+                    # 예전 기본값을 그대로 쓰던 항목만 새 기본값(마블 자비스 목소리)으로 옮긴다 — 직접 바꾼 값은 건드리지 않는다
+                    for k, old in _OLD_DEFAULTS.items():
+                        if loaded.get(k) in old:
+                            self._data[k] = DEFAULTS[k]
             except Exception:
                 pass
         self.save()

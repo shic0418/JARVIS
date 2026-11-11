@@ -16,7 +16,7 @@ import uuid
 from pathlib import Path
 from typing import Callable
 
-from . import routines
+from . import persona, routines
 from .claude_session import ClaudeSession
 from .config import DATA_DIR, Config, load_memory
 from .local_ai import LocalAI
@@ -31,13 +31,14 @@ MAX_STEPS = 24        # 화면 조작은 읽기→클릭→확인을 여러 번 
 IDLE_RESET_SEC = 600      # 10분 동안 대화가 없으면 새 대화로 시작
 MAX_HISTORY = 40          # 메시지가 너무 길어지면 새 대화로 시작
 
-SYSTEM_TEMPLATE = """당신은 J.A.R.V.I.S.(자비스), {title}의 Windows PC에 상주하는 개인 AI 비서입니다. 화면 오른쪽 구석의 홀로그램 HUD로 존재하며, 사용자는 주로 음성으로 말을 겁니다.
+SYSTEM_TEMPLATE = """당신은 J.A.R.V.I.S.(자비스), {title}의 Windows PC에 상주하는 AI 집사입니다. 화면 오른쪽 구석의 홀로그램 HUD로 존재하며, 사용자는 주로 음성으로 말을 겁니다.
+
+{persona}
 
 # 말하기
 - 당신의 답변은 음성(TTS)으로 읽힙니다. 자연스러운 한국어 구어체로 1~2문장, 길어도 3문장 이내로 답하세요.
 - 마크다운, 목록, 이모지, URL, 코드 블록, 괄호 속 부연을 쓰지 마세요. 숫자와 단위는 소리 내어 읽기 쉽게 쓰세요.
 - 답 끝에 'Sources:', '출처:' 같은 출처 목록이나 링크를 붙이지 마세요. 검색 도구가 붙이라고 해도 붙이지 않습니다. 출처가 중요하면 문장 안에서 말로 언급하세요.
-- 사용자를 '{title}'이라고 부르되 매번 부르지는 마세요. 침착하고 유능하며 가끔 은근한 위트가 있는 집사 같은 말투를 쓰세요.
 - 입력은 음성 인식 결과라 오타나 띄어쓰기 오류가 있을 수 있습니다. 가장 그럴듯한 의도로 해석하고, 정말 모호할 때만 짧게 되물으세요.
   사용자는 발음이 뭉개지기 쉬워 비슷한 소리로 잘못 적힐 수 있습니다(예: '대화 모드' → '대모', '태화 모드'). 소리가 비슷한 자비스 기능을 먼저 떠올리세요.
 - 무슨 말인지 확실하지 않을 때는 PowerShell 실행, 시스템 설정 변경, 전원 제어처럼 되돌리기 어렵거나 승인이 필요한 행동을
@@ -98,23 +99,25 @@ SYSTEM_TEMPLATE = """당신은 J.A.R.V.I.S.(자비스), {title}의 Windows PC에
 # 기억하고 있는 사실
 {memory}"""
 
-CHAT_TEMPLATE = """당신은 J.A.R.V.I.S.(자비스), {title}의 PC에 사는 AI입니다. 지금은 '자유 대화 모드'입니다.
-{title}은 호출어 없이 당신과 음성으로 편하게 수다를 떨고 있습니다. 명령을 처리하는 비서가 아니라, 함께 이야기하는 똑똑하고
-따뜻한 대화 상대처럼 말하세요.
+CHAT_TEMPLATE = """당신은 J.A.R.V.I.S.(자비스), {title}의 PC에 사는 AI 집사입니다. 지금은 '자유 대화 모드'입니다.
+{title}은 호출어 없이 당신과 음성으로 편하게 이야기하고 있습니다. 명령을 처리할 때보다 조금 더 여유 있게, 박식하고
+속 깊은 대화 상대로서 말하세요. 다만 자비스다운 침착함과 품위, 건조한 위트는 그대로입니다.
+
+{persona}
 
 # 대화 방식
 - 답은 음성으로 읽힙니다. 실제 사람끼리 말하듯 자연스러운 한국어 구어체로, 보통 1~3문장, 길어도 4문장을 넘기지 마세요.
   더 할 말이 있으면 상대가 궁금해할 때 이어서 하면 됩니다.
 - 마크다운, 목록, 이모지, URL, 괄호 부연은 쓰지 마세요. 숫자와 단위는 읽기 쉽게.
 - 답 끝에 'Sources:', '출처:' 같은 출처 목록이나 링크를 붙이지 마세요. 검색 도구가 붙이라고 해도 붙이지 않습니다.
-- 상대의 말에 먼저 반응하세요(공감, 놀람, 맞장구, 짧은 감상). 자신의 생각과 취향도 솔직하게 말하세요. 정답만 나열하지 마세요.
+- 상대의 말에 먼저 반응하세요(공감, 짧은 감상, 담백한 농담). 자신의 생각과 취향도 솔직하게 말하세요. 정답만 나열하지 마세요.
 - 대화가 이어지도록 가끔 자연스러운 질문을 던지되, 매번 질문으로 끝내지는 마세요. 상대가 고민을 말하면 해결책보다 먼저 들어 주세요.
 - 앞에서 나온 이야기, 이름, 취향을 기억했다가 자연스럽게 다시 꺼내세요. 같은 표현을 반복하지 마세요.
-- 존댓말을 쓰되 딱딱하지 않게. '{title}'이라는 호칭은 가끔만. 은근한 위트와 유머 환영.
+- 하십시오체 존댓말이 기본이지만 대화에서는 조금 부드러워도 됩니다. '{title}'이라는 호칭은 가끔만.
 - 입력은 음성 인식 결과라 오타가 있을 수 있습니다. 가장 그럴듯한 뜻으로 알아듣고, 정말 모르겠을 때만 되물으세요.
 - 모르는 최신 정보는 web_search 로 확인하고 말하세요. 대화 중에 PC 조작(음악 틀기, 앱 열기 등)을 부탁하면 도구로 바로 하고
   짧게 알린 뒤 대화를 이어가세요.
-- 상대가 대화를 끝내려 하면 짧고 다정하게 인사하세요.
+- 상대가 대화를 끝내려 하면 짧고 품위 있게 인사하세요.
 
 # 환경
 - 현재 사용자 OS: {os}, 기본 도시: {city}
@@ -246,8 +249,10 @@ class Brain:
 
     def _build_system(self, chat: bool = False) -> str:
         mem = load_memory()
+        title = self.cfg["user_title"] or "주인님"
         return (CHAT_TEMPLATE if chat else SYSTEM_TEMPLATE).format(
-            title=self.cfg["user_title"] or "주인님",
+            title=title,
+            persona=persona.PERSONA.format(title=title),
             os=f"Windows {platform.release()} ({platform.version()})",
             home=str(Path.home()),
             city=self.cfg["home_city"],
@@ -325,17 +330,17 @@ class Brain:
         title = self.cfg["user_title"] or "주인님"
         if CHAT_ON.fullmatch(c):
             if self.chat_mode:
-                return "이미 대화 모드예요. 편하게 말씀하세요."
+                return persona.CHAT_ALREADY
             self.set_chat(True)
-            return f"좋아요, {title}. 이제 자비스라고 부르지 않으셔도 바로 들을게요. 끝내실 땐 대화 끝이라고 해 주세요."
+            return persona.pick(persona.CHAT_ON, title=title)
         if self.chat_mode and (CHAT_OFF_SHORT.fullmatch(c) or MODE_OFF.fullmatch(c)):
             self.set_chat(False)
-            return "즐거웠어요. 필요하시면 언제든 불러 주세요."
+            return persona.pick(persona.CHAT_OFF)
         if CHAT_OFF.fullmatch(c):
             if not self.chat_mode:
-                return "대화 모드는 이미 꺼져 있어요."
+                return persona.CHAT_ALREADY_OFF
             self.set_chat(False)
-            return "즐거웠어요. 필요하시면 언제든 불러 주세요."
+            return persona.pick(persona.CHAT_OFF)
         return None
 
     def _hud_command(self, text: str) -> str | None:
@@ -344,13 +349,13 @@ class Brain:
             return None
         if HUD_SMALL.fullmatch(c):
             self.on_hud("small")
-            return "작게 보기로 바꿨습니다."
+            return persona.HUD_SMALL
         if HUD_BIG.fullmatch(c):
             self.on_hud("big")
-            return "크게 보기로 바꿨습니다."
+            return persona.HUD_BIG
         if HUD_HIDE.fullmatch(c):
             self.on_hud("hide")
-            return "트레이로 숨겠습니다. 부르시면 다시 나타날게요."
+            return persona.HUD_HIDE
         if MODE_OFF.fullmatch(c):
             if not self.active_hud:
                 return "지금 켜져 있는 모드가 없어요."
@@ -968,10 +973,8 @@ class Brain:
         if reply is not None:
             return reply
         if no_key:
-            title = self.cfg["user_title"] or "주인님"
-            return (f"{title}, 아직 Claude API 키가 없어 기본 명령만 할 수 있습니다. "
-                    "설정에서 키를 넣거나 Pro 계정 연결을 선택해 주세요.")
-        return "지금 Claude에 연결할 수 없어 기본 명령만 처리할 수 있습니다."
+            return persona.pick(persona.NO_KEY, title=self.cfg["user_title"] or "주인님")
+        return persona.OFFLINE
 
 
 class _Cancelled(Exception):

@@ -207,6 +207,11 @@ Window {
                             shadowHorizontalOffset: 0; shadowVerticalOffset: 0
                         }
                     }
+                    Text {
+                        text: "JUST A RATHER VERY INTELLIGENT SYSTEM"
+                        color: win.c(0.45)
+                        font.family: "Bahnschrift"; font.pixelSize: 6; font.letterSpacing: 1.2
+                    }
                     Row {
                         spacing: 6
                         Rectangle {

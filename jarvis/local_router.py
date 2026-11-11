@@ -169,8 +169,8 @@ class LocalRouter:
         self.last_adjust: tuple[str, bool, int, float] | None = None
 
     def unknown_reply(self) -> str:
-        return ("그건 로컬 모드에서 처리할 수 없는 요청입니다. "
-                "설정에서 Claude 연결을 켜시면 도와드릴 수 있습니다.")
+        return ("죄송합니다, 그 요청은 로컬 모드에서 처리할 수 없습니다. "
+                "설정에서 Claude 연결을 켜 주시면 도와드리겠습니다.")
 
     def try_handle(self, text: str, fallback: bool = True) -> str | None:
         """처리했으면 음성으로 읽을 답, 아니면 None (→ Claude).

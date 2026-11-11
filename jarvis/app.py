@@ -26,7 +26,7 @@ from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickWindow  # noqa: F401  (루트 객체를 QQuickWindow 로 받기 위해 필요)
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
-from . import approval, hearing, hud_feed, winutil
+from . import approval, hearing, hud_feed, persona, winutil
 from .brain import _SOURCES, Brain, situation_text
 from .config import DATA_DIR, ROOT, UI_DIR, Config
 from .hotkey import GlobalHotkey
@@ -272,7 +272,8 @@ class Jarvis(QObject):
         self.speaker.level.connect(self._on_voice_level)
         self.speaker.started.connect(self._on_speak_start)
         self.speaker.finished.connect(self._on_speak_end)
-        self.tts = TTS(self.speaker, lambda: (self.cfg["tts_voice"], self.cfg["tts_rate"]), self)
+        self.tts = TTS(self.speaker, lambda: (self.cfg["tts_voice"], self.cfg["tts_rate"], self.cfg["tts_pitch"] or "+0Hz",
+                                              1.0 if self.cfg["voice_fx"] is not False else 0.0), self)
         self.chime = self._make_chime()
 
         # ---- 손 + 두뇌 ----
@@ -384,8 +385,28 @@ class Jarvis(QObject):
         self.bridge.set("hotkeyText", self._hotkeyText())
 
     # ================================================================== 부팅
+    def _boot_report(self) -> None:
+        """시작할 때 실제 점검 결과를 활동 기록에 한 줄씩 띄운다 (영화 속 자비스의 시스템 점검처럼)."""
+        audio, tts, hotkey, link = persona.BOOT_CHECKS
+        voice = (self.cfg["tts_voice"] or "").replace("ko-KR-", "").replace("Neural", "")
+        checks = [
+            (audio, self.mic_ok or bool(self.args.no_mic), "텍스트 전용" if self.args.no_mic else ""),
+            (f"{tts} · {voice}", True, ""),
+            # 단축키를 아예 쓰지 않는 실행(개발용 스크린샷 등)은 실패가 아니다 — 등록을 시도했다가 실패했을 때만 오류
+            (f"{hotkey} · {self._hotkeyText()}", bool(self.hotkey.ok or not self.hotkey._tid),
+             "" if self.hotkey._tid else "사용 안 함"),
+            (link, bool(self.bridge._hasApiKey), ""),
+        ]
+        for i, (label, ok, note) in enumerate(checks):
+            text = f"시스템 점검 · {label}" + (f" · {note}" if note else "")
+            QTimer.singleShot(150 * i, lambda t=text, ok=ok: self.bridge.actionEvent.emit(
+                uuid.uuid4().hex[:8], t, "ok" if ok else "error", ""))
+        done = persona.BOOT_DONE if all(c[1] for c in checks) else "일부 시스템 점검 필요"
+        QTimer.singleShot(150 * len(checks), lambda: self.bridge.actionEvent.emit(uuid.uuid4().hex[:8], done, "ok", ""))
+
     def _boot_done(self) -> None:
         self._to_idle()
+        self._boot_report()
         if not self.mic_ok and not self.args.no_mic:
             self.bridge.toast.emit("error", self.listener.error or "마이크를 사용할 수 없습니다")
         if self.hotkey._tid and not self.hotkey.ok:
@@ -409,17 +430,7 @@ class Jarvis(QObject):
             return
         if self.args.no_greet:
             return
-        hour = time.localtime().tm_hour
-        part = "좋은 아침입니다" if 5 <= hour < 12 else "좋은 오후입니다" if hour < 18 else "좋은 저녁입니다"
-        title = self.cfg["user_title"] or "주인님"
-        if self.cfg["brain"] == "local":
-            msg = f"{part}, {title}. 자비스 온라인. 로컬 모드로 기본 명령을 처리합니다."
-        elif self.bridge._hasApiKey:
-            msg = f"{part}, {title}. 자비스 온라인. 모든 시스템이 정상입니다."
-        elif self.cfg["brain"] == "pro":
-            msg = f"{part}, {title}. 자비스 온라인. Claude Code를 찾을 수 없어 기본 명령만 가능합니다."
-        else:
-            msg = f"{part}, {title}. 자비스 온라인. 설정에서 Claude API 키를 등록해 주세요."
+        msg = persona.greeting(self.cfg["user_title"] or "주인님", self.cfg["brain"] or "pro", bool(self.bridge._hasApiKey))
         self.bridge.set("replyText", msg)
         self.say(msg, follow_up=False)
 
@@ -443,7 +454,7 @@ class Jarvis(QObject):
         if not self.mic_ok:
             self._set_state("offline", "마이크 꺼짐 · 텍스트로 명령하세요")
         elif self.bridge._wakeEnabled:
-            self._set_state("standby", "“자비스”라고 불러주세요")
+            self._set_state("standby", persona.STANDBY_HINT)
         else:
             self._set_state("standby", f"{self._hotkeyText()} 또는 코어 클릭")
 
@@ -541,7 +552,7 @@ class Jarvis(QObject):
         if not text:
             if was_active and not self.busy and not self.speaker.playing:
                 self.active_until = time.monotonic() + 5
-                self._set_state("listening", "잘 못 들었습니다. 다시 말씀해 주세요")
+                self._set_state("listening", persona.MISHEARD)
             return
         if self.speaker.playing:
             return
@@ -571,7 +582,7 @@ class Jarvis(QObject):
                 log.info("잘린 조각(%d자) → 다시 듣기", len(text))
                 if not self.brain.chat_mode:
                     self.active_until = time.monotonic() + 6
-                self._set_state("listening", "말씀이 끊겨 들렸습니다. 다시 말씀해 주세요")
+                self._set_state("listening", persona.CLIPPED)
                 return
             self.run_command(text)
 
@@ -695,7 +706,7 @@ class Jarvis(QObject):
         for cid in list(self._confirms):
             self.answer_confirm(cid, False)
         self.bridge.set("replyText", "작업을 취소했습니다.")
-        self.say("취소했습니다.", follow_up=False)
+        self.say(persona.pick(persona.CANCELLED), follow_up=False)
 
     @Slot(int, str)
     def _on_stream(self, gen: int, delta: str) -> None:
@@ -778,11 +789,11 @@ class Jarvis(QObject):
             if self.brain.chat_mode and not self._pending_confirm:
                 self.active_until = time.monotonic() + float(self.cfg["chat_idle_seconds"] or 40)
                 self.listener.force_capture = True
-                self._set_state("listening", "대화 모드 · 편하게 말씀하세요")
+                self._set_state("listening", persona.CHAT_LISTEN)
                 return
             self.active_until = time.monotonic() + float(self.cfg["follow_up_seconds"] or 7)
             self.listener.force_capture = True
-            self._set_state("listening", "이어서 말씀하셔도 됩니다")
+            self._set_state("listening", persona.FOLLOW_UP)
         else:
             self._to_idle()
 
@@ -817,7 +828,7 @@ class Jarvis(QObject):
             self.toggle_visible(True, force=True)
         elif self.bridge._activeMode:
             self.win.raise_()
-        self.say(f"{title}, 승인하시겠습니까?", follow_up=True)
+        self.say(persona.pick(persona.CONFIRM, title=self.cfg["user_title"] or "주인님", action=title), follow_up=True)
 
     @Slot(str)
     def _on_confirm_close(self, cid: str) -> None:
@@ -1049,8 +1060,7 @@ class Jarvis(QObject):
         self.bridge.actionEvent.emit(uuid.uuid4().hex[:8], f"알림 · {msg[:40]}", "ok", "")
         if not self.win.isVisible():
             self.toggle_visible(True)
-        title = self.cfg["user_title"] or "주인님"
-        text = f"{title}, {msg}"
+        text = persona.pick(persona.NOTIFY, title=self.cfg["user_title"] or "주인님", msg=msg)
         self.bridge.set("replyText", text)
         self.say(text, follow_up=True)
 
@@ -1097,7 +1107,7 @@ class Jarvis(QObject):
         self.bridge.actionEvent.emit(uuid.uuid4().hex[:8], f"타이머 완료 · {label}", "ok", "")
         if not self.win.isVisible():
             self.toggle_visible(True)
-        msg = f"{title}, {label} 시간입니다."
+        msg = persona.pick(persona.TIMER_DONE, title=title, label=label)
         self.bridge.set("replyText", msg)
         self.say(msg, follow_up=False)
 

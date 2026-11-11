@@ -42,7 +42,7 @@ Item {
         { v: "google", t: "Google 전용 — 가장 정확, 인터넷 필요" }
     ]
     readonly property var voices: [
-        { v: "ko-KR-InJoonNeural", t: "인준 — 남성 (기본)" },
+        { v: "ko-KR-InJoonNeural", t: "인준 — 남성 · 자비스 (기본)" },
         { v: "ko-KR-HyunsuMultilingualNeural", t: "현수 — 남성" },
         { v: "ko-KR-SunHiNeural", t: "선희 — 여성" }
     ]
@@ -61,6 +61,7 @@ Item {
         proModelBox.currentIndex = Math.max(0, proModels.findIndex(m => m.v === cfg.pro_model))
         effortBox.currentIndex = Math.max(0, efforts.findIndex(m => m.v === cfg.effort))
         voiceBox.currentIndex = Math.max(0, voices.findIndex(m => m.v === cfg.tts_voice))
+        fxSw.checked = cfg.voice_fx !== false
         wakeSw.checked = !!cfg.wake_word_enabled
         searchSw.checked = !!cfg.web_search
         approveSw.checked = !!cfg.auto_approve
@@ -88,6 +89,7 @@ Item {
             model: models[modelBox.currentIndex].v,
             effort: efforts[effortBox.currentIndex].v,
             tts_voice: voices[voiceBox.currentIndex].v,
+            voice_fx: fxSw.checked,
             wake_word_enabled: wakeSw.checked,
             web_search: searchSw.checked,
             auto_approve: approveSw.checked,
@@ -255,6 +257,7 @@ Item {
                 Combo { id: effortBox; model: sp.efforts }
                 Label2 { text: "VOICE" }
                 Combo { id: voiceBox; model: sp.voices }
+                Toggle { id: fxSw; text: "자비스 음색 (깨끗하게 다듬은 디지털 목소리)" }
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 8

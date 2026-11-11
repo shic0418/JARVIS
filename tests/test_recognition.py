@@ -54,7 +54,7 @@ def test_chat_not_triggered(text):
 
 def test_chat_off_when_already_off_is_local():
     b = brain()
-    assert b._mode_switch("대화 모드 끝") == "대화 모드는 이미 꺼져 있어요."
+    assert b._mode_switch("대화 모드 끝") == "대화 모드는 이미 꺼져 있습니다."
     assert not b.chat_mode
 
 

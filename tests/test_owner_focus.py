@@ -324,7 +324,7 @@ def test_strip_sources_leaves_normal_replies(reply):
 def test_edge_failure_skips_edge_for_a_while(monkeypatch):
     calls = []
 
-    def bad_edge(text, voice, rate):
+    def bad_edge(text, voice, rate, pitch="+0Hz"):
         calls.append(text)
         raise TimeoutError()
 
@@ -335,7 +335,7 @@ def test_edge_failure_skips_edge_for_a_while(monkeypatch):
     assert sp.synthesize("둘째 문장입니다.", "v", "+0%") == (b"wav", ".wav")
     assert calls == ["첫 문장입니다."]                      # 두 번째 문장은 기다리지 않고 바로 SAPI
     monkeypatch.setattr(sp, "_edge_down_until", 0.0)
-    monkeypatch.setattr(sp, "_edge_tts", lambda t, v, r: b"mp3")
+    monkeypatch.setattr(sp, "_edge_tts", lambda t, v, r, p="+0Hz": b"mp3")
     assert sp.synthesize("다시 됩니다.", "v", "+0%") == (b"mp3", ".mp3")
 
 
