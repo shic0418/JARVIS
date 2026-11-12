@@ -22,6 +22,13 @@ _PUNCT = re.compile(r"[\s.!?~,]+$")
 # 여러 동작이 섞인 문장 → Claude
 _COMPOUND = re.compile(r"(하고\s|그리고|다음에|한\s*뒤|한\s*후|해서\s|면서|열고|켜고|틀고|닫고|끄고|찾아서|보고\s|뒤에\s*\S|후에\s*\S|랑\s.*(열|켜|틀))")
 _NOT_APP = re.compile(r"(컴퓨터|피씨|pc|시스템|자비스|너|화면|소리|음악|노래|영상|불|타이머|알람|파일|폴더|창|전원)$", re.I)
+# Sentinel 웹 보안 분석기: 주소를 직접 말하거나 친 경우만 받는다 (이름만 말한 사이트를 대신 골라 주지 않는다)
+_SENTINEL = r"(?:센티넬|센티널|센티늘|sentinel)"
+_SENTINEL_SCAN = re.compile(
+    r"(?P<url>(?:https?://)?[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(?::\d{1,5})?(?:/\S*)?)\s*(?:사이트\s*)?"
+    r"(?:(?:웹\s*)?보안|취약점|" + _SENTINEL + r")\s*(?:검사|분석|점검|스캔|진단)(?:\s*(?:해|시작|시작해|돌려|실행|실행해))?", re.I)
+_SENTINEL_REPORT = re.compile(r"(?:" + _SENTINEL + r"|보안\s*(?:검사|분석)?)\s*(?:보고서|리포트|결과)(?:\s*(?:열어|보여|띄워|보기))?", re.I)
+_SENTINEL_STATUS = re.compile(_SENTINEL + r"\s*(?:상태|연결)(?:\s*(?:어때|확인|확인해|알려|체크|체크해))?", re.I)
 _SITES = {"구글": "google", "네이버": "naver", "유튜브": "youtube", "지도": "maps"}
 
 # 이름으로 바로 여는 웹사이트 (기록: '핀터레스트 들어가줘', 'ebs 들어가줘', '리로스쿨' 이 매번 Claude 로 넘어가 3~8초씩 걸림)
@@ -60,6 +67,15 @@ for _names, _label, _url in [
     ("구글번역 번역기", "구글 번역", "https://translate.google.com"),
     ("깃허브 github 깃헙 기터브", "깃허브", "https://github.com"),      # 소리 나는 대로 적히면 '기터브'
     ("네이버웹툰 웹툰", "네이버 웹툰", "https://comic.naver.com"),
+    # 과제 · 발표 준비에 자주 쓰는 사이트 (디자인 도구 · 학술 자료)
+    ("미리캔버스 미리캠퍼스 미리켄버스 miricanvas", "미리캔버스", "https://www.miricanvas.com"),
+    ("캔바 canva", "캔바", "https://www.canva.com"),
+    ("망고보드 mangoboard", "망고보드", "https://www.mangoboard.net"),
+    ("구글슬라이드 구글프레젠테이션", "구글 슬라이드", "https://docs.google.com/presentation"),
+    ("패들렛 padlet", "패들렛", "https://padlet.com"),
+    ("riss 학술연구정보서비스", "RISS", "https://www.riss.kr"),
+    ("디비피아 dbpia", "DBpia", "https://www.dbpia.co.kr"),
+    ("구글스칼라 구글학술검색", "구글 학술 검색", "https://scholar.google.com"),
     ("치지직", "치지직", "https://chzzk.naver.com"),
     ("트위치 twitch", "트위치", "https://www.twitch.tv"),
     ("숲 아프리카 아프리카tv", "숲", "https://www.sooplive.co.kr"),
@@ -251,6 +267,18 @@ class LocalRouter:
         if re.fullmatch(r"(?:타이머|알람|뽀모도로|집중\s*타이머)\s*(?:다\s*|전부\s*|모두\s*)?(?:취소|꺼|끄기|없애|지워|종료|그만)(?:해)?", c):
             out, err = self._run("cancel_timer", {})
             return str(out)
+
+        # ---- Sentinel 웹 보안 분석기 (검사 권한은 도구가 승인 카드로 직접 확인한다) ----
+        m = _SENTINEL_SCAN.fullmatch(lc)
+        if m:
+            out, _err = self._run("sentinel_scan", {"url": m.group("url")})
+            return out.splitlines()[0] if out else out
+        if _SENTINEL_REPORT.fullmatch(lc):
+            out, _err = self._run("sentinel_report", {})
+            return out.splitlines()[0] if out else out
+        if _SENTINEL_STATUS.fullmatch(lc):
+            out, _err = self._run("sentinel_status", {})
+            return out.splitlines()[0] if out else out
 
         if _COMPOUND.search(c):
             return None

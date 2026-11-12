@@ -123,8 +123,11 @@ class ClaudeSession:
                 p.kill()
 
     def ask(self, prompt: str, cancel: threading.Event, on_text: Callable[[str], None] | None = None,
-            on_event: Callable[[dict], None] | None = None, timeout: float = 240) -> tuple[str | None, bool, str]:
-        """(최종 답, 오류 여부, 오류 설명). 취소되면 (None, False, "")."""
+            on_event: Callable[[dict], None] | None = None, timeout: float = 240,
+            early: bool = False) -> tuple[str | None, bool, str]:
+        """(최종 답, 오류 여부, 오류 설명). 취소되면 (None, False, "").
+        early=True: 답의 마지막 글자가 나오는 즉시 돌아온다 — Claude Code 가 턴을 마무리하는 2~3초를 기다리지 않는다
+        (--include-partial-messages 로 켠 세션에서만. 그 뒤에는 이 세션을 다시 쓰지 말고 닫아야 한다 — 작가 · 조사 담당용)."""
         with self._lock:
             if not self.alive:
                 self._start()
@@ -148,7 +151,7 @@ class ClaudeSession:
                     time.sleep(0.1)
             threading.Thread(target=watchdog, daemon=True, name="claude-watchdog").start()
 
-            result, is_error, last_text = None, False, ""
+            result, is_error, last_text, stop_reason = None, False, "", ""
             try:
                 for raw in proc.stdout:
                     try:
@@ -165,6 +168,11 @@ class ClaudeSession:
                             on_text(d.get("text", ""))
                         elif e.get("type") == "message_start" and on_text:
                             on_text("\n")   # 도구를 쓰고 난 뒤의 새 메시지는 새 문장으로
+                        elif e.get("type") == "message_delta" and d.get("stop_reason"):
+                            stop_reason = d["stop_reason"]
+                        elif e.get("type") == "message_stop" and early and stop_reason == "end_turn" and last_text:
+                            result = last_text          # 답이 끝났다 (도구를 더 부르지 않는 마지막 메시지)
+                            break
                     elif t == "assistant":
                         for b in (ev.get("message") or {}).get("content", []):
                             if b.get("type") == "text" and b.get("text", "").strip():
@@ -173,6 +181,8 @@ class ClaudeSession:
                             on_event(ev)
                     elif t == "system" and on_event and ev.get("model"):
                         on_event(ev)              # 처음 켜질 때 알려 주는 실제 모델 이름
+                    elif t == "user" and on_event:
+                        on_event(ev)              # 도구 결과 (웹 검색 결과 글 등 — 조사 담당이 모은다)
                     elif t == "result":
                         result = ev.get("result")
                         is_error = bool(ev.get("is_error")) or ev.get("subtype") != "success"

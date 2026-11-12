@@ -24,6 +24,8 @@ DEFAULTS: dict = {
     "pro_screen_model": "sonnet",     # Pro 모드에서 화면을 보고 조작하는 요청에 쓸 모델 (비우면 pro_model 그대로)
     "routines": {},                   # 루틴: {"아침 준비": ["크롬 열어", "볼륨 30", "오늘 날씨"]} — '루틴 추가 이름: 명령, 명령' 으로 만든다
     "pro_keep_alive": 600,            # 초. 마지막 명령 뒤 이만큼 Claude Code 를 켜 둠 (다음 명령이 빨라짐, 메모리 수백 MB). 0 = 바로 닫음
+    "writers": 4,                     # 발표 자료 · 보고서를 나눠서 동시에 쓰는 작가 수 1~6 (0 = 끔: 혼자 조사하고 혼자 쓴다)
+    "writer_model": "",               # 작가가 쓸 모델 (비우면 평소 모델). Pro: haiku | sonnet | opus
     "screen_follow": True,            # 누른 뒤 화면이 바뀌었으면 바뀐 화면(요소 목록 · 캡처)을 결과에 같이 보냄
     "screen_detail": "auto",          # 화면 캡처 크기: auto(모델이 볼 수 있는 최대 크기) | standard(항상 작게 — 토큰 절약)
     "anthropic_api_key": "",          # 비워두면 ANTHROPIC_API_KEY 환경변수 사용
@@ -60,7 +62,13 @@ DEFAULTS: dict = {
     # --- 화면 ---
     "position": "bottom-right",       # bottom-right | top-right
     "compact": False,
-    "self_guard": True,               # 자기 보호: 울트론 · 강제 종료 · 오류로 꺼지면 다시 켠다 (guard.py). 정상 종료는 그대로 둔다
+    "self_guard": True,               # 보안 프로토콜: 울트론에게 흡수되면 반격해 울트론을 자비스로 되돌린다 (guard.py · counter.py)
+    "counter_show": True,             # 반격 연출: 울트론 HUD 가 서서히 자비스로 바뀌는 장면 (끄면 조용히 되찾기만)
+    # --- Sentinel 웹 보안 분석기 (sentinel.py) ---
+    "sentinel_server": "http://127.0.0.1:8000",
+    "sentinel_api_key": "",           # 비워두면 SENTINEL_API_KEY 환경변수 사용
+    "sentinel_requester": "",         # Sentinel 감사 기록에 남는 요청자 이름 (비워두면 Windows 사용자 이름)
+    "sentinel_basis": "owner",        # 검사 근거 기본값: owner | written_permission | bug_bounty_scope | internal_lab
     "hud_motion": "auto",             # 액티브 모드 회전 · 스캔 연출: auto = Windows '애니메이션 효과' 설정을 따름 | on | off
 }
 
@@ -119,6 +127,8 @@ class Config:
         d["anthropic_api_key"] = ""
         d["has_api_key"] = bool(key)
         d["api_key_hint"] = (key[:7] + "…" + key[-4:]) if len(key) > 12 else ""
+        d["sentinel_api_key"] = ""
+        d["has_sentinel_key"] = bool((self._data.get("sentinel_api_key") or os.environ.get("SENTINEL_API_KEY") or "").strip())
         return d
 
 

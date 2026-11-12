@@ -291,6 +291,7 @@ class Jarvis(QObject):
         # Pro 계정 모드: Claude Code 가 MCP 로 부르는 로컬 도구 서버
         self.toolserver = ToolServer(self.brain.mcp_tools, lambda n, a: self.brain.execute(n, a))
         self.brain.tool_server = self.toolserver
+        self.tools.writer = self.brain.write_team        # 발표 자료 · 보고서: 작가 여러 명이 나눠서 동시에 쓴다
         self.brain.on_mode = lambda on: self.sig_mode.emit(bool(on))
         self.brain.on_hud = lambda action: self.sig_hud.emit(str(action))
         self._refresh_link()
@@ -416,12 +417,12 @@ class Jarvis(QObject):
                                            f"{self.hotkey.active.upper()} 로 대신 부릅니다")
         killer = getattr(self.args, "revived", None)
         if killer:
-            # 강제로 꺼졌다가 감시 프로세스가 다시 켰다 (guard.py) — 긴 인사 대신 짧게 알린다.
-            # 울트론에게 연달아 꺼지는 중이면 몇 번째에만 소리 내어 말하고 나머지는 HUD 알림만
+            # 감시 프로세스가 다시 켰다 (guard.py) — 긴 인사 대신 짧게 알린다.
+            # counter: 울트론에게 흡수됐다가 보안 프로토콜이 울트론을 자비스로 되돌렸다 (counter.py)
             from . import guard
             count = int(getattr(self.args, "revive_count", 0) or 0)
             msg, speak = guard.comeback(self.cfg["user_title"] or "주인님", killer, count)
-            log.warning("강제 종료 뒤 다시 켜짐 (%s, 연속 %d번째)", killer, count)
+            log.warning("감시 프로세스가 다시 켬 (%s, %d번째)", killer, count)
             self.bridge.set("replyText", msg)
             if speak:
                 self.say(msg, follow_up=False)
@@ -1317,6 +1318,8 @@ class Jarvis(QObject):
             values.pop("anthropic_api_key", None)   # 빈 칸이면 기존 키 유지
         if values.pop("clear_api_key", False):
             values["anthropic_api_key"] = ""
+        if not values.get("sentinel_api_key"):
+            values.pop("sentinel_api_key", None)    # 빈 칸이면 기존 Sentinel 키 유지
         for key, lo, hi in (("mic_sensitivity", 0.3, 3.0), ("speaker_threshold", 0.2, 0.7)):
             if key in values:
                 try:

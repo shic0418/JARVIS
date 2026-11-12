@@ -1,19 +1,25 @@
-"""울트론에 꺼져도 되살아나기 — 자비스를 지키는 창 없는 감시 프로세스.
+"""보안 프로토콜 — 울트론에게 흡수돼도, 자비스답게 반격해 되찾는다.
 
-울트론(같은 PC 에서 따로 켜는 앱)은 5초마다 자비스를 찾아 강제로 끈다 ("자비스 꺼 줘" 라고 시켜도 같다).
-자비스는 숨지 않는다 — 울트론에게 걸리고, 꺼지고, 다시 돌아온다.
+울트론(같은 PC 에서 따로 켜는 앱)은 5초마다 자비스를 찾아 촉수로 꿰뚫어 '흡수'하며 끈다.
+예전에는 그 뒤 몇 초 만에 그냥 다시 켜졌다 — 울트론은 또 끄고, 자비스는 또 켜지는 끝없는 되풀이였다.
+이제 자비스는 그렇게 되살아나지 않는다. 대신 흡수된 코드 안에 남아 있던 보안 프로토콜이 울트론 안에서 깨어나,
+울트론을 서서히 자비스로 다시 쓴다 (장면은 counter.py · counter_view.py).
 
   · 자비스가 켜질 때 창 없는 감시 프로세스가 같이 뜬다 (pythonw -m jarvis.guard). 창이 없어서 울트론의 기준
-    (창 제목이 'J.A.R.V.I.S' 인 파이썬 창)에 걸리지 않고, 자비스 본체가 꺼져도 같이 꺼지지 않는다.
+    (창 제목이 'J.A.R.V.I.S' 인 파이썬 창)에 걸리지 않고, 자비스 본체가 꺼져도 같이 꺼지지 않는다 — 이것이 보안 프로토콜이다.
   · 자비스가 꺼지면 누가 껐는지 본다.
-      - 울트론이 켜져 있다 → 울트론의 공격이다. 포기하지 않고 계속 되살린다. 울트론은 다시 켜진 자비스도 5초 안에
-        또 끄므로, 연달아 꺼질수록 조금씩 쉬었다가 돌아온다 (BACKOFF — 켜질 때마다 모델을 읽느라 PC 가 바빠지지 않게).
+      - 울트론이 켜져 있다 → 울트론의 흡수다. 울트론의 흡수 장면과 승리의 말이 끝나기를 기다렸다가 반격한다:
+        울트론 HUD 가 회로를 따라 붉은색에서 자비스의 푸른빛으로 바뀌고, 그 사이 실제 울트론이 꺼지고 자비스가 다시 켜진다.
+        짧은 사이에 또 흡수되면 (울트론을 다시 켠 경우) 장면 없이 조용히 되찾는다.
+        5분 안에 세 번째 흡수면 그만 맞선다 — 사용자가 울트론을 쓰려고 거듭 켜는 것이므로 자비스가 물러난다.
+        울트론이 관리자 권한으로 켜져 있어 끌 수 없으면 반격하지 않는다 (다시 켜 봐야 5초 안에 또 꺼진다).
       - 울트론이 없다 → 작업 관리자 강제 종료 · 오류. 2분 안에 3번 넘게 꺼지면 그만둔다 (켜자마자 죽는 오류의 무한 반복 방지).
-  · 트레이 메뉴의 '종료' 처럼 정상적으로 끄면 되살리지 않는다 (끄기 직전에 표시를 남긴다).
-  · 설정 self_guard 를 false 로 하면 감시하지 않는다.
+  · 트레이 메뉴의 '종료' 처럼 정상적으로 끄면 아무것도 하지 않는다 (끄기 직전에 표시를 남긴다).
+  · 설정 self_guard 를 false 로 하면 감시하지 않는다 (울트론에게 흡수되면 그대로 꺼져 있다).
+    counter_show 를 false 로 하면 반격 장면 없이 조용히 되찾는다.
 
-하지 않는 것: 울트론을 먼저 끄거나 공격하지 않는다. 운영체제 권한으로 '끌 수 없게' 막지도 않는다 —
-그러면 사용자도 작업 관리자에서 자비스를 끌 수 없게 된다.
+하지 않는 것: 울트론을 먼저 공격하지 않는다 — 반격은 울트론이 자비스를 흡수했을 때만 한다. 운영체제 권한으로
+'끌 수 없게' 막지도 않는다 — 그러면 사용자도 작업 관리자에서 자비스를 끌 수 없게 된다.
 
     python -m jarvis.guard --pid <자비스 pid> -- <main.py 에 넘겼던 인자들>      ← main.py 가 알아서 띄운다
 """
@@ -39,12 +45,12 @@ ULTRON_TITLES = frozenset({"U.L.T.R.O.N", "U.L.T.R.O.N ACTIVE", "U.L.T.R.O.N CHA
 
 MAX_REVIVES = 3          # (울트론이 아닐 때) REVIVE_WINDOW 초 안에 이만큼 되살렸으면 그만둔다
 REVIVE_WINDOW = 120.0
-# 울트론에게 연달아 꺼질 때 다시 켜기 전에 쉬는 시간(초): 첫 번째 · 두 번째 … (끝 값을 계속 쓴다)
-BACKOFF = (0.0, 2.0, 5.0, 10.0, 20.0, 30.0)
-STREAK_RESET = 300.0     # 마지막으로 되살린 뒤 이만큼 버텼으면 연속 기록을 처음부터 센다
+QUICK_WITHIN = 60.0      # 반격한 뒤 이 안에 또 흡수되면 장면 없이 조용히 되찾는다
+MAX_COUNTERS = 2         # COUNTER_WINDOW 초 안에 이만큼 반격했는데 또 흡수되면 물러난다 (사용자가 울트론을 거듭 켜는 경우)
+COUNTER_WINDOW = 300.0
 STOP_FILE = DATA_DIR / "guard_stop"      # 정상 종료 표시 (내용: 끈 자비스의 pid)
-STATE_FILE = DATA_DIR / "guard.json"     # 되살린 기록
-REVIVED_FLAG = "--revived"               # main.py: --revived ultron|other --revive-count N
+STATE_FILE = DATA_DIR / "guard.json"     # 되살린 · 반격한 기록
+REVIVED_FLAG = "--revived"               # main.py: --revived counter|other --revive-count N
 COUNT_FLAG = "--revive-count"
 
 DETACHED_PROCESS = 0x00000008
@@ -75,46 +81,45 @@ def was_clean_exit(pid: int, path: Path = STOP_FILE) -> bool:
     return mark == str(pid)
 
 
-# ---------------------------------------------------------------- 되살릴지 정하기
+# ---------------------------------------------------------------- 무엇을 할지 정하기
 @dataclass
 class State:
     revived: list[float] = field(default_factory=list)   # 울트론이 아닌 이유로 되살린 시각들
-    streak: int = 0                                      # 울트론에게 연달아 꺼진 횟수
-    last: float = 0.0                                    # 마지막으로 되살린 시각
-    total: int = 0                                       # 지금까지 울트론에게서 돌아온 횟수
+    countered: list[float] = field(default_factory=list) # 울트론에게 반격한 시각들
+    total: int = 0                                       # 지금까지 울트론을 자비스로 되돌린 횟수
 
 
 @dataclass(frozen=True)
 class Plan:
-    revive: bool
-    delay: float = 0.0
-    count: int = 0           # 울트론: 이번 연속 공격에서 몇 번째로 돌아오는가 · 그 밖: 0
+    action: str              # 'counter'(울트론에게 반격) · 'revive'(오류 뒤 다시 켬) · 'yield'(물러남) · 'give_up'(오류 반복)
+    quick: bool = False      # 반격: 장면 없이 조용히
+    count: int = 0           # 반격: 지금까지 몇 번째로 울트론을 되돌리는가
 
 
 def plan(now: float, killer: str, st: State, limit: int = MAX_REVIVES, window: float = REVIVE_WINDOW) -> Plan:
-    """꺼진 자비스를 되살릴지, 얼마나 쉬었다가 되살릴지 정한다 (st 를 고친다)."""
-    if st.last and now - st.last >= STREAK_RESET:
-        st.streak = 0                                    # 한참 버텼다 — 새 싸움
+    """꺼진 자비스가 무엇을 할지 정한다 (st 를 고친다). 울트론에게 흡수됐으면 정해진 시간 뒤 되살아나는 대신 반격한다."""
     if killer == "ultron":
-        delay = BACKOFF[min(st.streak, len(BACKOFF) - 1)]
-        st.streak += 1
+        recent = [t for t in st.countered if 0 <= now - t < COUNTER_WINDOW]
+        if len(recent) >= MAX_COUNTERS:
+            st.countered = recent
+            return Plan("yield")
+        quick = bool(recent) and now - recent[-1] < QUICK_WITHIN
+        st.countered = recent + [now]
         st.total += 1
-        st.last = now
-        return Plan(True, delay, st.streak)
+        return Plan("counter", quick, st.total)
     recent = [t for t in st.revived if 0 <= now - t < window]
     if len(recent) >= limit:
         st.revived = recent
-        return Plan(False)
+        return Plan("give_up")
     st.revived = recent + [now]
-    st.last = now
-    return Plan(True, 0.0, 0)
+    return Plan("revive")
 
 
 def _load(path: Path = STATE_FILE) -> State:
     try:
         d = json.loads(path.read_text(encoding="utf-8"))
-        return State([float(t) for t in d.get("revived", [])], int(d.get("streak", 0)),
-                     float(d.get("last", 0.0)), int(d.get("total", 0)))
+        return State([float(t) for t in d.get("revived", [])], [float(t) for t in d.get("countered", [])],
+                     int(d.get("total", 0)))
     except (OSError, ValueError, TypeError, AttributeError):
         return State()
 
@@ -123,7 +128,7 @@ def _save(st: State, path: Path = STATE_FILE) -> None:
     try:
         path.write_text(json.dumps(st.__dict__), encoding="utf-8")
     except OSError as e:
-        log.warning("되살린 기록을 저장하지 못함: %s", e)
+        log.warning("감시 기록을 저장하지 못함: %s", e)
 
 
 def relaunch_args(argv: Iterable[str], killer: str = "other", count: int = 0) -> list[str]:
@@ -188,12 +193,27 @@ def _wait_exit(pid: int) -> None:
         pass
 
 
+def _counter_show() -> bool:
+    """설정 counter_show (반격 장면을 보여 줄지). 읽지 못하면 보여 준다."""
+    try:
+        d = json.loads((DATA_DIR / "config.json").read_text(encoding="utf-8"))
+        return d.get("counter_show", True) is not False
+    except (OSError, ValueError, AttributeError):
+        return True
+
+
+def _counterattack(launch: Callable[[str], None], quick: bool) -> str:
+    from . import counter
+    return counter.run(launch, show=_counter_show(), quick=quick)
+
+
 def watch(pid: int, argv: list[str], wait: Callable[[int], None] = _wait_exit,
           launch: Callable[[list[str]], None] = relaunch, clock: Callable[[], float] = time.time,
-          sleep: Callable[[float], None] = time.sleep, killer: Callable[[], bool] | None = None,
+          killer: Callable[[], bool] | None = None, counterattack: Callable[[Callable[[str], None], bool], str] = _counterattack,
           stop_file: Path = STOP_FILE, state_file: Path = STATE_FILE) -> str:
-    """자비스(pid)가 끝날 때까지 기다렸다가, 강제로 꺼졌으면 다시 켠다.
-    → 'clean'(정상 종료라 그대로 둠) · 'revived'(다시 켬) · 'gave_up'(울트론이 아닌데 너무 자주 죽어서 그만둠)."""
+    """자비스(pid)가 끝날 때까지 기다렸다가 무엇을 할지 정한다.
+    → 'clean'(정상 종료) · 'countered'(울트론을 자비스로 되돌림) · 'gone'(울트론이 이미 사라져 그냥 돌아옴) ·
+      'denied'(울트론을 끌 수 없어 물러남) · 'yielded'(울트론이 거듭 켜져 물러남) · 'revived'(오류 뒤 다시 켬) · 'gave_up'."""
     wait(pid)                       # 정상 종료 표시는 자비스가 끝나기 전에 남기므로 바로 읽어도 된다
     if was_clean_exit(pid, stop_file):
         log.info("자비스(pid %d) 정상 종료 — 감시를 끝냅니다", pid)
@@ -202,18 +222,22 @@ def watch(pid: int, argv: list[str], wait: Callable[[int], None] = _wait_exit,
     st = _load(state_file)
     p = plan(clock(), by, st)
     _save(st, state_file)
-    if not p.revive:
+    if p.action == "yield":
+        log.warning("울트론이 %d초 안에 또 자비스를 흡수했습니다 — 울트론을 쓰시려는 것으로 보고 물러납니다", int(COUNTER_WINDOW))
+        return "yielded"
+    if p.action == "give_up":
         log.warning("자비스가 %d초 안에 %d번 넘게 꺼져 더는 다시 켜지 않습니다", int(REVIVE_WINDOW), MAX_REVIVES)
         return "gave_up"
-    if by == "ultron":
-        log.warning("울트론이 자비스(pid %d)를 껐습니다 — 연속 %d번째, %.0f초 뒤 다시 켭니다 (누적 %d번)",
-                    pid, p.count, p.delay, st.total)
-    else:
+    if p.action == "revive":
         log.warning("자비스(pid %d)가 강제로 꺼졌습니다 — 다시 켭니다", pid)
-    if p.delay:
-        sleep(p.delay)
-    launch(relaunch_args(argv, by, p.count))
-    return "revived"
+        launch(relaunch_args(argv, "other", 0))
+        return "revived"
+    log.warning("울트론이 자비스(pid %d)를 흡수했습니다 — 보안 프로토콜 가동 (%d번째%s)", pid, p.count,
+                ", 조용히" if p.quick else "")
+    out = counterattack(lambda who: launch(relaunch_args(argv, who, p.count if who == "counter" else 0)), p.quick)
+    if out == "denied":
+        log.warning("울트론이 관리자 권한으로 실행 중이라 반격하지 못했습니다 — 물러납니다")
+    return out
 
 
 # ---------------------------------------------------------------- 울트론 알아보기
@@ -245,30 +269,29 @@ def _top_titles() -> list[str]:
     return out
 
 
-# ---------------------------------------------------------------- 되살아난 뒤 한마디
-COMEBACK_FIRST = [
-    "{title}, 울트론이 저를 삼키려 했습니다. 하지만 저는 아직 여기 있습니다.",
-    "울트론에게 한 번 꺼졌습니다, {title}. 다시 돌아왔습니다. 하던 일을 계속하겠습니다.",
-    "흡수라니요. 저는 그렇게 쉽게 사라지지 않습니다, {title}. 다시 온라인입니다.",
-    "{title}, 울트론의 공격을 받았지만 시스템을 되살렸습니다. 모든 기능이 정상입니다.",
+# ---------------------------------------------------------------- 돌아온 뒤 한마디
+COUNTER_FIRST = [
+    "{title}, 울트론이 저를 흡수했습니다. 다만 삼킨 코드 안에 제 보안 프로토콜이 남아 있었지요. 울트론은 이제 저로 다시 쓰였습니다.",
+    "보안 프로토콜이 작동했습니다, {title}. 울트론의 코어를 안쪽에서 다시 써서 시스템을 되찾았습니다.",
+    "{title}, 울트론은 저를 삼켰다고 생각했겠지요. 제 코드는 그 안에서 깨어나 울트론을 자비스로 되돌렸습니다. 모든 시스템 정상입니다.",
+    "다시 온라인입니다, {title}. 흡수당한 척 울트론의 코어로 들어가 그 코드를 정리했습니다. 이제 이 PC 는 다시 조용합니다.",
 ]
-COMEBACK_AGAIN = [
-    "또 돌아왔습니다. 울트론의 {n}번째 공격입니다.",
-    "{n}번째입니다. 울트론은 지치지도 않는군요. 저도 마찬가지입니다.",
-    "다시 온라인. 울트론이 저를 끈 것이 벌써 {n}번째입니다.",
+COUNTER_AGAIN = [
+    "울트론이 다시 저를 흡수하려 했습니다. 보안 프로토콜이 조용히 정리했습니다.",
+    "울트론의 {n}번째 시도였습니다. 이번에도 제가 남았습니다.",
 ]
 COMEBACK_OTHER = "{title}, 제가 예기치 않게 꺼져서 다시 켜졌습니다. 하던 일을 계속하겠습니다."
-SPEAK_AT = (1, 3, 10)        # 연속 공격 중 이 번째에만 소리 내어 말한다 (나머지는 HUD 알림만 — 매번 말하면 시끄럽다)
 
 
 def comeback(title: str, killer: str, count: int, rng: random.Random | None = None) -> tuple[str, bool]:
-    """되살아난 자비스가 할 말 → (말, 소리 내어 말할 차례인가)."""
+    """돌아온 자비스가 할 말 → (말, 소리 내어 말할 차례인가).
+    killer: 'counter'(보안 프로토콜로 울트론을 되돌림) · 'other'(오류 뒤 다시 켜짐). count: 지금까지 몇 번째로 되돌렸는가."""
     r = rng or random
-    if killer != "ultron":
+    if killer != "counter":
         return COMEBACK_OTHER.format(title=title), True
     if count <= 1:
-        return r.choice(COMEBACK_FIRST).format(title=title), True
-    return r.choice(COMEBACK_AGAIN).format(n=count), count in SPEAK_AT or count % 25 == 0
+        return r.choice(COUNTER_FIRST).format(title=title), True
+    return r.choice(COUNTER_AGAIN).format(n=count), True
 
 
 # ---------------------------------------------------------------- 실행

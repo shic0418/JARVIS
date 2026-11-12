@@ -20,8 +20,8 @@ from typing import Callable
 
 import psutil
 
-from . import uia, vision, winutil
-from .config import Config, load_memory, save_memory
+from . import sentinel, uia, vision, winutil
+from .config import DATA_DIR, Config, load_memory, save_memory
 
 log = logging.getLogger("jarvis.tools")
 NO_WINDOW = 0x08000000
@@ -39,6 +39,7 @@ class Hooks:
     notify: Callable[[str], None] = lambda msg: None   # 백그라운드 작업이 사용자에게 말로 알림
     cancel_timers: Callable[[], int] = lambda: 0       # 돌고 있는 타이머 모두 취소 → 취소한 개수
     point_at: Callable[[int, int, int, int, str], bool] = lambda x, y, w, h, label: False  # 액티브 모드 화면에 위치 표시
+    feed: Callable[[str, str], None] = lambda name, value: None   # 액티브 모드 화면 정보 (속성 이름, JSON)
 
 
 # 한국어 별칭 → Start 메뉴 검색어 / 실행 파일
@@ -124,6 +125,9 @@ class PCTools:
         self._view_target = "screen"             # 마지막으로 본 범위 (screen | window) — 누른 뒤 같은 범위를 다시 보여 준다
         self._moved = False                      # 방금 동작으로 화면이 바뀌었는가
         self.vision_model = ""              # 지금 화면을 보고 있는 모델 이름 → 보낼 이미지 크기 한도를 정한다
+        self.sentinel = sentinel.Sentinel(cfg)   # Sentinel 웹 보안 분석기 연결
+        self._sentinel_last = ""            # 이번 실행에서 마지막으로 요청한 검사 번호 (보고서 열기용)
+        self.writer = None                  # 작가 여러 명에게 나눠 맡기는 함수 (app 이 brain.write_team 을 넣는다)
         threading.Thread(target=self._index_apps, daemon=True, name="app-index").start()
 
     # ------------------------------------------------------------------ 앱 인덱스
@@ -285,8 +289,166 @@ class PCTools:
                   "label": {"type": "string", "description": "short Korean description of what is being waited for"},
                   "max_minutes": {"type": "integer", "description": "give up after this many minutes (default 60)"}},
                  ["name"]),
+            tool("sentinel_scan", "Run a PASSIVE (non-intrusive) web security scan of one site with the user's local "
+                 "Sentinel Web Security Analyzer and return a summary of the findings. Only for a site the user owns or is "
+                 "authorised to test: the app shows the user an authorisation card every time, and their confirmation is "
+                 "recorded in Sentinel's audit log. Pass only the address the user asked about (or, for 'this site', the "
+                 "address of the browser tab they are looking at); never pick or guess a target yourself. "
+                 "Active or intrusive checks are not available here.",
+                 {"url": s,
+                  "basis": {"type": "string", "enum": ["owner", "written_permission", "bug_bounty_scope", "internal_lab"],
+                            "description": "why the user may test it, only if they said so; default is the user's setting"},
+                  "purpose": {"type": "string", "description": "short Korean note for the audit log, e.g. '배포 전 점검'"}},
+                 ["url"]),
+            tool("sentinel_report", "Open the full HTML report of the most recent Sentinel scan from this session in the browser."),
+            tool("sentinel_status", "Check whether the local Sentinel Web Security Analyzer server is running and the API key works."),
             tool("remember", "Save a fact about the user to long-term memory (e.g. preferences, names). Use when the user asks you to remember something.",
                  {"fact": s}, ["fact"]),
+            tool("make_presentation",
+                 "Create a PowerPoint (.pptx) presentation and open it. Use for PPT / 발표 자료 / 슬라이드 requests. Give "
+                 "the slides in order; how much of each slide you write yourself (just layout + title, or the full text) "
+                 "is set by the 작업 rules in your instructions — slides without text are written by a team of writer "
+                 "agents in parallel. A cover, a 목차 slide and a 참고 자료 slide (from sources) are added automatically. "
+                 "Saved to the user's Documents\\JARVIS folder unless folder is given.",
+                 {"title": {"type": "string", "description": "presentation title (cover)"},
+                  "subtitle": {"type": "string", "description": "cover subtitle, e.g. '3학년 2반 홍길동' or a one-line summary"},
+                  "audience": {"type": "string", "description": "who listens, e.g. '중학교 2학년', '회사 임원' — sets the wording"},
+                  "style": {"type": "string", "enum": ["clean", "bold", "side", "tech", "editorial", "pastel", "corporate"],
+                            "description": "visual design — only when the user asked for a look; otherwise omit and a "
+                                           "fitting design is picked, different each time. clean 깔끔 · bold 큰 글자와 강한 색 · "
+                                           "side 왼쪽 제목 칸 (모던) · tech 어두운 바탕과 빛 · editorial 명조와 얇은 선 (매거진) · "
+                                           "pastel 둥글고 밝은 색 (귀엽게) · corporate 진한 띠 (회사 · 공식 보고)"},
+                  "theme": {"type": "string", "enum": ["light", "dark", "navy", "warm", "green", "purple", "teal", "rose",
+                                                       "mono", "midnight", "forest"],
+                            "description": "colors — only when the user asked for a color; otherwise omit (the style picks)"},
+                  "facts": {"type": "array", "items": {"type": "string"},
+                            "description": "facts for the writers (numbers, years, names) — only what you researched yourself"},
+                  "slides": {"type": "array", "description": "content slides in order (cover, 목차 and 참고 자료 are added for you)",
+                             "items": {"type": "object", "properties": {
+                                 "layout": {"type": "string",
+                                            "enum": ["bullets", "section", "two_column", "stats", "chart", "timeline", "process",
+                                                     "cards", "table", "highlight", "quote", "closing"],
+                                            "description": "section (chapter divider) · bullets · two_column (compare two "
+                                                           "sides) · stats (2-4 key numbers) · chart · timeline (dated events) "
+                                                           "· process (steps in order) · cards (3-4 parallel items) · table "
+                                                           "(comparison grid) · highlight (one big sentence) · quote (a real "
+                                                           "quote) · closing (last slide)"},
+                                 "title": {"type": "string"},
+                                 "points": {"type": "array", "items": {"type": "string"},
+                                            "description": "outline only: 1-3 keywords the writers must cover on this slide"},
+                                 "bullets": {"type": "array", "items": {"type": "string"},
+                                             "description": "final text lines; '핵심어: 설명' is shown with the keyword in bold, a "
+                                                            "line starting with '- ' is a sub-point"},
+                                 "left": {"type": "object", "description": "two_column: {heading, bullets}"},
+                                 "right": {"type": "object", "description": "two_column: {heading, bullets}"},
+                                 "stats": {"type": "array", "description": "stats: 2-4 of {value: '73%', label}",
+                                           "items": {"type": "object"}},
+                                 "chart": {"type": "object", "description": "chart: the data for a real, editable chart",
+                                           "properties": {
+                                               "type": {"type": "string", "enum": ["column", "bar", "line", "pie"]},
+                                               "categories": {"type": "array", "items": {"type": "string"}},
+                                               "series": {"type": "array", "items": {"type": "object", "properties": {
+                                                   "name": {"type": "string"},
+                                                   "values": {"type": "array", "items": {"type": "number"}}}}},
+                                               "unit": {"type": "string", "description": "e.g. '%', '℃', '명'"}}},
+                                 "events": {"type": "array", "description": "timeline: 3-5 of {when, title, text}",
+                                            "items": {"type": "object"}},
+                                 "steps": {"type": "array", "description": "process: 3-5 of {title, text}", "items": {"type": "object"}},
+                                 "cards": {"type": "array", "description": "cards: 3-4 of {title, text}", "items": {"type": "object"}},
+                                 "table": {"type": "object", "description": "table: {columns: [...], rows: [[...]]}, at most 5 x 6"},
+                                 "statement": {"type": "string", "description": "highlight: the one big sentence"},
+                                 "detail": {"type": "string", "description": "highlight: one supporting line"},
+                                 "quote": {"type": "string"},
+                                 "by": {"type": "string", "description": "who said the quote"},
+                                 "notes": {"type": "string", "description": "speaker notes: what to say on this slide (1-2 sentences)"}},
+                                 "required": ["title"]}},
+                  "sources": {"type": "array", "items": {"type": "string"}, "description": "references you used yourself: 'title — URL'"},
+                  "agenda": {"type": "boolean", "description": "add a 목차 slide (default: when there are 4+ content slides)"},
+                  "filename": {"type": "string", "description": "file name without extension (default: the title)"},
+                  "folder": {"type": "string", "description": "'바탕화면', '문서', '다운로드' or a full path (default Documents\\JARVIS)"},
+                  "overwrite": {"type": "boolean", "description": "replace the file of the same name (use when revising a file you just made)"},
+                  "open": {"type": "boolean", "description": "open the file after saving (default true)"}},
+                 ["title", "slides"]),
+            tool("make_document",
+                 "Create a Word (.docx) report or document and open it. Use for 보고서 / 레포트 / 조사 정리 / 문서로 정리 requests. "
+                 "Give the sections in order; how much you write yourself (just headings, or the full text) is set by the "
+                 "작업 rules in your instructions — sections without text are written by writer agents in parallel. A 참고 자료 "
+                 "list is added from sources and pages are numbered.",
+                 {"title": s,
+                  "subtitle": {"type": "string", "description": "e.g. '과목 · 학번 이름 · 날짜'"},
+                  "audience": {"type": "string", "description": "who reads it, e.g. '고등학교 과제', '팀장 보고'"},
+                  "facts": {"type": "array", "items": {"type": "string"},
+                            "description": "facts for the writers — only what you researched yourself"},
+                  "sections": {"type": "array", "items": {"type": "object", "properties": {
+                      "heading": {"type": "string"},
+                      "level": {"type": "integer", "enum": [1, 2], "description": "2 for a sub-heading"},
+                      "points": {"type": "array", "items": {"type": "string"},
+                                 "description": "outline only: what this section must cover"},
+                      "paragraphs": {"type": "array", "items": {"type": "string"}},
+                      "bullets": {"type": "array", "items": {"type": "string"}},
+                      "table": {"type": "object", "properties": {
+                          "columns": {"type": "array", "items": {"type": "string"}},
+                          "rows": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}},
+                          "caption": {"type": "string"}}}}}},
+                  "sources": {"type": "array", "items": {"type": "string"}},
+                  "filename": s, "folder": s,
+                  "overwrite": {"type": "boolean"}, "open": {"type": "boolean"}},
+                 ["title", "sections"]),
+            tool("make_spreadsheet",
+                 "Create an Excel (.xlsx) file with one or more sheets and open it. Use for 표 / 엑셀 / 시간표 / 정리표 requests. "
+                 "Give numbers as numbers. A cell that starts with '=' is written as a formula (e.g. '=SUM(B2:B8)').",
+                 {"sheets": {"type": "array", "items": {"type": "object", "properties": {
+                      "name": {"type": "string", "description": "sheet tab name"},
+                      "title": {"type": "string", "description": "optional title row above the table"},
+                      "columns": {"type": "array", "items": {"type": "string"}},
+                      "rows": {"type": "array", "items": {"type": "array", "items": {}}},
+                      "chart": {"type": "object", "description": "optional chart beside the table",
+                                "properties": {"type": {"type": "string", "enum": ["column", "bar", "line", "pie"]},
+                                               "title": {"type": "string"},
+                                               "category_column": {"type": "integer", "description": "0-based label column (default 0)"},
+                                               "value_columns": {"type": "array", "items": {"type": "integer"},
+                                                                 "description": "0-based value columns (default: all numeric columns)"}}}},
+                      "required": ["columns"]}},
+                  "filename": s, "folder": s,
+                  "overwrite": {"type": "boolean"}, "open": {"type": "boolean"}},
+                 ["sheets"]),
+            tool("make_cardnews",
+                 "Create card news (카드뉴스): square 1080x1080 images — a cover, one card per item and a closing card — saved "
+                 "as PNG files plus one PDF in a new folder, then open the folder. Use for 카드뉴스 / 인스타 카드 / SNS 홍보 "
+                 "requests instead of operating a design website (much faster and more reliable). Keep each card short: a "
+                 "title and 2-4 short lines.",
+                 {"title": {"type": "string", "description": "cover title (big text)"},
+                  "subtitle": {"type": "string", "description": "small tag on the cover, e.g. '환경 캠페인'"},
+                  "cards": {"type": "array", "description": "content cards, 3-8 recommended (max 12)",
+                            "items": {"type": "object", "properties": {
+                                "title": {"type": "string"},
+                                "bullets": {"type": "array", "items": {"type": "string"}},
+                                "highlight": {"type": "string", "description": "optional one-line key message in a box"}},
+                                "required": ["title"]}},
+                  "closing": {"type": "string", "description": "closing card: first line is the big message, later lines small text"},
+                  "sources": {"type": "array", "items": {"type": "string"}},
+                  "theme": {"type": "string", "enum": ["light", "dark", "navy", "warm", "green", "purple", "teal", "rose",
+                                                       "mono", "midnight", "forest"]},
+                  "filename": s, "folder": s, "overwrite": {"type": "boolean"}, "open": {"type": "boolean"}},
+                 ["title", "cards"]),
+            tool("make_poster",
+                 "Create a poster (포스터 · 홍보물 · 안내문 · 캠페인) as a portrait A4 (or A3) image plus a print-ready PDF and "
+                 "open it. Use instead of operating a design website. A colored header with the title, an optional slogan "
+                 "box, 2-4 sections of short bullet points and a footer.",
+                 {"title": s,
+                  "subtitle": {"type": "string"},
+                  "highlight": {"type": "string", "description": "slogan or key message shown in a box"},
+                  "sections": {"type": "array", "description": "2-4 recommended (max 6)",
+                               "items": {"type": "object", "properties": {
+                                   "heading": {"type": "string"},
+                                   "bullets": {"type": "array", "items": {"type": "string"}}}}},
+                  "footer": {"type": "string", "description": "e.g. organizer · date · place"},
+                  "sources": {"type": "array", "items": {"type": "string"}},
+                  "theme": {"type": "string", "enum": ["light", "dark", "navy", "warm", "green", "purple", "teal", "rose",
+                                                       "mono", "midnight", "forest"]},
+                  "size": {"type": "string", "enum": ["a4", "a3"]},
+                  "filename": s, "folder": s, "overwrite": {"type": "boolean"}, "open": {"type": "boolean"}},
+                 ["title", "sections"]),
         ]
 
     # ------------------------------------------------------------------ 표시용 라벨
@@ -332,6 +494,15 @@ class PCTools:
             "write_clipboard": lambda: "클립보드 쓰기",
             "remember": lambda: f"기억 저장 · {a.get('fact', '')[:30]}",
             "watch_app": lambda: f"작업 감시 · {a.get('name')}",
+            "web_fetch": lambda: f"웹 페이지 읽기 · {str(a.get('url', ''))[:40]}",
+            "sentinel_scan": lambda: f"Sentinel 검사 · {str(a.get('url', ''))[:40]}",
+            "sentinel_report": lambda: "Sentinel 보고서 열기",
+            "sentinel_status": lambda: "Sentinel 연결 확인",
+            "make_presentation": lambda: f"PPT 만들기 · {str(a.get('title', ''))[:30]}",
+            "make_document": lambda: f"문서 만들기 · {str(a.get('title', ''))[:30]}",
+            "make_spreadsheet": lambda: f"엑셀 만들기 · {str(a.get('filename') or '표')[:30]}",
+            "make_cardnews": lambda: f"카드뉴스 만들기 · {str(a.get('title', ''))[:30]}",
+            "make_poster": lambda: f"포스터 만들기 · {str(a.get('title', ''))[:30]}",
             "web_search": lambda: f"웹 검색 · {a.get('query', '')}",
         }
         try:
@@ -1179,6 +1350,154 @@ class PCTools:
         n = self.hooks.cancel_timers()
         return f"타이머 {n}개를 취소했습니다." if n else "돌고 있는 타이머가 없습니다."
 
+    # ------------------------------------------------------------------ 작업 결과물 (발표 자료 · 보고서 · 표 — office.py)
+    def _work_folder(self, folder: str = "") -> Path:
+        """결과물을 저장할 폴더. 기본은 문서\\JARVIS. '바탕화면' · '문서' · '다운로드' 같은 이름이나 전체 경로를 받는다."""
+        f = (folder or "").strip()
+        if not f:
+            return (winutil.known_folder("문서") or Path.home() / "Documents") / "JARVIS"
+        known = winutil.known_folder(f)
+        if known:
+            return known
+        p = Path(os.path.expandvars(os.path.expanduser(f)))
+        if p.is_absolute():
+            return p
+        raise ToolError(f"저장할 폴더 '{folder}'를 알 수 없습니다. '바탕화면' · '문서' · '다운로드' 또는 전체 경로를 주세요.")
+
+    def _where(self, path: Path) -> str:
+        """말로 읽기 좋은 저장 위치 — '문서의 JARVIS 폴더', '바탕화면' (전체 경로를 소리 내어 읽지 않게)."""
+        for name, label in (("바탕화면", "바탕화면"), ("다운로드", "다운로드 폴더"), ("문서", "문서")):
+            base = winutil.known_folder(name)
+            if not base:
+                continue
+            try:
+                rel = Path(path).parent.relative_to(base)
+            except ValueError:
+                continue
+            return label if not rel.parts else f"{label}의 {' › '.join(rel.parts)} 폴더"
+        return f"'{Path(path).parent.name}' 폴더"
+
+    def _make_file(self, build, name: str, ext: str, folder: str, overwrite: bool, open_after: bool):
+        """build(경로) 로 파일을 만들고 연다 → (경로, 정보, 덧붙일 말).
+        같은 이름의 파일이 열려 있어 덮어쓰지 못하면 새 이름으로 저장한다."""
+        from . import office
+        place = self._work_folder(folder)
+        note = ""
+        try:
+            path = office.target(place, name, ext, bool(overwrite))
+            try:
+                info = build(path)
+            except PermissionError:
+                if not overwrite:
+                    raise
+                path = office.target(place, name, ext, False)
+                info = build(path)
+                note = " 원래 파일이 열려 있어 새 이름으로 저장했습니다."
+        except ImportError as e:
+            lib = {"pptx": "python-pptx", "docx": "python-docx", "xlsxwriter": "XlsxWriter", "PIL": "Pillow"}.get(e.name or "", e.name)
+            raise ToolError(f"파일을 만드는 라이브러리({lib})가 설치되어 있지 않습니다. setup.bat 를 다시 실행해 설치하세요.")
+        except PermissionError as e:
+            raise ToolError(f"'{place}' 에 저장하지 못했습니다 (권한이 없거나 파일이 열려 있음): {e}")
+        except ValueError as e:
+            raise ToolError(str(e))
+        if open_after is not False:
+            try:
+                os.startfile(str(path))
+                note += " 파일을 열었습니다."
+            except (OSError, AttributeError):
+                note += " 파일을 열 프로그램을 찾지 못해 열지는 못했습니다."
+        log.info("작업 결과물 저장: %s %s", path, info)
+        return path, info, note
+
+    def _team(self, kind: str, brief: dict, items: list) -> tuple[list, list, str]:
+        """본문이 없는 장을 작가 여러 명에게 나눠 맡긴다 (자비스가 Claude 에 연결돼 있을 때) → (장들, 작가가 쓴 출처, 덧붙일 말).
+        작가를 쓸 수 없거나 실패하면 받은 그대로 만든다."""
+        writer = getattr(self, "writer", None)
+        if writer is None or not isinstance(items, list):
+            return items, [], ""
+        try:
+            out, info = writer(kind, brief, items)
+        except Exception as e:
+            log.warning("작가에게 맡기지 못함: %s", e)
+            return items, [], ""
+        if not info.get("written"):
+            if info.get("asked") and info.get("writers"):       # 한 장도 못 썼다 (연결 문제 등) — 빈 파일을 만들지 않는다
+                raise ToolError("작가들이 응답하지 않았습니다. 이번에는 장마다 본문(bullets · steps · events · cards · table …)과 "
+                                "notes 를 직접 채워서 같은 도구를 다시 부르세요.")
+            return out, [], ""
+        found = f" 조사 담당이 찾은 자료 {info['researched']}건을 바탕으로," if info.get("researched") else ""
+        note = f"{found} 작가 {info['writers']}명이 나눠 썼습니다 ({info['seconds']:.0f}초)."
+        missing = set(info.get("missing") or [])
+        if missing:                                             # 끝내 못 쓴 장: 개요(points)라도 있으면 그대로 넣고, 제목뿐이면 뺀다
+            kept = [it for i, it in enumerate(out, 1) if i not in missing or (isinstance(it, dict) and it.get("points"))]
+            note += f" {len(missing)}장은 쓰지 못해 " + ("개요만 넣었습니다." if len(kept) == len(out) else "뺐습니다.")
+            out = kept
+        return out, info.get("sources") or [], note
+
+    def t_make_presentation(self, title: str, slides: list, subtitle: str = "", sources: list | None = None,
+                            theme: str = "", agenda: bool | None = None, filename: str = "", folder: str = "",
+                            overwrite: bool = False, open: bool = True, style: str = "", audience: str = "",
+                            facts: list | None = None, **_extra) -> str:
+        from . import office, writers                 # (_extra: 모델이 덧붙인 모르는 칸은 무시한다 — 그 때문에 다시 부르게 하지 않는다)
+        slides, found, team = self._team("slides", {"title": title, "subtitle": subtitle, "audience": audience,
+                                                    "facts": facts}, slides)
+        refs = writers.merge_sources(sources, found)
+        look = office.pick_style(style, str(title), str(audience or subtitle or ""), getattr(self, "_last_style", ""))
+        self._last_style = look                       # 다음 발표 자료는 다른 디자인으로
+        color = office.pick_theme(theme, look, str(title))
+        path, info, note = self._make_file(
+            lambda p: office.build_presentation(p, title, slides, subtitle, refs, color, agenda, look),
+            filename or title, ".pptx", folder, overwrite, open)
+        talk = f", 발표 대본 {info['notes']}장" if info["notes"] else ""
+        split = f", 글이 넘친 {info['split']}곳은 다음 장으로 나눔" if info["split"] else ""
+        cited = f", 출처 {len(refs)}건" if refs else ""
+        return (f"발표 자료를 만들었습니다 — 표지 포함 {info['slides']}장{talk}{cited}{split}, 디자인은 '{office.STYLE_NAMES[look]}' "
+                f"스타일.{team} 저장한 곳: {self._where(path)} (파일 이름 {path.name}).{note} [전체 경로: {path}]")
+
+    def t_make_document(self, title: str, sections: list, subtitle: str = "", sources: list | None = None,
+                        filename: str = "", folder: str = "", overwrite: bool = False, open: bool = True,
+                        audience: str = "", facts: list | None = None, **_extra) -> str:
+        from . import office, writers
+        sections, found, team = self._team("document", {"title": title, "subtitle": subtitle, "audience": audience,
+                                                        "facts": facts}, sections)
+        refs = writers.merge_sources(sources, found)
+        path, info, note = self._make_file(
+            lambda p: office.build_document(p, title, sections, subtitle, refs),
+            filename or title, ".docx", folder, overwrite, open)
+        tables = f", 표 {info['tables']}개" if info["tables"] else ""
+        return (f"문서를 만들었습니다 — 장 {info['sections']}개{tables}.{team} 저장한 곳: {self._where(path)} "
+                f"(파일 이름 {path.name}).{note} [전체 경로: {path}]")
+
+    def t_make_spreadsheet(self, sheets: list, filename: str = "", folder: str = "", overwrite: bool = False,
+                           open: bool = True, **_extra) -> str:
+        from . import office
+        first = sheets[0] if isinstance(sheets, list) and sheets and isinstance(sheets[0], dict) else {}
+        name = filename or first.get("title") or first.get("name") or "표"
+        path, info, note = self._make_file(lambda p: office.build_spreadsheet(p, sheets), name, ".xlsx", folder,
+                                           overwrite, open)
+        return (f"엑셀 파일을 만들었습니다 — 시트 {info['sheets']}개, {info['rows']}행. 저장한 곳: {self._where(path)} "
+                f"(파일 이름 {path.name}).{note} [전체 경로: {path}]")
+
+    def t_make_cardnews(self, title: str, cards: list, subtitle: str = "", closing: str = "", sources: list | None = None,
+                        theme: str = "light", filename: str = "", folder: str = "", overwrite: bool = False,
+                        open: bool = True, **_extra) -> str:
+        from . import design
+        path, info, note = self._make_file(
+            lambda p: design.build_cardnews(p, title, cards, subtitle, closing, sources, theme),
+            filename or f"{title} 카드뉴스", "", folder, overwrite, open)
+        return (f"카드뉴스를 만들었습니다 — {info['cards']}장 (표지 · 마무리 포함, 그림 파일과 한 묶음 PDF). "
+                f"저장한 곳: {self._where(path)} 안의 '{path.name}' 폴더.{note} [전체 경로: {path}]")
+
+    def t_make_poster(self, title: str, sections: list | None = None, subtitle: str = "", highlight: str = "",
+                      footer: str = "", sources: list | None = None, theme: str = "light", size: str = "a4",
+                      filename: str = "", folder: str = "", overwrite: bool = False, open: bool = True, **_extra) -> str:
+        from . import design
+        path, info, note = self._make_file(
+            lambda p: design.build_poster(p, title, sections or [], subtitle, highlight, footer, sources, theme, size),
+            filename or title, ".png", folder, overwrite, open)
+        return (f"포스터를 만들었습니다 — {str(size or 'a4').upper()} 세로, 구역 {info['sections']}개 (그림 파일과 인쇄용 PDF). "
+                f"저장한 곳: {self._where(path)} (파일 이름 {path.name}).{note} [전체 경로: {path}]")
+
     def t_end_process(self, name: str) -> str:
         """프로그램의 프로세스를 모두 강제 종료 (Windows 핵심 프로세스 · 자비스 자신은 제외)."""
         import psutil
@@ -1240,6 +1559,44 @@ class PCTools:
         winutil.set_clipboard_text(text)
         return "클립보드에 복사함"
 
+
+    # --- Sentinel 웹 보안 분석기 ---
+    def _ask_user(self, title: str, detail: str) -> bool:
+        """사용자에게 직접 묻는다 — 자동 승인 설정과 상관없이 항상 카드를 띄운다."""
+        return bool(self.hooks.confirm(title, detail))
+
+    def t_sentinel_scan(self, url: str, basis: str = "", purpose: str = "") -> str:
+        try:
+            text, scan_id = sentinel.run_scan(
+                self.sentinel, str(url), str(basis or self.cfg["sentinel_basis"] or "owner"), str(purpose or ""),
+                confirm=self._ask_user,
+                feed=lambda state: self.hooks.feed("sentinelJson", json.dumps(state, ensure_ascii=False)),
+                notify=self.hooks.notify)
+        except sentinel.SentinelError as e:
+            raise ToolError(str(e))
+        self._sentinel_last = scan_id
+        return text
+
+    def t_sentinel_report(self) -> str:
+        if not self._sentinel_last:
+            raise ToolError("이번에 요청한 Sentinel 검사가 없습니다. 먼저 검사를 요청해 주세요.")
+        try:
+            html = self.sentinel.report_html(self._sentinel_last)
+        except sentinel.SentinelError as e:
+            raise ToolError(str(e))
+        folder = DATA_DIR / "sentinel"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"sentinel-{self._sentinel_last}.html"
+        path.write_bytes(sentinel.harden_html(html))   # 보고서 안의 스크립트 · 외부 요청은 막아 두고 연다
+        os.startfile(str(path))
+        return "Sentinel 보고서를 열었습니다."
+
+    def t_sentinel_status(self) -> str:
+        try:
+            self.sentinel.ping()
+            return f"Sentinel 연결 정상입니다. 서버는 {self.sentinel.base()}."
+        except sentinel.SentinelError as e:
+            raise ToolError(str(e))
 
     def t_remember(self, fact: str) -> str:
         mem = load_memory()
