@@ -62,7 +62,7 @@ Window {
     SequentialAnimation {
         id: openAnim
         NumberAnimation { target: ov; property: "seal"; from: 0; to: 1; duration: ov.skipSeal ? 0 : 340; easing.type: Easing.InCubic }
-        ScriptAction { script: { if (!ov.skipSeal) joltAnim.restart(); bootTimer.restart() } }
+        ScriptAction { script: if (!ov.skipSeal) joltAnim.restart() }
         PauseAnimation { duration: ov.skipSeal ? 0 : 150 }
         ParallelAnimation {
             NumberAnimation { target: ov; property: "p"; to: 1; duration: ov.calm ? 500 : 2700 }
@@ -79,15 +79,21 @@ Window {
         bootTimer.stop()
         skipSeal = calm || p > 0.05
         seal = skipSeal ? 2 : 0
-        syslog.clear()
-        bootStep = 0
+        if (!skipSeal) {                      // 처음부터 켤 때만 로그를 새로 시작 (열리던 중 다시 켜면 이어서)
+            syslog.clear()
+            bootStep = 0
+        }
         engagedAt = Date.now()
         visible = true
         openAnim.restart()
     }
     onOnChanged: {
         if (on) engage()
-        else if (visible) { openAnim.stop(); bootTimer.stop(); seal = 2; closeAnim.restart() }
+        else if (visible) {
+            openAnim.stop(); bootTimer.stop(); seal = 2
+            if (p < 0.001) visible = false   // 아직 봉인 단계였으면 보여 줄 것이 없으므로 바로 닫는다
+            else closeAnim.restart()
+        }
     }
     Component.onCompleted: if (on) engage()
 
@@ -200,7 +206,8 @@ Window {
         while (syslog.count > logMax) syslog.remove(0)
     }
     property int bootStep: 0
-    readonly property bool booted: bootStep >= bootChecks().length
+    readonly property int bootCount: 9          // bootChecks() 줄 수
+    readonly property bool booted: bootStep >= bootCount
     function bootChecks() {
         const w = weather, s = stats
         return [
@@ -219,6 +226,8 @@ Window {
         ]
     }
     property int bootWarn: 0
+    // SYSLOG 패널(Fly d 0.48)이 날아와 자리 잡을 즈음부터 한 줄씩 찍는다
+    onPChanged: if (on && p > 0.5 && !booted && !bootTimer.running && openAnim.running) bootTimer.start()
     Timer {
         id: bootTimer
         interval: ov.calm ? 40 : 230; repeat: true
@@ -237,7 +246,7 @@ Window {
             stop()
         }
     }
-    onStChanged: if (on && booted && st !== "boot") log("STATE", stateLabels[st] || st.toUpperCase(),
+    onStChanged: if (on && booted && st !== "boot" && st !== "listening") log("STATE", stateLabels[st] || st.toUpperCase(),
                                                         st === "offline" ? "err" : "info")
     Connections {
         target: jarvis
@@ -254,7 +263,7 @@ Window {
         const id = target.id === undefined ? "" : String(target.id)
         if (id !== "" && id !== lastTarget) {
             lockAnim.restart()
-            if (booted) {
+            if (on && booted) {
                 if (target.kind === "point") log("TARGET", "LOCK · " + (target.title || "POINT"), "lock")
                 else if ((target.app || "") !== lastApp) log("TRACK", target.app || "WINDOW", "info")
             }
@@ -1098,7 +1107,7 @@ Window {
                     ShapePath {
                         strokeColor: ov.hot; strokeWidth: 4 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
                         PathAngleArc { centerX: dayRing.width / 2; centerY: dayRing.width / 2; radiusX: 40 * ov.u; radiusY: 40 * ov.u
-                                       startAngle: -90; sweepAngle: Math.max(1, 6 * (ov.now.getSeconds() + ov.now.getMilliseconds() / 1000)) }
+                                       startAngle: -90; sweepAngle: Math.max(1, 6 * (ov.now.getSeconds() + (ov.idle ? 0 : ov.now.getMilliseconds() / 1000))) }
                     }
                     ShapePath {
                         strokeColor: ov.c(0.45); strokeWidth: 1; fillColor: "transparent"
@@ -1355,7 +1364,7 @@ Window {
             x: ov.cx - 430 * ov.u; y: ov.cy + 92 * ov.u
             HoloPanel {
                 anchors.fill: parent; accent: ov.accent; fillAlpha: 0.78; cut: 10
-                title: "SYSLOG"; tag: ov.booted ? "LIVE" : "SUIT-UP " + Math.round(100 * ov.bootStep / ov.bootChecks().length) + "%"
+                title: "SYSLOG"; tag: ov.booted ? "LIVE" : "SUIT-UP " + Math.round(100 * ov.bootStep / ov.bootCount) + "%"
             }
             Column {
                 x: 10 * ov.u; y: 28 * ov.u
@@ -1461,7 +1470,7 @@ Window {
                 ]
                 Shape {
                     readonly property int n: integ.lvl[modelData[0]]
-                    visible: index < 7 * integ.reveal + 0.5
+                    visible: integ.reveal > 0 && index < 7 * integ.reveal + 0.5
                     x: integ.fx; y: integ.fy
                     width: 76 * ov.u; height: 150 * ov.u
                     preferredRendererType: Shape.CurveRenderer

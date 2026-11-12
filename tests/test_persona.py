@@ -108,3 +108,11 @@ def test_tone_removes_rumble():
     spec_in, spec_out = np.abs(np.fft.rfft(mix)), np.abs(np.fft.rfft(y))
     k40 = 40
     assert spec_out[k40] / spec_out.max() < 0.5 * spec_in[k40] / spec_in.max()      # 40Hz 웅웅거림이 크게 줄었다
+
+
+def test_active_mode_lines_format():
+    from jarvis import persona
+    for group in (persona.ACTIVE_ON, persona.ACTIVE_OFF, persona.ACTIVE_ALREADY, persona.ACTIVE_ALREADY_OFF):
+        for line in ([group] if isinstance(group, str) else group):
+            out = line.format(title="주인님")
+            assert out and "{" not in out

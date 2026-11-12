@@ -515,7 +515,7 @@ class Brain:
             if not self.active_hud:
                 return "지금 켜져 있는 모드가 없어요."
             self.on_hud("active_off")
-            return "액티브 모드를 해제합니다."
+            return persona.pick(persona.ACTIVE_OFF, title=self.cfg['user_title'] or '주인님')
         if ACTIVE_OFF.fullmatch(c):
             if not self.active_hud:
                 return persona.ACTIVE_ALREADY_OFF
