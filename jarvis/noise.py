@@ -125,10 +125,12 @@ class StreamVad:
             v.pop()
         return speech
 
-    def feed(self, block: np.ndarray) -> bool:
+    def feed(self, block: np.ndarray, quiet: bool = False) -> bool:
+        """quiet: 이 블록은 말소리로 볼 수 없을 만큼 조용하다 — ② 갈래(소음 제거, 블록당 약 2ms)를 건너뛴다.
+        조용한 방에서 대기할 때 소음 제거 모델을 쉬지 않고 돌리던 것을 없앤다 (소음이 있으면 조용하지 않으므로 그대로 돈다)."""
         x = block.astype(np.float32) / 32768.0
         speech = self._step(self._raw, x)
-        if self._den is not None:
+        if self._den is not None and not quiet:
             y = np.asarray(self._den.run(x, RATE).samples, dtype=np.float32)
             speech = self._step(self._clean, y) or speech
         return speech
@@ -170,7 +172,7 @@ class NoiseModels:
             cfg = sherpa_onnx.OfflineSpeechDenoiserConfig(
                 model=sherpa_onnx.OfflineSpeechDenoiserModelConfig(
                     gtcrn=sherpa_onnx.OfflineSpeechDenoiserGtcrnModelConfig(model=_short_path(den)),
-                    num_threads=2))
+                    num_threads=1))     # 2 이상이면 작업 스레드가 일이 끝난 뒤에도 헛돌며 CPU 를 쓴다 (local_stt.STT_THREADS 설명)
             if not cfg.validate():
                 raise RuntimeError("소음 제거 설정 오류")
             self._den = sherpa_onnx.OfflineSpeechDenoiser(cfg)

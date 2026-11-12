@@ -137,7 +137,7 @@ def test_babble_mode_cuts_out_the_near_loud_voice(monkeypatch):
         threshold = L.vad_threshold(1.0)
 
         def __init__(self, *a): pass
-        def feed(self, block): return True
+        def feed(self, block, quiet=False): return True
         def reset(self): pass
 
     class Models:

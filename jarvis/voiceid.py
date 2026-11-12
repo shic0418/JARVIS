@@ -126,7 +126,7 @@ class VoiceID:
             self._set("loading")
             import sherpa_onnx
             cfg = sherpa_onnx.SpeakerEmbeddingExtractorConfig(
-                model=_short_path(MODEL_PATH), num_threads=2)
+                model=_short_path(MODEL_PATH), num_threads=1)   # 2 이상이면 작업 스레드가 헛돈다 (local_stt.STT_THREADS 설명)
             if not cfg.validate():
                 raise RuntimeError("모델 설정이 올바르지 않습니다")
             self._ex = sherpa_onnx.SpeakerEmbeddingExtractor(cfg)

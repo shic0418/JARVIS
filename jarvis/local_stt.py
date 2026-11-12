@@ -23,6 +23,11 @@ import numpy as np
 
 from .noise import MODELS_DIR, _short_path
 
+# 인식에 쓰는 스레드 수. 1 이어야 한다 — 2 이상이면 onnx 런타임의 작업 스레드들이 인식이 끝난 뒤에도 쉬지 않고 헛돌아
+# (측정: 4스레드로 한 번 인식한 뒤 아무 일도 안 하는 2초 동안 CPU 1.5초를 썼다 · 1스레드는 0) 대기 중에도 코어 하나 이상을
+# 계속 태웠다. 4초짜리 발화 인식 시간은 0.16초 → 0.30초로 조금 늘 뿐이다.
+STT_THREADS = 1
+
 log = logging.getLogger("jarvis.local_stt")
 
 RATE = 16000
@@ -112,7 +117,7 @@ class LocalSTT:
                 _download()
             self._rec = sherpa_onnx.OfflineRecognizer.from_sense_voice(
                 model=_short_path(_DIR / "model.int8.onnx"), tokens=_short_path(_DIR / "tokens.txt"),
-                language=self.language, use_itn=True, num_threads=4)
+                language=self.language, use_itn=True, num_threads=STT_THREADS)
             self.recognize(np.zeros(RATE // 2, np.int16))      # 예열
             self.state = "ready"
             log.info("오프라인 음성 인식 준비 완료 (SenseVoice)")

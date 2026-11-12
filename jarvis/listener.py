@@ -54,6 +54,7 @@ MAX_UTTER_BLOCKS = 500     # 최대 15초
 NOISE_FACTOR = 2.5         # 소음 대비 이 배수를 넘으면 말소리로 봄 (감도로 나눔)
 NOISE_FACTOR_ACTIVE = 1.8  # 호출 직후/이어 말하기 중에는 더 낮은 기준
 ABS_FLOOR = 60.0           # 아주 조용한 방에서도 이 밑은 말소리로 보지 않음 (감도로 나눔)
+QUIET_RATIO = 0.5          # 음성 대역 크기가 ABS_FLOOR 의 이 비율보다 작으면 소음 제거 갈래를 돌리지 않는다 (조용한 방의 대기 부하 절감)
 END_RATIO = 0.55           # 시작 기준의 이 비율 밑으로 내려가야 무음으로 봄 (말끝 흐림 보존)
 NOISE_MIN = 15.0
 NOISE_WIN_BLOCKS = 80      # 소음 추정 창 2.4초
@@ -330,6 +331,7 @@ class Listener:
                     svad.reset()          # 자기 목소리(TTS) 들은 상태를 끌고 오지 않도록
             was_muted = False
             e = band_rms(block)
+            hush = e < QUIET_RATIO * ABS_FLOOR / self.sensitivity and not in_speech
             # 자동 음량 조절: 감지 AI·인식·화자 판별에는 키운 소리를 쓴다.
             # 에너지 기준(e, noise)은 키우기 전 소리로 계산한다 — 증폭이 바뀔 때 기준이 흔들리지 않게
             if self.agc:
@@ -337,7 +339,7 @@ class Listener:
             ai = False
             if svad is not None:
                 try:
-                    ai = svad.feed(block)
+                    ai = svad.feed(block, quiet=hush)
                 except Exception as ex:
                     log.warning("음성 감지 AI 오류 — 기존 방식으로 전환: %s", ex)
                     self.noise_robust = False

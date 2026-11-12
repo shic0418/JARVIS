@@ -52,10 +52,20 @@ Item {
     readonly property real breath: 0.5 + 0.5 * Math.sin(t * 1.15)
     readonly property real sway: 2.2 * Math.sin(t * 0.21) + 1.1 * Math.sin(t * 0.13 + 1.3)
 
+    // 대기 중에는 1초에 20번만 갱신한다 — 움직임이 느려서 차이가 보이지 않고, 그 사이 프레임은 아무것도 바뀌지 않으므로
+    // 화면을 다시 그리지 않는다 (예전에는 모니터 주사율대로 매 프레임 그림자 · 흐림 효과까지 다시 그려 CPU · GPU 를 계속 썼다).
+    // 듣는 중 · 생각 중 · 말하는 중과 등장 연출 동안에는 매 프레임 갱신한다.
+    property real acc: 0
+    readonly property bool calm: (mode === "standby" || mode === "offline") && intro >= 1
+                                 && listenAmt < 0.02 && thinkAmt < 0.02
     FrameAnimation {
         running: e.visible
         onTriggered: {
-            const dt = Math.min(frameTime, 0.05)
+            e.acc += frameTime
+            if (e.calm && e.acc < 0.05)
+                return
+            const dt = Math.min(e.acc, 0.1)
+            e.acc = 0
             const f = k => 1 - Math.exp(-dt * k)
             e.t += dt
             e.spd += (e.speedTarget - e.spd) * f(1.6)
