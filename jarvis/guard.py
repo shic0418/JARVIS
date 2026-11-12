@@ -414,6 +414,25 @@ def comeback(title: str, killer: str, count: int, rng: random.Random | None = No
 
 
 # ---------------------------------------------------------------- 실행
+def dpi_aware() -> None:
+    """이 감시 프로세스가 화면을 실제 픽셀로 보게 한다 (모니터마다 배율 · Per-Monitor v2).
+    울트론 창의 자리를 재는 일(창 영역 · WindowFromPoint · 화면 찍기)은 장면을 띄우기 전, 즉 Qt 가 이 설정을 하기 전에 일어난다.
+    설정하지 않으면 배율이 100% 가 아닌 화면에서 창 영역이 배율만큼 줄어든 값으로 나와 울트론 창을 찾지 못하고,
+    진짜 울트론 대신 대역 그림을 화면 구석에 그렸다."""
+    if sys.platform != "win32":
+        return
+    import ctypes
+    try:
+        if ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
+            return
+    except Exception:
+        pass
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if "--" in args:
@@ -427,6 +446,7 @@ def main(argv: list[str] | None = None) -> int:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(filename=str(DATA_DIR / "guard.log"), level=logging.INFO, encoding="utf-8",
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    dpi_aware()
     try:
         watch(int(own[1]), rest)
     except Exception:

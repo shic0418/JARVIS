@@ -288,15 +288,27 @@ def hud_rect(found: Found) -> tuple[int, int, int, int] | None:
     return None
 
 
-def grab_hud(found: list[Found]) -> tuple[np.ndarray, tuple[int, int, int, int]] | None:
-    """화면에 보이는 울트론 HUD 를 찍는다 → (RGBA 그림, 실제 픽셀 영역). 보이지 않으면 None. (Qt 없이 — 빨라야 한다)"""
+def hud_spot(found: list[Found]) -> tuple[int, int, int, int] | None:
+    """화면에 보이는 울트론 HUD 의 영역 (실제 픽셀). 보이지 않으면 None.
+    (WindowFromPoint 는 그 창에 메시지를 보낼 수 있다 — 울트론을 멈추기 전에 불러야 한다.)"""
     for f in found:
         rect = hud_rect(f)
-        if not rect:
-            continue
-        from PIL import ImageGrab
-        return np.asarray(ImageGrab.grab(bbox=rect, all_screens=True).convert("RGBA")).copy(), rect
+        if rect:
+            return rect
     return None
+
+
+def capture(rect: tuple[int, int, int, int] | None) -> tuple[np.ndarray, tuple[int, int, int, int]] | None:
+    """그 영역의 화면을 그대로 찍는다 → (RGBA 그림, 영역). 창에 메시지를 보내지 않는다 — 멈춘 울트론도 찍을 수 있다."""
+    if not rect:
+        return None
+    from PIL import ImageGrab
+    return np.asarray(ImageGrab.grab(bbox=rect, all_screens=True).convert("RGBA")).copy(), rect
+
+
+def grab_hud(found: list[Found]) -> tuple[np.ndarray, tuple[int, int, int, int]] | None:
+    """화면에 보이는 울트론 HUD 를 찍는다 → (RGBA 그림, 실제 픽셀 영역). 보이지 않으면 None. (Qt 없이 — 빨라야 한다)"""
+    return capture(hud_spot(found))
 
 
 # ---------------------------------------------------------------- 시간표 (초)

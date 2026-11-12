@@ -3,17 +3,19 @@
 이야기의 흐름:
   1) 울트론이 자비스를 흡수한다 → 자비스의 보안 프로토콜이 울트론 안에서 깨어나 울트론을 자비스로 다시 쓴다 (counter.py)
   2) 울트론의 가디언(울트론을 지키는 별개 프로세스)이 울트론을 되살리고, 울트론은 다시 자비스를 흡수하러 온다
-  3) 이번에는 자비스가 기다리고 있다. 울트론의 흡수 덮개 창('U.L.T.R.O.N ABSORB')이 뜨는 순간 —
-     첫 촉수가 꽂히기(울트론이 실제로 자비스를 끄기) 약 1초 전 — 자비스의 감시 프로세스가 그것을 알아채고
-     울트론의 가디언과 울트론 본체를 차례로 끈다. 가디언까지 끄므로 울트론은 되살아나지 않는다.
-     화면에는 울트론 HUD 가 위에서부터 푸른 선에 훑이며 잘게 부서져 흩어지는 장면이 그려진다 (defense_view.py).
+  3) 이번에는 자비스가 기다리고 있다. 울트론의 부활 컷신이 끝나는 순간 (또는 흡수 덮개가 뜨는 순간 — 첫 촉수가 꽂히기
+     약 1초 전) 자비스의 감시 프로세스가 울트론을 그 자리에 멈춰 세운다 (프로세스 일시정지 — 흡수도 그대로 멈춘다).
+     멈춘 진짜 울트론 창 위로 자비스에게서 빛줄기가 뻗어 꽂히고, 방어막이 조여 붙잡고, 푸른빛이 울트론의 붉은빛을 덮어 간다.
+     다 덮이면 울트론의 가디언과 울트론 본체를 끄고(가디언까지 끄므로 되살아나지 않는다), 같은 모습이 그 자리를 이어받아
+     위에서부터 푸른 선에 훑이며 잘게 부서져 흩어진다 (defense_view.py). 장면은 8초 남짓이다.
 
 언제 막는가 (guard.py 가 정한다):
   · 보안 프로토콜의 반격으로 되살아난 자비스(--revived counter)만 지킨다. 처음 켠 자비스는 예전처럼 흡수당한 뒤 반격한다.
   · 울트론이 연출 없이 바로 끄면(전체 화면 · 연출 끔 등) 막을 틈이 없다 — 그때는 반격하면서 가디언까지 끈다 (purge).
   · 5분 안에 세 번 막았는데 또 오면 더는 막지 않는다 (사용자가 울트론을 쓰려고 거듭 켜는 것이므로).
 
-실제로 하는 일은 울트론 프로세스 둘(가디언 · 본체)을 끄는 것뿐이다. 울트론의 파일 · 설정 · 기록은 건드리지 않는다 —
+실제로 하는 일은 울트론 본체를 잠깐 멈춰 세웠다가 울트론 프로세스 둘(가디언 · 본체)을 끄는 것뿐이다
+(지우지 못하면 — 관리자 권한 — 멈춘 울트론을 다시 움직이게 돌려놓는다). 울트론의 파일 · 설정 · 기록은 건드리지 않는다 —
 사용자가 울트론을 다시 켜면 다시 켜진다. 가디언을 찾는 기준도 좁다: 'python -m jarvis.guardian' 으로 실행됐고,
 작업 폴더가 지금 켜져 있는 울트론의 설치 폴더와 같은 프로세스만 (자비스 자신의 폴더는 어떤 경우에도 고르지 않는다).
 
@@ -172,53 +174,121 @@ def purge(found: list[C.Found], stopper: Callable[[C.Found], tuple[bool, str]] =
     return True
 
 
+# ---------------------------------------------------------------- 얼리기 (울트론을 그 자리에 멈춰 세운다)
+def _each(found: list[C.Found], what: str) -> bool:
+    import psutil
+    ok = True
+    for f in found:
+        try:
+            p = psutil.Process(f.pid)
+            if p.name() != f.exe:
+                continue                         # 찾은 뒤 그 번호를 다른 프로그램이 받았다 — 건드리지 않는다
+            getattr(p, what)()
+        except psutil.NoSuchProcess:
+            continue
+        except psutil.Error as e:
+            log.warning("울트론(pid %d)을 %s 하지 못함: %s", f.pid, "멈추게" if what == "suspend" else "다시 움직이게", e)
+            ok = False
+    return ok
+
+
+def freeze(found: list[C.Found]) -> bool:
+    """울트론을 끄지 않고 그 자리에 멈춰 세운다 (프로세스 일시정지). 진행 중이던 흡수도 그 순간에 멈춘다 —
+    첫 촉수가 꽂히는 시각(울트론 안의 타이머)이 오지 않으므로 자비스는 꺼지지 않는다. 울트론 창은 멈춘 모습 그대로 화면에 남는다."""
+    return _each(found, "suspend")
+
+
+def thaw(found: list[C.Found]) -> bool:
+    return _each(found, "resume")
+
+
 # ---------------------------------------------------------------- 막기 (guard.py 의 감시 프로세스가 부른다)
 def repel(show: bool = True, finder: Callable[[], list[C.Found]] = C.find_ultron,
-          grab: Callable[[list[C.Found]], tuple | None] = C.grab_hud,
+          locate: Callable[[list[C.Found]], tuple | None] = C.hud_spot,
+          grab: Callable[[tuple | None], tuple | None] = C.capture,
           killer: Callable[[list[C.Found]], bool] = purge, fullscreen: Callable[[], bool] = C.foreground_fullscreen,
-          play: Callable[[tuple | None], str] | None = None) -> str:
-    """울트론의 흡수가 시작됐다 — 촉수가 닿기 전에 울트론을 지운다.
+          play: Callable[[tuple | None, Callable[[], bool]], str] | None = None,
+          stop: Callable[[list[C.Found]], bool] = freeze, start: Callable[[list[C.Found]], bool] = thaw,
+          settle: Callable[[], None] = lambda: time.sleep(0.05)) -> str:
+    """울트론이 돌아왔다 — 먼저 울트론을 그 자리에 멈춰 세우고, 멈춘 진짜 울트론 창 위에 장면을 씌운 뒤 부서지는 순간에 지운다.
     → 'repelled'(막고 지웠다) · 'denied'(울트론을 끌 수 없다 — 관리자 권한) · 'gone'(울트론이 벌써 없다).
-    시간이 빠듯하므로(첫 촉수까지 약 1초) 울트론의 모습만 재빨리 찍어 두고 먼저 끈 다음에 장면을 보여 준다."""
+
+    순서: 멈춤(즉시 — 촉수가 닿기 전) → 멈춘 울트론을 찍는다(멈춰 있으므로 화면의 진짜 울트론과 픽셀까지 같다) →
+    장면: 빛줄기 · 조준 · 잠식은 진짜 울트론 창 위에 그린다 → 부서지기 시작하는 순간(SWAP) 진짜 울트론과 가디언을 끄고,
+    같은 모습의 그림이 그 자리를 이어받아 조각난다 (Windows 는 다른 프로그램의 창을 조각내 날릴 수 없다)."""
     found = finder()
     if not found:
         return "gone"
     scene = show and not fullscreen()
-    shot = None
+    spot = None
     if scene:
         try:
-            shot = grab(found)
+            spot = locate(found)                 # 멈추기 전에 (자리를 재는 일은 울트론 창에 메시지를 보낼 수 있다)
         except Exception as e:
-            log.debug("울트론 HUD 를 찍지 못함: %s", e)
-    if not killer(found):
-        log.warning("방어 프로토콜: 울트론이 관리자 권한으로 버티고 있어 막지 못했습니다")
-        return "denied"
-    if scene:
-        try:
+            log.debug("울트론 HUD 의 자리를 알 수 없음: %s", e)
+    if not stop(found):
+        # 멈추게 할 수 없다 (관리자 권한) — 끌 수 있는지만 본다
+        return "repelled" if killer(found) else "denied"
+    killed: list[bool] = []
+
+    def kill() -> bool:                          # 장면 도중 한 번만 (부서지기 시작할 때)
+        if not killed:
+            try:
+                killed.append(bool(killer(found)))
+            except Exception:
+                log.exception("울트론을 지우지 못함")
+                killed.append(False)
+        return killed[0]
+
+    try:
+        if scene:
+            shot = None
+            try:
+                settle()                         # 멈춘 마지막 모습이 화면에 자리 잡게
+                shot = grab(spot)                # 멈춘 진짜 울트론 — 화면의 모습과 픽셀까지 같다
+            except Exception as e:
+                log.debug("울트론 HUD 를 찍지 못함: %s", e)
             if play is None:
                 from .defense_view import play as play_scene
                 play = play_scene
-            play(shot)
-        except Exception:
-            log.exception("방어 장면 실패")
+            play(shot, kill)
+    except Exception:
+        log.exception("방어 장면 실패")
+    finally:
+        if not kill():                           # 장면이 없었거나 중간에 끝났어도 반드시 지운다
+            start(found)                         # 지우지 못했다 — 멈춘 채 두지 않는다 (응답 없는 창이 되므로)
+    if not killed[0]:
+        log.warning("방어 프로토콜: 울트론이 관리자 권한으로 버티고 있어 막지 못했습니다")
+        return "denied"
     return "repelled"
 
 
 # ---------------------------------------------------------------- 시간표 (초)
-SHIELD = (0.0, 0.5)    # 푸른 방어막이 울트론 둘레에 닫힌다 (촉수가 끊긴다)
-SWEEP = (0.45, 2.1)    # 푸른 선이 위에서 아래로 훑고, 훑인 자리부터 조각나 떨어져 나간다
-DRIFT = 1.25           # 떨어져 나간 조각이 푸르게 바래며 흩어져 사라지기까지
-END = SWEEP[1] + DRIFT + 0.35
+# 0 초에 울트론은 이미 멈춰 있다 (진짜 울트론 창이 멈춘 모습 그대로 화면에 있다). SWAP 전까지는 그 위에 덧그린다.
+BEAM = (0.0, 0.9)      # 자비스 엠블럼에서 빛줄기가 뻗어 울트론에 꽂힌다
+SHIELD = (0.7, 1.6)    # 울트론 둘레로 방어막 · 꺾쇠가 조여 들어 붙잡는다 (넓은 면을 채우지 않는다)
+INFECT = (1.5, 3.4)    # 빛줄기가 꽂힌 자리에서 푸른빛이 번져 진짜 울트론의 붉은빛을 덮는다
+SWAP = 3.6             # 진짜 울트론과 가디언을 끈다 — 같은 모습의 그림이 그 자리를 그대로 이어받는다 (보이는 변화 없음)
+SWEEP = (3.8, 6.0)     # 푸른 선이 위에서 아래로 훑고, 훑인 자리부터 조각나 떨어져 나간다
+DRIFT = 1.6            # 떨어져 나간 조각이 바래며 흩어져 사라지기까지
+END = SWEEP[1] + DRIFT + 0.4
 FADE = 0.6             # 끝난 뒤 콘솔이 사라지는 시간
 CELL = 7.0             # 조각 한 칸의 크기 (논리 픽셀)
 
 CONSOLE = [
     (0.10, "J.A.R.V.I.S  //  DEFENSE PROTOCOL"),
-    (0.35, "> 흡수 시도 감지 — 촉수 접속 차단"),
-    (0.75, "> 울트론 가디언 프로세스 종료"),
-    (1.10, "> 울트론 소거 중 … {pct}%"),
-    (2.70, "> 울트론 — 시스템에서 사라졌습니다"),
+    (0.40, "> 울트론 프로세스 동결 — 촉수 정지"),
+    (1.00, "> 울트론 코어 포착 · 역침투 개시"),
+    (1.60, "> 코어 장악 중 … {inf}%"),
+    (3.55, "> 울트론 · 가디언 프로세스 종료"),
+    (3.95, "> 울트론 소거 중 … {pct}%"),
+    (6.10, "> 울트론 — 시스템에서 사라졌습니다"),
 ]
+
+
+def infect_progress(t: float) -> float:
+    a, b = INFECT
+    return float(C.smooth((t - a) / (b - a)))
 
 
 def sweep_progress(t: float) -> float:
@@ -228,11 +298,12 @@ def sweep_progress(t: float) -> float:
 
 def console_lines(t: float, typed_cps: float = 48.0) -> list[str]:
     pct = int(round(sweep_progress(t) * 100))
+    inf = int(round(infect_progress(t) * 100))
     out = []
     for at, text in CONSOLE:
         if t < at:
             break
-        line = text.replace("{pct}", str(pct))
+        line = text.replace("{pct}", str(pct)).replace("{inf}", str(inf))
         n = int((t - at) * typed_cps)
         out.append(line if n >= len(line) else line[:n])
     return out
@@ -270,24 +341,76 @@ class Dust:
         return drift.astype(np.float32), alpha, k.astype(np.float32)
 
 
+def over(top: np.ndarray, bottom: np.ndarray) -> np.ndarray:
+    """RGBA 그림 top 을 bottom 위에 겹친 결과 (둘 다 uint8, 같은 크기) — 화면에서 두 층이 겹쳐 보이는 그대로."""
+    t, b = top.astype(np.float32) / 255, bottom.astype(np.float32) / 255
+    ta, ba = t[..., 3:4], b[..., 3:4]
+    a = ta + ba * (1 - ta)
+    rgb = (t[..., :3] * ta + b[..., :3] * ba * (1 - ta)) / np.maximum(a, 1e-6)
+    return (np.clip(np.concatenate([rgb, a], -1), 0, 1) * 255 + 0.5).astype(np.uint8)
+
+
+class Infect:
+    """진짜 울트론 창 위에 덧그리는 푸른 층: 빛줄기가 꽂힌 자리에서부터 번져, 다 번지면 울트론의 붉은빛이 모두 푸르게 덮인다.
+    덮는 층은 멈춘 울트론의 모습을 푸르게 바꾼 그림이다 — 울트론이 멈춰 있으므로 아래의 진짜 창과 픽셀까지 맞는다."""
+
+    def __init__(self, src: np.ndarray, hit: tuple[float, float], scale: float = 1.0, seed: int = 3) -> None:
+        h, w = src.shape[:2]
+        self.src = src
+        self.blue = C.recolor(src)
+        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+        rng = np.random.default_rng(seed)
+        cell = max(6, int(14 * scale))
+        grid = rng.uniform(-1, 1, (h // cell + 2, w // cell + 2)).astype(np.float32)
+        blocky = np.kron(grid, np.ones((cell, cell), np.float32))[:h, :w]
+        self.dist = np.maximum(np.hypot(xx - hit[0], yy - hit[1]) + blocky * 22 * scale, 0.0)
+        self.feather = 34.0 * scale
+        self.reach = float(self.dist.max()) + self.feather
+        self._p = -1.0
+        self._img: np.ndarray | None = None
+
+    def front(self, p: float) -> float:
+        """번지는 앞머리가 꽂힌 자리에서 얼마나 떨어져 있는가 (그림 픽셀)."""
+        return p * (self.reach + self.feather)
+
+    def layer(self, p: float) -> np.ndarray:
+        """번진 정도 p (0 ~ 1) 의 푸른 층 (RGBA uint8). 같은 p 면 다시 계산하지 않는다."""
+        p = round(float(p), 3)
+        if self._img is not None and p == self._p:
+            return self._img
+        x = (self.front(p) - self.dist) / self.feather
+        a = C.smooth(x)[..., None]
+        out = self.blue.astype(np.float32)
+        edge = (np.exp(-(x - 0.5) ** 2 * 6) * 0.5)[..., None] * (p < 1)    # 번지는 앞머리가 옅게 빛난다 (좁은 띠)
+        out[..., :3] = out[..., :3] * (1 - edge) + np.array(C.CYAN_HOT, np.float32) * edge
+        out[..., 3:4] *= a
+        self._img, self._p = np.clip(out, 0, 255).astype(np.uint8), p
+        return self._img
+
+    def final(self) -> np.ndarray:
+        """다 번진 뒤 화면에 보이는 모습 (멈춘 진짜 울트론 + 푸른 층) — SWAP 뒤 이어받아 부서질 그림."""
+        return over(self.layer(1.0), self.src)
+
+
 class Shatter:
     """찍어 둔 울트론 그림이 위에서부터 조각나 푸르게 바래며 흩어지는 그림을 만든다 (그림 픽셀 단위, numpy 만).
     frame(t) → 그림보다 margin 만큼 둘레가 넓은 RGBA 화폭 (조각이 그림 밖으로 날아가도 잘리지 않게)."""
 
-    def __init__(self, src: np.ndarray, scale: float = 1.0, seed: int = 11) -> None:
+    def __init__(self, src: np.ndarray, scale: float = 1.0, seed: int = 11, tinted: bool = False) -> None:
+        """tinted: src 가 이미 푸르게 물든 그림이다 — 떨어져 나간 조각을 다시 물들이지 않는다."""
         h, w = src.shape[:2]
         self.c = c = max(3, int(round(CELL * scale)))
         self.margin = m = int(math.ceil(150 * scale))
         ny, nx = math.ceil(h / c), math.ceil(w / c)
         pad = np.zeros((ny * c, nx * c, 4), np.uint8)
         pad[:h, :w] = src
-        blue = C.recolor(pad)
+        blue = pad if tinted else C.recolor(pad)
         # (n, c, c, 4) 조각들 — Dust 의 조각 순서(행 우선)와 같게
         blocks = pad.reshape(ny, c, nx, c, 4).transpose(0, 2, 1, 3, 4).reshape(-1, c, c, 4)
         self.red = blocks.astype(np.float32)
         self.blue = blue.reshape(ny, c, nx, c, 4).transpose(0, 2, 1, 3, 4).reshape(-1, c, c, 4).astype(np.float32)
         self.dust = Dust(nx * c, ny * c, cell=c, seed=seed)
-        self.dust.vel *= scale
+        self.dust.vel *= scale * 0.8                         # 천천히 흩어진다
         self.keep = self.red[..., 3].reshape(len(self.red), -1).max(axis=1) > 0      # 완전히 투명한 조각은 그리지 않는다
         self.size = (ny * c + 2 * m, nx * c + 2 * m)                                  # (높이, 너비)
         self.grid = (ny, nx)
@@ -338,12 +461,15 @@ class Shatter:
 def sound(length: float = END + 0.4, sr: int = C.SOUND_RATE) -> np.ndarray:
     t = np.arange(int(length * sr), dtype=np.float32) / sr
     p = C.smooth((t - SWEEP[0]) / (SWEEP[1] - SWEEP[0])).astype(np.float32)
+    q = C.smooth((t - INFECT[0]) / (INFECT[1] - INFECT[0])).astype(np.float32)
     env = np.clip(t / 0.4, 0, 1) * np.clip((length - t) / 0.7, 0, 1)
-    f = 110 - 60 * p                                               # 울트론의 웅웅거림이 낮게 가라앉는다
+    f = 110 - 25 * q - 35 * p                                      # 멈춘 울트론의 웅웅거림이 낮게 가라앉는다
     low = np.sin(2 * np.pi * np.cumsum(f) / sr) * (1 - p) * 0.55
-    shield = np.sin(2 * np.pi * 880 * t) * 0.10 * np.exp(-t / 0.5)  # 방어막이 닫히는 맑은 소리 (천천히 잦아든다)
+    gone = 1 - C.smooth((t - SWAP) / 0.5)
+    rise = np.sin(2 * np.pi * np.cumsum(330 + 330 * q) / sr) * 0.10 * q * gone        # 코어를 장악해 들어가는 소리
+    shield = np.sin(2 * np.pi * 880 * t) * 0.10 * np.exp(-np.maximum(t - SHIELD[0], 0) / 0.6) * (t >= SHIELD[0])
     done = sum(np.sin(2 * np.pi * fr * t) for fr in (659.25, 987.77)) / 2 * C.smooth((t - SWEEP[1]) / 0.6) * 0.5
-    return ((low + shield + done) * env * 0.35).astype(np.float32)
+    return ((low + rise + shield + done) * env * 0.35).astype(np.float32)
 
 
 # ---------------------------------------------------------------- 돌아온 뒤 한마디 (자비스 앱이 말한다)

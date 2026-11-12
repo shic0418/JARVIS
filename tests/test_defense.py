@@ -76,24 +76,70 @@ def test_purge_fails_when_ultron_runs_as_administrator():
 
 
 # ---------------------------------------------------------------- 막기
-def test_repel_snaps_ultron_then_removes_it_then_plays_the_scene():
+FOUND = [C.Found(5, "U.L.T.R.O.N", "python.exe")]
+
+
+def repel_steps(**kw):
     steps = []
-    found = [C.Found(5, "U.L.T.R.O.N", "python.exe")]
-    out = D.repel(finder=lambda: found, grab=lambda fs: steps.append("grab") or "shot",
-                  killer=lambda fs: steps.append("kill") or True, fullscreen=lambda: False,
-                  play=lambda shot: steps.append(("play", shot)))
-    assert out == "repelled" and steps == ["grab", "kill", ("play", "shot")]
+    args = dict(finder=lambda: FOUND, locate=lambda fs: steps.append("locate") or (1, 2, 3, 4),
+                stop=lambda fs: steps.append("freeze") or True, start=lambda fs: steps.append("thaw") or True,
+                settle=lambda: None, grab=lambda spot: steps.append(("grab", spot)) or "shot",
+                killer=lambda fs: steps.append("kill") or True, fullscreen=lambda: False)
+
+    def play(shot, kill):
+        steps.append(("play", shot))
+        steps.append(("killed", kill()))
+        kill()                                               # 두 번 불러도 한 번만 지운다
+    args["play"] = play
+    args.update(kw)
+    return D.repel(**args), steps
 
 
-def test_repel_quietly_or_denied_or_gone():
-    found = [C.Found(5, "U.L.T.R.O.N", "python.exe")]
-    played = []
-    assert D.repel(show=False, finder=lambda: found, killer=lambda fs: True, play=played.append) == "repelled"
-    assert D.repel(finder=lambda: found, killer=lambda fs: True, fullscreen=lambda: True, play=played.append) == "repelled"
-    assert played == []
-    assert D.repel(finder=lambda: found, grab=lambda fs: None, killer=lambda fs: False, fullscreen=lambda: False,
-                   play=played.append) == "denied" and played == []
+def test_ultron_is_frozen_on_the_spot_and_removed_only_inside_the_scene():
+    out, steps = repel_steps()
+    assert out == "repelled"
+    # 자리를 잰다(메시지를 보낼 수 있으므로 멈추기 전) → 멈춘다 → 멈춘 진짜 울트론을 찍는다 → 장면 속에서 지운다
+    assert steps == ["locate", "freeze", ("grab", (1, 2, 3, 4)), ("play", "shot"), "kill", ("killed", True)]
+
+
+def test_ultron_is_always_removed_even_if_the_scene_breaks():
+    def boom(shot, kill):
+        raise RuntimeError("그리기 실패")
+    out, steps = repel_steps(play=boom)
+    assert out == "repelled" and steps[-1] == "kill"
+
+
+def test_quiet_defense_freezes_and_removes_without_a_scene():
+    for kw in ({"show": False}, {"fullscreen": lambda: True}):
+        out, steps = repel_steps(play=lambda *a: pytest.fail("장면을 보여 주면 안 된다"), **kw)
+        assert out == "repelled" and steps == ["freeze", "kill"]
+
+
+def test_ultron_that_cannot_be_removed_is_unfrozen_not_left_hanging():
+    out, steps = repel_steps(killer=lambda fs: False)
+    assert out == "denied" and steps[-1] == "thaw"
+    out, steps = repel_steps(stop=lambda fs: False, killer=lambda fs: False)      # 멈추게도 못 한다 (관리자 권한)
+    assert out == "denied" and "grab" not in str(steps)
     assert D.repel(finder=lambda: [], killer=lambda fs: pytest.fail("끌 것이 없다")) == "gone"
+
+
+def test_timeline_freezes_then_strikes_the_real_window_then_swaps_then_shatters():
+    assert D.BEAM[0] == 0 < D.SHIELD[0] < D.INFECT[0] < D.INFECT[1] < D.SWAP < D.SWEEP[0] < D.SWEEP[1] < D.END
+    assert D.END >= 7.0                                                 # 예전(약 3.7초)보다 느리게
+    assert D.SWAP < 4.5                                                 # 멈춘 창이 '응답 없음' 으로 바뀌기(5초) 전에 지운다
+
+
+def test_infection_covers_the_red_from_the_hit_point_and_hands_over_seamlessly():
+    img = red_card(120, 160)
+    inf = D.Infect(img, (60, 40))
+    assert inf.layer(0.0)[..., 3].max() == 0                            # 처음엔 아무것도 덮지 않는다
+    mid = inf.layer(0.35)[..., 3]
+    assert mid[40, 60] > 200 and mid[150, 15] == 0                      # 꽂힌 자리부터 번진다
+    full = inf.layer(1.0)
+    assert (full[..., 3] == img[..., 3]).all()                          # 다 번지면 울트론 전체를 덮는다
+    final = inf.final()
+    vis = img[..., 3] > 0
+    assert (final[vis][:, 2].astype(int) - final[vis][:, 0]).mean() > 50     # 덮인 모습은 푸르다
 
 
 def test_sentry_defends_while_jarvis_lives_and_stops_after_a_refusal():
@@ -175,7 +221,7 @@ def test_shatter_starts_whole_breaks_from_the_top_and_ends_empty():
 
 def test_falling_pieces_turn_blue():
     s = D.Shatter(red_card(), 1.0)
-    f = s.frame(D.SWEEP[0] + 0.5).astype(int)
+    f = s.frame(D.SWEEP[0] + 0.9).astype(int)
     vis = f[..., 3] > 40
     m = s.margin
     loose = vis.copy()
@@ -193,7 +239,8 @@ def test_sound_is_gentle(tmp_path):
 def test_console_reports_the_defense():
     assert D.console_lines(0.0) == []
     lines = D.console_lines(D.END)
-    assert lines[0].startswith("J.A.R.V.I.S") and "100%" in lines[3] and "사라졌습니다" in lines[-1]
+    assert lines[0].startswith("J.A.R.V.I.S") and "동결" in lines[1] and "100%" in lines[3]
+    assert "100%" in lines[5] and "사라졌습니다" in lines[-1]
 
 
 # ---------------------------------------------------------------- 덮개 장면 (Qt, 화면 없이)
@@ -210,12 +257,15 @@ def make_scene(qt):
     return V.DefenseScene(C.ultron_core_image(220), QRectF(1500, 760, 220, 220), QRectF(0, 0, 1920, 1040))
 
 
-def render(scene, t, bg):
+def render(scene, t, bg, real_until=None):
+    """화면에 보이는 모습: SWAP 전에는 멈춘 진짜 울트론 창이 그 자리에 있고, 덮개가 그 위에 그린다."""
     from PySide6.QtGui import QColor, QImage, QPainter
     area = scene.area.toAlignedRect()
     im = QImage(area.width(), area.height(), QImage.Format_RGBA8888)
     im.fill(QColor(*bg))
     g = QPainter(im)
+    if scene.live and t < (D.SWAP if real_until is None else real_until):
+        g.drawImage(scene.hud.translated(-scene.area.x(), -scene.area.y()), scene.raw())    # 진짜 울트론 (멈춤)
     scene.paint(g, t, 1.0, scene.area.topLeft())
     g.end()
     ptr = im.constBits()
@@ -228,9 +278,29 @@ def test_scene_keeps_the_console_beside_and_ultron_vanishes(qt):
     hud = s.hud.translated(-s.area.x(), -s.area.y()).toAlignedRect()
     bg = (40, 40, 40)
     before = render(s, 0.2, bg)[hud.y():hud.bottom(), hud.x():hud.right()].astype(int)
+    covered = render(s, D.SWAP - 0.05, bg)[hud.y():hud.bottom(), hud.x():hud.right()].astype(int)
     after = render(s, D.END, bg)[hud.y():hud.bottom(), hud.x():hud.right()].astype(int)
-    assert (before[..., 0] - before[..., 2]).mean() > 10              # 처음엔 붉은 울트론이 있고
+    assert (before[..., 0] - before[..., 2]).mean() > 10              # 처음엔 붉은 (진짜) 울트론이 있고
+    assert (covered[..., 2] - covered[..., 0]).mean() > 10            # 푸른빛이 덮었다가
     assert np.abs(after - np.array(bg)).mean() < 3                    # 끝엔 사라졌다
+
+
+def test_overlay_draws_nothing_where_the_real_ultron_is_until_it_turns_blue(qt):
+    s = make_scene(qt)
+    hud = s.hud.translated(-s.area.x(), -s.area.y()).toAlignedRect()
+    bg = (40, 40, 40)
+    only_overlay = render(s, 0.3, bg, real_until=0)[hud.y():hud.bottom(), hud.x():hud.right()].astype(int)
+    assert ((only_overlay[..., 0] - only_overlay[..., 2]) > 30).sum() == 0     # 덮개는 울트론을 따로 그리지 않는다
+
+
+@pytest.mark.parametrize("bg", [(20, 20, 20), (240, 240, 240)])
+def test_swapping_the_real_ultron_for_its_copy_is_invisible(qt, bg):
+    """SWAP 직전(진짜 울트론 + 덮개) 과 직후(덮개만 — 진짜는 꺼짐) 가 같은 모습이어야 한다."""
+    s = make_scene(qt)
+    hud = s.hud.translated(-s.area.x(), -s.area.y()).toAlignedRect()
+    a = render(s, D.SWAP - 0.001, bg)[hud.y():hud.bottom(), hud.x():hud.right()].astype(int)
+    b = render(s, D.SWAP + 0.001, bg)[hud.y():hud.bottom(), hud.x():hud.right()].astype(int)
+    assert np.abs(a - b).mean() < 2.0 and np.percentile(np.abs(a - b), 99) < 24
 
 
 @pytest.mark.parametrize("bg", [(20, 20, 20), (240, 240, 240)])
