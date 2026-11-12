@@ -1126,9 +1126,6 @@ class Jarvis(QObject):
         self._sync_listener()
 
     def _update_stats(self) -> None:
-        # 축소 모드 엠블럼은 시스템 수치를 그리지 않으므로, 전체 HUD 나 액티브 모드가 보일 때만 잰다
-        if self.bridge._compact and not self.bridge._activeMode:
-            return
         now_net, now_t = psutil.net_io_counters(), time.monotonic()
         last_net, last_t = self._net_last
         dt = max(0.001, now_t - last_t)

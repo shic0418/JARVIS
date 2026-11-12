@@ -219,7 +219,6 @@ Window {
                             anchors.verticalCenter: parent.verticalCenter
                             color: jarvis.hasApiKey ? "#53ffa8" : win.amber
                             SequentialAnimation on opacity {
-                                running: !win.compact
                                 loops: Animation.Infinite
                                 NumberAnimation { to: 0.35; duration: 900 }
                                 NumberAnimation { to: 1.0; duration: 900 }
@@ -241,7 +240,7 @@ Window {
                     property string time: ""
                     property string date: ""
                     Timer {
-                        interval: 500; running: !win.compact; repeat: true; triggeredOnStart: true
+                        interval: 500; running: true; repeat: true; triggeredOnStart: true
                         onTriggered: {
                             const d = new Date()
                             clock.time = win.pad(d.getHours()) + ":" + win.pad(d.getMinutes()) + ":" + win.pad(d.getSeconds())

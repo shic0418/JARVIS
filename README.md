@@ -324,6 +324,7 @@ jarvis/counter.py    반격: 울트론 찾기 · 끄기 · 장면 계산(회로 
 jarvis/counter_view.py 반격 장면 덮개 창 (입력 통과, 울트론 HUD 위에 그림)
 ui/*.qml             홀로그램 HUD (Qt Quick, GPU 렌더링)
 ui/Emblem.qml        J.A.R.V.I.S 엠블럼 코어 — 원본 이미지를 구성 요소별로 벡터로 다시 그림 (축소·전체 모드 공용)
+ui/assets/           엠블럼 원본 이미지 (디자인 참고용, 화면에는 쓰지 않음)
 tests/               회귀 테스트 (python -m pytest)
 data/                설정(config.json), 기억(memory.json), 목소리 지문(voice_profile.json), 로그 — 공유 금지
 ```
