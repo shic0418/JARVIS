@@ -155,11 +155,21 @@ def test_two_guards_never_fight_the_same_absorption_twice(tmp_path):
     assert guard.claim(busy, lambda: 5000.0) is True
 
 
-def test_a_jarvis_restarted_after_a_counterattack_stays_on_guard():
-    st = guard.State(countered=[1000.0])
-    assert guard.recently_countered(st, 1000.0 + 60) and not guard.recently_countered(st, 1000.0 + guard.ARM_WINDOW + 1)
-    assert guard.recently_countered(guard.State(defended=[1000.0]), 1100.0)
-    assert not guard.recently_countered(guard.State(), 1000.0)
+def test_only_the_jarvis_revived_by_the_counterattack_defends_and_removes_the_guardian(tmp_path, monkeypatch):
+    """이야기의 순서: 그냥 켠 자비스는 첫 흡수를 당하고 반격한다 (가디언은 둔다 — 울트론이 컷신과 함께 돌아와야 하므로).
+    반격으로 되살아난 자비스만 돌아온 울트론을 막고 가디언까지 끈다. 최근 반격 기록이 있어도 그냥 켠 자비스는 막지 않는다."""
+    seen, sentries = [], []
+    monkeypatch.setattr(guard, "_counterattack", lambda launch, quick, purge=False, since=None: seen.append(purge) or "countered")
+    monkeypatch.setattr(guard, "sentry", lambda *a, **k: sentries.append(1))
+    monkeypatch.setattr(guard, "_alive", lambda pid: (lambda: False))
+    state = tmp_path / "s.json"
+    guard._save(guard.State(countered=[4990.0], defended=[4995.0], total=5), state)     # 방금 반격 · 방어한 기록
+    guard.watch(42, ["--no-mic"], launch=lambda a: None, clock=lambda: 5000.0, killer=lambda: True,
+                stop_file=tmp_path / "stop", state_file=state)
+    assert sentries == [] and seen == [False]                  # 그냥 켠 자비스: 막지 않고, 반격할 때 가디언을 두고 본체만
+    guard.watch(43, ["--revived", "counter", "--revive-count", "1"], launch=lambda a: None, clock=lambda: 5000.0,
+                killer=lambda: True, stop_file=tmp_path / "stop", state_file=state)
+    assert sentries == [1] and seen == [False, True]           # 되살아난 자비스: 지켜보고, 가디언까지
 
 
 def test_ultron_that_cannot_be_stopped_is_left_alone_and_jarvis_stays_off(tmp_path):

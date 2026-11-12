@@ -54,7 +54,6 @@ REVIVE_WINDOW = 120.0
 QUICK_WITHIN = 60.0      # 반격한 뒤 이 안에 또 흡수되면 장면 없이 조용히 되찾는다
 MAX_COUNTERS = 10        # COUNTER_WINDOW 초 안에 이만큼 반격했는데 또 흡수되면 물러난다 (끝없는 되풀이를 막는 안전장치일 뿐 —
 COUNTER_WINDOW = 300.0   # 예전의 2번은 '기다려도 반격하지 않는' 것처럼 보였다)
-ARM_WINDOW = 900.0       # 반격한 뒤 이 동안은 다시 켜진 자비스가 방어 프로토콜을 켠다 (어떤 이유로 다시 켜졌든)
 BUSY_FILE = DATA_DIR / "guard_busy"      # 지금 반격 · 방어 중인 감시 프로세스 (자비스가 둘 켜져 감시도 둘일 때 한쪽만 나서게)
 BUSY_STALE = 45.0
 STOP_FILE = DATA_DIR / "guard_stop"      # 정상 종료 표시 (내용: 끈 자비스의 pid)
@@ -156,10 +155,6 @@ def release(path: Path = BUSY_FILE) -> None:
             path.unlink()
     except (OSError, IndexError):
         pass
-
-
-def recently_countered(st: State, now: float, window: float = ARM_WINDOW) -> bool:
-    return any(0 <= now - t < window for t in st.countered + st.defended)
 
 
 def _load(path: Path = STATE_FILE) -> State:
@@ -293,6 +288,8 @@ def defend(clock: Callable[[], float] = time.time, repel: Callable[[], str] | No
     try:
         log.warning("울트론이 돌아왔습니다 — 방어 프로토콜 가동")
         out = (repel or (lambda: defense.repel(show=_counter_show())))()
+        log.warning("방어 프로토콜 결과: %s", {"repelled": "울트론을 없앴습니다", "denied": "막지 못했습니다 (관리자 권한)",
+                                               "gone": "울트론 창을 찾지 못했습니다 — 아무것도 하지 않았습니다"}.get(out, out))
         if out == "denied":
             return False
         if out == "repelled":
@@ -316,7 +313,11 @@ def watch(pid: int, argv: list[str], wait: Callable[[int], None] | None = None,
       'denied'(울트론을 끌 수 없어 물러남) · 'yielded'(울트론이 거듭 켜져 물러남) · 'revived'(오류 뒤 다시 켬) · 'gave_up'."""
     if busy_file is None:
         busy_file = state_file.with_name(BUSY_FILE.name)
-    guarded = defense.armed(argv) or recently_countered(_load(state_file), clock())
+    # 방어 프로토콜은 '반격으로 되살아난 자비스' 만 켠다 — 이야기의 순서를 지키기 위해서다:
+    #   ① 울트론이 자비스를 흡수 → ② 반격: 울트론이 자비스로 바뀌며 자비스가 서서히 돌아온다 (울트론 본체만 끈다 — 가디언은 둔다)
+    #   → ③ 가디언이 울트론을 되살리고 울트론이 부활 컷신과 함께 돌아온다 → ④ 되살아난 자비스가 막고, 가디언까지 끄고 울트론을 없앤다.
+    # (예전에는 최근에 반격한 기록만 있어도 켰다. 그래서 그냥 켠 자비스가 ①②를 건너뛰고 첫 흡수부터 가디언까지 끄며 덤볐다.)
+    guarded = defense.armed(argv)
     if wait is None:
         if guarded:
             wait = lambda p: sentry(_alive(p), defense.Threat(),                                  # noqa: E731
