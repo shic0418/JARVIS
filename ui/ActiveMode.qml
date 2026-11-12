@@ -1,5 +1,8 @@
-// 액티브 모드 — 화면 전체에 펼쳐지는 헬멧 시야 HUD
-//   켜질 때: 섬광 · 렌즈 플레어 · 충격파가 퍼지고, 조준경과 양쪽 눈 고리가 그려지며,
+// 액티브 모드 — 화면 전체에 펼쳐지는 헬멧 시야 HUD (수트를 입는 느낌)
+//   켜질 때: 페이스플레이트가 위아래에서 닫혀 눈높이 틈만 남기고 봉인(덜컹) → 다시 열리며
+//            섬광 · 렌즈 플레어 · 충격파가 퍼지고, 휜 보정 격자가 그려졌다 사라진다. SYSLOG 에는 실제 점검 결과가
+//            한 줄씩 찍히고(→ ALL SYSTEMS ONLINE), VITALS 도식은 부위마다 실제 하위 시스템 상태를 보여 준다.
+//            조준경과 양쪽 눈 고리가 그려지며,
 //            패널들이 헬멧 곡면을 따라 휘어진 채 가운데에서 날아가 자리를 잡는다. 글자는 암호가 풀리듯 나타난다.
 //   꺼질 때: 같은 과정을 거꾸로 — 모든 것이 가운데로 빨려 들어가며 사라진다.
 //   마우스 · 키보드 입력은 그대로 아래 창으로 통과한다 (켜 둔 채로 PC 를 쓸 수 있음).
@@ -48,17 +51,45 @@ Window {
     // Windows 설정 '애니메이션 효과' 꺼짐 또는 hud_motion: off → 회전 · 스캔 · 깜빡임 연출을 멈춤 (app.py 가 reduceMotion 을 넘겨줌)
     readonly property bool calm: typeof reduceMotion !== "undefined" && reduceMotion === true
     readonly property bool moving: live && !calm
-    NumberAnimation { id: openAnim; target: ov; property: "p"; to: 1; duration: ov.calm ? 500 : 2700 }
+    // ---- 수트 착용: 페이스플레이트가 위아래에서 닫히며 봉인(seal 0→1) → 덜컹 → 다시 열리며(1→2) HUD 가 켜진다 ----
+    property real seal: 2
+    property real engagedAt: Date.now()   // 이번에 켠 시각 (SYSLOG 의 세션 시간)
+    property bool skipSeal: true         // 접히던 중에 다시 켜면(또는 움직임 줄이기) 봉인 연출은 건너뜀
+    property real jolt: 0                 // 봉인되는 순간의 덜컹임 (1 → 0)
+    readonly property real joltX: jolt * 7 * u * Math.sin(jolt * 37)
+    readonly property real joltY: jolt * 5 * u * Math.cos(jolt * 29)
+    NumberAnimation { id: joltAnim; target: ov; property: "jolt"; from: 1; to: 0; duration: 420; easing.type: Easing.OutQuad }
+    SequentialAnimation {
+        id: openAnim
+        NumberAnimation { target: ov; property: "seal"; from: 0; to: 1; duration: ov.skipSeal ? 0 : 340; easing.type: Easing.InCubic }
+        ScriptAction { script: { if (!ov.skipSeal) joltAnim.restart(); bootTimer.restart() } }
+        PauseAnimation { duration: ov.skipSeal ? 0 : 150 }
+        ParallelAnimation {
+            NumberAnimation { target: ov; property: "p"; to: 1; duration: ov.calm ? 500 : 2700 }
+            NumberAnimation { target: ov; property: "seal"; to: 2; duration: ov.skipSeal ? 0 : 560; easing.type: Easing.OutCubic }
+        }
+    }
     SequentialAnimation {
         id: closeAnim
         NumberAnimation { target: ov; property: "p"; to: 0; duration: ov.calm ? 300 : 950; easing.type: Easing.InQuad }
-        ScriptAction { script: ov.visible = false }
+        ScriptAction { script: { ov.visible = false; ov.seal = 2 } }
+    }
+    function engage() {
+        closeAnim.stop()
+        bootTimer.stop()
+        skipSeal = calm || p > 0.05
+        seal = skipSeal ? 2 : 0
+        syslog.clear()
+        bootStep = 0
+        engagedAt = Date.now()
+        visible = true
+        openAnim.restart()
     }
     onOnChanged: {
-        if (on) { closeAnim.stop(); visible = true; openAnim.restart() }
-        else if (visible) { openAnim.stop(); closeAnim.restart() }
+        if (on) engage()
+        else if (visible) { openAnim.stop(); bootTimer.stop(); seal = 2; closeAnim.restart() }
     }
-    Component.onCompleted: if (on) { visible = true; openAnim.restart() }
+    Component.onCompleted: if (on) engage()
 
     function lin(a, b) { return Math.max(0, Math.min(1, (p - a) / (b - a))) }
     function seg(a, b) { const x = lin(a, b); return 1 - Math.pow(1 - x, 3) }
@@ -150,11 +181,77 @@ Window {
         }
     }
 
+    // ---- 시스템 로그: 착용 직후 실제 점검 결과를 한 줄씩 찍고, 그 뒤에는 상태 · 추적 · 작업 결과를 이어서 기록 ----
+    // lv: ok | warn | err | info | lock
+    ListModel { id: syslog }
+    readonly property int logMax: 10
+    function log(tag, val, lv) {
+        const d = new Date()
+        syslog.append({ tag: String(tag), val: String(val), lv: lv,
+                        ts: pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds()) })
+        while (syslog.count > logMax) syslog.remove(0)
+    }
+    property int bootStep: 0
+    readonly property bool booted: bootStep >= bootChecks().length
+    function bootChecks() {
+        const w = weather, s = stats
+        return [
+            ["VISOR SEAL", "OK", "ok"],
+            ["J.A.R.V.I.S CORE", "ONLINE", "ok"],
+            ["AUDIO INPUT", st === "offline" ? "OFFLINE" : "OK", st === "offline" ? "err" : "ok"],
+            ["VOICE CHANNEL", jarvis.wakeEnabled ? "WAKE WORD" : "HOTKEY", "ok"],
+            ["AI LINK", jarvis.hasApiKey ? "ONLINE" : "LOCAL ONLY", jarvis.hasApiKey ? "ok" : "warn"],
+            ["TELEMETRY", "CPU " + Math.round(s.cpu || 0) + "% · RAM " + Math.round(s.ram || 0) + "%",
+             (s.cpu || 0) > 90 || (s.ram || 0) > 90 ? "warn" : "ok"],
+            ["POWER", s.bat === undefined || s.bat < 0 ? "AC" : s.bat + "%" + (s.plugged ? " CHG" : ""),
+             s.bat >= 0 && s.bat < 15 && !s.plugged ? "warn" : "ok"],
+            ["ATMOSPHERICS", w.temp !== undefined ? "LINKED" : w.error ? "OFFLINE" : "SYNCING",
+             w.temp !== undefined ? "ok" : w.error ? "warn" : "info"],
+            ["HUD CALIBRATION", "COMPLETE", "ok"],
+        ]
+    }
+    property int bootWarn: 0
+    Timer {
+        id: bootTimer
+        interval: ov.calm ? 40 : 230; repeat: true
+        onTriggered: {
+            const list = ov.bootChecks()
+            if (ov.bootStep === 0) ov.bootWarn = 0
+            if (ov.bootStep < list.length) {
+                const r = list[ov.bootStep]
+                if (r[2] === "warn" || r[2] === "err") ov.bootWarn++
+                ov.log(r[0], r[1], r[2])
+                ov.bootStep++
+                if (ov.bootStep < list.length) return
+            }
+            ov.log(ov.bootWarn ? "SYSTEMS ONLINE" : "ALL SYSTEMS ONLINE",
+                   ov.bootWarn ? ov.bootWarn + " CHECK" : "READY", ov.bootWarn ? "warn" : "ok")
+            stop()
+        }
+    }
+    onStChanged: if (on && booted && st !== "boot") log("STATE", stateLabels[st] || st.toUpperCase(),
+                                                        st === "offline" ? "err" : "info")
+    Connections {
+        target: jarvis
+        function onActionEvent(id, label, status, detail) {
+            if (ov.on && ov.booted && status !== "run")
+                ov.log(label, status === "error" ? "FAIL" : "DONE", status === "error" ? "err" : "ok")
+        }
+    }
+
     // 추적 박스: 대상이 바뀔 때마다 넓게 벌어졌다가 조여 들며 '잠금'
     property string lastTarget: ""
+    property string lastApp: ""
     onTargetChanged: {
         const id = target.id === undefined ? "" : String(target.id)
-        if (id !== "" && id !== lastTarget) lockAnim.restart()
+        if (id !== "" && id !== lastTarget) {
+            lockAnim.restart()
+            if (booted) {
+                if (target.kind === "point") log("TARGET", "LOCK · " + (target.title || "POINT"), "lock")
+                else if ((target.app || "") !== lastApp) log("TRACK", target.app || "WINDOW", "info")
+            }
+            lastApp = target.kind === "point" ? "" : (target.app || "")
+        }
         lastTarget = id
     }
     property real lock: 1
@@ -304,6 +401,7 @@ Window {
     Item {
         anchors.fill: parent
         opacity: ov.seg(0.1, 0.45) * ov.flick
+        transform: Translate { x: ov.joltX; y: ov.joltY }
         Rectangle {   // 헬멧 바이저 색: 화면 전체를 살짝 어둡게 (뒤 창은 그대로 보임)
             anchors.fill: parent
             color: Qt.rgba(0.0, 0.025, 0.05, 0.42)
@@ -400,6 +498,7 @@ Window {
         id: hud
         anchors.fill: parent
         opacity: (ov.p < 1 && ov.p > 0.12 ? (0.6 + 0.4 * ov.rnd(Math.floor(ov.p * 90))) : 1) * ov.flick
+        transform: Translate { x: ov.joltX; y: ov.joltY }
         layer.enabled: ov.visible
         layer.effect: MultiEffect {
             shadowEnabled: true
@@ -489,6 +588,52 @@ Window {
                         GradientStop { position: 1.0; color: ov.c(0) }
                     }
                 }
+            }
+        }
+
+        // ---- 시야 보정 격자: 헬멧 곡면에 맞춰 휜 격자가 가운데에서 바깥으로 그려졌다가 사라진다 ----
+        Item {
+            id: calib
+            readonly property real e: ov.lin(0.1, 0.62)
+            visible: e > 0 && e < 1
+            anchors.fill: parent
+            opacity: Math.sin(e * Math.PI) * 0.8
+            Repeater {   // 가로줄: 가운데에서 멀수록 바깥쪽으로 불룩
+                model: 11
+                Shape {
+                    readonly property real k: (index - 5) / 5
+                    readonly property real show: Math.max(0, Math.min(1, calib.e * 3.2 - Math.abs(k) * 1.4))
+                    readonly property real yy: ov.cy + k * ov.height * 0.44
+                    visible: show > 0
+                    anchors.fill: parent
+                    ShapePath {
+                        strokeColor: ov.c(index === 5 ? 0.7 : 0.3); strokeWidth: index === 5 ? 1.5 : 1; fillColor: "transparent"
+                        PathMove { x: ov.cx - ov.width * 0.5 * show; y: yy }
+                        PathQuad { x: ov.cx + ov.width * 0.5 * show; y: yy; controlX: ov.cx; controlY: yy + k * ov.height * 0.11 * show }
+                    }
+                }
+            }
+            Repeater {   // 세로줄
+                model: 15
+                Shape {
+                    readonly property real k: (index - 7) / 7
+                    readonly property real show: Math.max(0, Math.min(1, calib.e * 3.2 - Math.abs(k) * 1.4))
+                    readonly property real xx: ov.cx + k * ov.width * 0.47
+                    visible: show > 0
+                    anchors.fill: parent
+                    ShapePath {
+                        strokeColor: ov.c(index === 7 ? 0.7 : 0.3); strokeWidth: index === 7 ? 1.5 : 1; fillColor: "transparent"
+                        PathMove { x: xx; y: ov.cy - ov.height * 0.5 * show }
+                        PathQuad { x: xx; y: ov.cy + ov.height * 0.5 * show; controlX: xx + k * ov.width * 0.07 * show; controlY: ov.cy }
+                    }
+                }
+            }
+            HText {
+                anchors.horizontalCenter: parent.horizontalCenter
+                y: ov.cy - 214 * ov.u
+                text: ov.decode("CALIBRATING VIRTUAL HORIZON  ·  " + Math.round(calib.e * 100) + "%", Math.min(1, calib.e * 3), 21)
+                color: ov.hot
+                font.family: "Bahnschrift"; font.pixelSize: 11 * ov.u; font.letterSpacing: 3 * ov.u; font.weight: Font.DemiBold
             }
         }
 
@@ -772,8 +917,10 @@ Window {
         }
         // 조준경 대각선 수치
         Repeater {
-            model: [["ALT", (120 + ov.rnd(ov.slow) * 4).toFixed(1) + " m"], ["VEL", (ov.lvl * 40 + ov.rnd(ov.slow + 1) * 2).toFixed(1) + " m/s"],
-                    ["PWR", (99 + ov.rnd(ov.slow + 2)).toFixed(1) + " %"], ["SYS", Math.round(ov.stats.cpu || 0) + " / " + Math.round(ov.stats.ram || 0)]]
+            // 모두 실제 값: 전원(배터리 · 충전) / 목소리 · 마이크 크기 / 내려받는 속도 / CPU · RAM
+            model: [["PWR", ov.stats.bat === undefined || ov.stats.bat < 0 ? "AC LINE" : ov.stats.bat + " %" + (ov.stats.plugged ? " CHG" : "")],
+                    ["VOX", Math.round(ov.lvl * 100) + " %"],
+                    ["NET", "▼ " + ov.rate(ov.stats.down)], ["SYS", Math.round(ov.stats.cpu || 0) + " / " + Math.round(ov.stats.ram || 0)]]
             Column {
                 readonly property bool onRight: index % 2 === 1
                 readonly property bool onBottom: index >= 2
@@ -1193,6 +1340,214 @@ Window {
             }
         }
 
+        // ---- 가운데 왼쪽 아래: 시스템 로그 (착용 점검 → 이후 상태 · 추적 · 작업 기록) ----
+        Fly {
+            d: 0.48
+            width: 206 * ov.u; height: 206 * ov.u
+            x: ov.cx - 430 * ov.u; y: ov.cy + 92 * ov.u
+            HoloPanel {
+                anchors.fill: parent; accent: ov.accent; fillAlpha: 0.78; cut: 10
+                title: "SYSLOG"; tag: ov.booted ? "LIVE" : "SUIT-UP " + Math.round(100 * ov.bootStep / ov.bootChecks().length) + "%"
+            }
+            Column {
+                x: 10 * ov.u; y: 28 * ov.u
+                width: parent.width - 20 * ov.u
+                Repeater {
+                    model: syslog
+                    Item {
+                        id: row
+                        width: parent.width; height: 15 * ov.u
+                        property real tp: 0
+                        NumberAnimation on tp { from: 0; to: 1; duration: ov.calm ? 0 : 420 }
+                        readonly property color lc: lv === "err" || lv === "lock" ? ov.red : lv === "warn" ? "#ffb347"
+                                                  : lv === "ok" ? "#53ffa8" : ov.hot
+                        HText {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: ts; color: ov.c(0.42)
+                            font.family: "Bahnschrift"; font.pixelSize: 8 * ov.u
+                        }
+                        HText {
+                            x: 44 * ov.u; anchors.verticalCenter: parent.verticalCenter
+                            width: Math.max(0, row.width - x - rowVal.implicitWidth - 6 * ov.u); elide: Text.ElideRight
+                            text: ov.decode(tag, row.tp, index * 3 + 1)
+                            color: lv === "lock" ? ov.red : ov.c(0.88)
+                            font.family: "Bahnschrift"; font.pixelSize: 9 * ov.u; font.letterSpacing: 1 * ov.u
+                        }
+                        HText {
+                            id: rowVal
+                            anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                            text: ov.decode(val, Math.max(0, row.tp * 1.6 - 0.6), index * 5 + 2)
+                            color: row.lc
+                            font.family: "Bahnschrift"; font.pixelSize: 9 * ov.u; font.weight: Font.DemiBold
+                        }
+                    }
+                }
+            }
+            HText {
+                x: 10 * ov.u; y: parent.height - 18 * ov.u
+                text: "SESSION " + ov.hms(Math.max(0, (ov.now.getTime() - ov.engagedAt) / 1000))
+                color: ov.c(0.55); font.family: "Bahnschrift"; font.pixelSize: 8 * ov.u; font.letterSpacing: 1.5 * ov.u
+            }
+            Rectangle {   // 끝에서 깜빡이는 커서
+                anchors.right: parent.right; anchors.rightMargin: 10 * ov.u
+                y: parent.height - 16 * ov.u
+                width: 6 * ov.u; height: 9 * ov.u
+                color: ov.hot
+                visible: ov.now.getMilliseconds() < 500 || !ov.booted
+            }
+        }
+
+        // ---- 가운데 오른쪽 아래: 시스템 무결성 (사람 모양 도식, 부위마다 실제 하위 시스템 상태) ----
+        Fly {
+            id: integ
+            d: 0.52
+            width: 206 * ov.u; height: 206 * ov.u
+            x: ov.cx + 224 * ov.u; y: ov.cy + 92 * ov.u
+            readonly property var s: ov.stats
+            readonly property real cpu: s.cpu || 0
+            readonly property real ram: s.ram || 0
+            readonly property real dsk: s.disk || 0
+            readonly property real bat: s.bat === undefined ? -1 : s.bat
+            // 0 정상 · 1 주의 · 2 이상 · 3 동작 중
+            readonly property var lvl: ({
+                ai: !jarvis.hasApiKey ? 1 : ov.st === "thinking" ? 3 : 0,
+                aud: ov.st === "offline" ? 2 : ov.st === "listening" ? 3 : 0,
+                vox: ov.st === "speaking" ? 3 : 0,
+                cpu: cpu > 90 ? 2 : cpu > 75 ? 1 : 0,
+                mem: ram > 90 ? 2 : ram > 80 ? 1 : 0,
+                dsk: dsk > 95 ? 2 : dsk > 88 ? 1 : 0,
+                net: (s.down || 0) > 512 * 1024 ? 3 : 0,
+                pwr: bat < 0 || s.plugged ? 0 : bat < 15 ? 2 : bat < 30 ? 1 : 0
+            })
+            readonly property var val: ({
+                ai: !jarvis.hasApiKey ? "LOCAL" : ov.st === "thinking" ? "BUSY" : "ONLINE",
+                aud: ov.st === "offline" ? "OFFLINE" : ov.st === "listening" ? "LIVE" : "OK",
+                vox: ov.st === "speaking" ? "TX" : "IDLE",
+                cpu: Math.round(cpu) + "%", mem: Math.round(ram) + "%", dsk: Math.round(dsk) + "%",
+                net: ov.rate(s.down), pwr: bat < 0 ? "AC" : bat + "%"
+            })
+            readonly property int warns: ["ai", "aud", "cpu", "mem", "dsk", "pwr"].filter(k => lvl[k] === 1).length
+            readonly property int errs: ["ai", "aud", "cpu", "mem", "dsk", "pwr"].filter(k => lvl[k] === 2).length
+            readonly property int score: Math.max(0, 100 - 8 * warns - 22 * errs)
+            function col(n, a) {
+                return n === 2 ? ov.rc(a) : n === 1 ? Qt.rgba(1, 0.70, 0.28, a) : n === 3 ? Qt.rgba(ov.hot.r, ov.hot.g, ov.hot.b, a) : ov.c(a)
+            }
+            readonly property real fx: 65 * ov.u      // 도식 왼쪽 위 (76 × 150 단위)
+            readonly property real fy: 30 * ov.u
+            readonly property real reveal: ov.seg(0.55, 0.95)
+            HoloPanel {
+                anchors.fill: parent; accent: ov.accent; fillAlpha: 0.78; cut: 10
+                title: "VITALS"
+                tag: integ.errs ? integ.errs + " FAULT" : integ.warns ? integ.warns + " CAUTION" : "NOMINAL"
+            }
+            // 부위: [키, 다각형 (76 × 150 단위)]
+            Repeater {
+                model: [
+                    ["ai",  [[28, 4], [48, 4], [52, 14], [50, 26], [38, 30], [26, 26], [24, 14]]],
+                    ["cpu", [[22, 34], [54, 34], [58, 46], [54, 70], [38, 74], [22, 70], [18, 46]]],
+                    ["mem", [[26, 77], [50, 77], [52, 90], [38, 97], [24, 90]]],
+                    ["aud", [[17, 36], [8, 40], [3, 68], [1, 95], [8, 97], [11, 70], [16, 50]]],
+                    ["vox", [[59, 36], [68, 40], [73, 68], [75, 95], [68, 97], [65, 70], [60, 50]]],
+                    ["dsk", [[24, 99], [37, 102], [35, 124], [34, 147], [23, 147], [24, 124], [21, 103]]],
+                    ["net", [[52, 99], [39, 102], [41, 124], [42, 147], [53, 147], [52, 124], [55, 103]]]
+                ]
+                Shape {
+                    readonly property int n: integ.lvl[modelData[0]]
+                    visible: index < 7 * integ.reveal + 0.5
+                    x: integ.fx; y: integ.fy
+                    width: 76 * ov.u; height: 150 * ov.u
+                    preferredRendererType: Shape.CurveRenderer
+                    ShapePath {
+                        strokeColor: integ.col(n, 0.9); strokeWidth: 1.2
+                        fillColor: integ.col(n, n === 0 ? 0.13 : n === 3 ? 0.3 + 0.25 * ov.pulse : 0.38)
+                        joinStyle: ShapePath.MiterJoin
+                        PathPolyline { path: modelData[1].concat([modelData[1][0]]).map(q => Qt.point(q[0] * ov.u, q[1] * ov.u)) }
+                    }
+                }
+            }
+            // 가슴의 동력원: 전원 상태 · 목소리에 맞춰 빛남
+            Rectangle {
+                readonly property real r: (6 + 2.5 * ov.lvl) * ov.u
+                x: integ.fx + 38 * ov.u - r; y: integ.fy + 48 * ov.u - r
+                width: r * 2; height: width; radius: r
+                visible: integ.reveal > 0.3
+                color: integ.col(integ.lvl.pwr === 0 ? 3 : integ.lvl.pwr, 0.35 + 0.4 * ov.pulse)
+                border.color: integ.col(integ.lvl.pwr === 0 ? 3 : integ.lvl.pwr, 1); border.width: 1.5
+            }
+            // 위에서 아래로 훑는 검사선
+            Rectangle {
+                visible: ov.p >= 1
+                x: integ.fx - 4 * ov.u; width: 84 * ov.u; height: 1.5
+                y: integ.fy + 150 * ov.u * ov.scan
+                color: ov.c(0.75)
+            }
+            // 이름표 + 지시선: [키, 이름, 왼쪽?, 줄 y, 닿는 점 x, y]
+            Repeater {
+                model: [["ai", "AI CORE", true, 4, 25, 14], ["cpu", "CPU", true, 40, 19, 50], ["aud", "AUDIO IN", true, 76, 4, 70],
+                        ["dsk", "STORAGE", true, 112, 23, 128], ["pwr", "POWER", false, 4, 44, 48], ["vox", "VOICE OUT", false, 40, 72, 66],
+                        ["mem", "MEMORY", false, 76, 51, 86], ["net", "NETWORK", false, 112, 53, 128]]
+                Item {
+                    readonly property bool lf: modelData[2]
+                    readonly property int n: integ.lvl[modelData[0]]
+                    visible: integ.reveal > 0.2 + (index % 4) * 0.18
+                    Shape {
+                        x: 0; y: 0
+                        ShapePath {
+                            strokeColor: integ.col(n, 0.55); strokeWidth: 1; fillColor: "transparent"
+                            PathPolyline { path: [
+                                Qt.point(lf ? integ.fx - 8 * ov.u : integ.fx + 84 * ov.u, integ.fy + (modelData[3] + 7) * ov.u),
+                                Qt.point(lf ? integ.fx - 4 * ov.u : integ.fx + 80 * ov.u, integ.fy + (modelData[3] + 7) * ov.u),
+                                Qt.point(integ.fx + modelData[4] * ov.u, integ.fy + modelData[5] * ov.u)
+                            ] }
+                        }
+                    }
+                    Rectangle {
+                        width: 3 * ov.u; height: width; radius: width / 2; color: integ.col(n, 1)
+                        x: integ.fx + modelData[4] * ov.u - width / 2; y: integ.fy + modelData[5] * ov.u - width / 2
+                    }
+                    Column {
+                        x: lf ? integ.fx - 10 * ov.u - width : integ.fx + 86 * ov.u
+                        y: integ.fy + modelData[3] * ov.u
+                        HText {
+                            anchors.right: lf ? parent.right : undefined
+                            text: modelData[1]; color: ov.c(0.6)
+                            font.family: "Bahnschrift"; font.pixelSize: 7 * ov.u; font.letterSpacing: 1 * ov.u; font.weight: Font.DemiBold
+                        }
+                        HText {
+                            anchors.right: lf ? parent.right : undefined
+                            text: integ.val[modelData[0]]
+                            color: n === 0 ? ov.hot : integ.col(n, 1)
+                            font.family: "Bahnschrift"; font.pixelSize: 10 * ov.u
+                        }
+                    }
+                }
+            }
+            // 아래: 무결성 점수 막대
+            Item {
+                x: 10 * ov.u; y: parent.height - 20 * ov.u
+                width: parent.width - 20 * ov.u; height: 12 * ov.u
+                HText {
+                    id: integLbl
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "INTEGRITY " + Math.round(integ.score * integ.reveal) + "%"
+                    color: integ.errs ? ov.red : ov.hot
+                    font.family: "Bahnschrift"; font.pixelSize: 8 * ov.u; font.letterSpacing: 1.5 * ov.u; font.weight: Font.DemiBold
+                }
+                Row {
+                    anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                    spacing: 2 * ov.u
+                    Repeater {
+                        model: 20
+                        Rectangle {
+                            width: 3 * ov.u; height: 8 * ov.u
+                            color: index < Math.round(integ.score * integ.reveal / 5)
+                                   ? (integ.errs ? ov.red : integ.warns ? "#ffb347" : ov.accent) : ov.c(0.14)
+                        }
+                    }
+                }
+            }
+        }
+
         // ---- 아래 가운데: 음성 파형 ----
         Fly {
             d: 0.55
@@ -1262,6 +1617,97 @@ Window {
                 GradientStop { position: 0.5; color: Qt.rgba(1, 1, 1, 0.55) }
                 GradientStop { position: 1.0; color: ov.c(0) }
             }
+        }
+    }
+
+    // ---- 페이스플레이트: 위아래 판이 닫혀 눈높이의 좁은 틈만 남기고, 봉인되면 덜컹한 뒤 다시 열린다 ----
+    Item {
+        id: plates
+        anchors.fill: parent
+        readonly property real cover: ov.seal <= 1 ? ov.seal : 2 - ov.seal
+        readonly property real slit: 34 * ov.u                     // 다 닫혔을 때 남는 눈높이 틈
+        readonly property real dip: 22 * ov.u * cover               // 콧등: 가운데가 내려와 틈이 양쪽 눈 모양이 됨
+        readonly property real hTop: (ov.cy - slit / 2) * cover
+        readonly property real hBot: (ov.height - ov.cy - slit / 2) * cover
+        visible: !ov.skipSeal && cover > 0.002
+        transform: Translate { x: ov.joltX; y: ov.joltY }
+        Shape {
+            anchors.fill: parent
+            ShapePath {   // 윗판
+                strokeColor: ov.accent; strokeWidth: 2; joinStyle: ShapePath.MiterJoin
+                fillGradient: LinearGradient {
+                    x1: 0; y1: 0; x2: 0; y2: Math.max(1, plates.hTop)
+                    GradientStop { position: 0.0; color: Qt.rgba(0.01, 0.025, 0.04, 0.97) }
+                    GradientStop { position: 1.0; color: Qt.rgba(0.03, 0.08, 0.12, 0.97) }
+                }
+                PathPolyline { path: [
+                    Qt.point(-4, -4), Qt.point(ov.width + 4, -4), Qt.point(ov.width + 4, plates.hTop),
+                    Qt.point(ov.cx + 330 * ov.u, plates.hTop), Qt.point(ov.cx + 110 * ov.u, plates.hTop + plates.dip),
+                    Qt.point(ov.cx - 110 * ov.u, plates.hTop + plates.dip), Qt.point(ov.cx - 330 * ov.u, plates.hTop),
+                    Qt.point(-4, plates.hTop), Qt.point(-4, -4)
+                ] }
+            }
+            ShapePath {   // 아랫판
+                strokeColor: ov.accent; strokeWidth: 2; joinStyle: ShapePath.MiterJoin
+                fillGradient: LinearGradient {
+                    x1: 0; y1: ov.height - plates.hBot; x2: 0; y2: ov.height
+                    GradientStop { position: 0.0; color: Qt.rgba(0.03, 0.08, 0.12, 0.97) }
+                    GradientStop { position: 1.0; color: Qt.rgba(0.01, 0.025, 0.04, 0.97) }
+                }
+                PathPolyline { path: [
+                    Qt.point(-4, ov.height + 4), Qt.point(ov.width + 4, ov.height + 4),
+                    Qt.point(ov.width + 4, ov.height - plates.hBot), Qt.point(ov.cx + 420 * ov.u, ov.height - plates.hBot),
+                    Qt.point(ov.cx + 380 * ov.u, ov.height - plates.hBot - 8 * ov.u * plates.cover),
+                    Qt.point(ov.cx - 380 * ov.u, ov.height - plates.hBot - 8 * ov.u * plates.cover),
+                    Qt.point(ov.cx - 420 * ov.u, ov.height - plates.hBot), Qt.point(-4, ov.height - plates.hBot),
+                    Qt.point(-4, ov.height + 4)
+                ] }
+            }
+            ShapePath {   // 판 이음새
+                strokeColor: ov.c(0.18); strokeWidth: 1; fillColor: "transparent"
+                PathMove { x: ov.cx - ov.width * 0.2; y: 0 }
+                PathLine { x: ov.cx - ov.width * 0.2; y: plates.hTop - 14 * ov.u }
+                PathMove { x: ov.cx + ov.width * 0.2; y: 0 }
+                PathLine { x: ov.cx + ov.width * 0.2; y: plates.hTop - 14 * ov.u }
+                PathMove { x: 0; y: plates.hTop * 0.55 }
+                PathLine { x: ov.width; y: plates.hTop * 0.55 }
+                PathMove { x: ov.cx - ov.width * 0.2; y: ov.height }
+                PathLine { x: ov.cx - ov.width * 0.2; y: ov.height - plates.hBot + 18 * ov.u }
+                PathMove { x: ov.cx + ov.width * 0.2; y: ov.height }
+                PathLine { x: ov.cx + ov.width * 0.2; y: ov.height - plates.hBot + 18 * ov.u }
+                PathMove { x: 0; y: ov.height - plates.hBot * 0.55 }
+                PathLine { x: ov.width; y: ov.height - plates.hBot * 0.55 }
+            }
+            ShapePath {   // 판 끝의 밝은 안쪽 선
+                strokeColor: Qt.rgba(ov.hot.r, ov.hot.g, ov.hot.b, 0.35 + 0.65 * plates.cover); strokeWidth: 1; fillColor: "transparent"
+                PathMove { x: 0; y: plates.hTop - 5 * ov.u }
+                PathLine { x: ov.cx - 330 * ov.u; y: plates.hTop - 5 * ov.u }
+                PathMove { x: ov.cx + 330 * ov.u; y: plates.hTop - 5 * ov.u }
+                PathLine { x: ov.width; y: plates.hTop - 5 * ov.u }
+                PathMove { x: 0; y: ov.height - plates.hBot + 5 * ov.u }
+                PathLine { x: ov.width; y: ov.height - plates.hBot + 5 * ov.u }
+            }
+        }
+        // 봉인되는 순간 틈 사이로 번지는 빛줄기
+        Rectangle {
+            readonly property real t: ov.seal < 0.85 ? 0 : ov.seal <= 1 ? (ov.seal - 0.85) / 0.15 : Math.max(0, 1 - (ov.seal - 1) * 3)
+            visible: t > 0
+            width: ov.width * (0.2 + 0.8 * t); height: 2 * ov.u
+            x: ov.cx - width / 2; y: ov.cy - height / 2
+            opacity: t
+            gradient: Gradient { orientation: Gradient.Horizontal
+                GradientStop { position: 0.0; color: ov.c(0) }
+                GradientStop { position: 0.5; color: "#ffffff" }
+                GradientStop { position: 1.0; color: ov.c(0) } }
+        }
+        HText {
+            anchors.horizontalCenter: parent.horizontalCenter
+            y: plates.hTop - height - 12 * ov.u
+            visible: plates.cover > 0.5
+            opacity: (plates.cover - 0.5) * 2
+            text: ov.seal < 1 ? "FACEPLATE  ·  SEALING" : "FACEPLATE  ·  SEALED"
+            color: ov.seal < 1 ? ov.c(0.8) : ov.hot
+            font.family: "Bahnschrift"; font.pixelSize: 10 * ov.u; font.letterSpacing: 4 * ov.u; font.weight: Font.DemiBold
         }
     }
 

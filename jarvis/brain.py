@@ -518,14 +518,14 @@ class Brain:
             return "액티브 모드를 해제합니다."
         if ACTIVE_OFF.fullmatch(c):
             if not self.active_hud:
-                return "액티브 모드는 이미 꺼져 있어요."
+                return persona.ACTIVE_ALREADY_OFF
             self.on_hud("active_off")
-            return "액티브 모드를 해제합니다."
+            return persona.pick(persona.ACTIVE_OFF, title=self.cfg['user_title'] or '주인님')
         if ACTIVE_ON.fullmatch(c):
             if self.active_hud:
-                return "이미 액티브 모드입니다. 끄시려면 액티브 모드 종료라고 해 주세요."
+                return persona.ACTIVE_ALREADY
             self.on_hud("active_on")
-            return f"액티브 모드 가동합니다, {self.cfg['user_title'] or '주인님'}."
+            return persona.pick(persona.ACTIVE_ON, title=self.cfg['user_title'] or '주인님')
         return None
 
     # ------------------------------------------------------------------ 음성 인식 후보 고르기

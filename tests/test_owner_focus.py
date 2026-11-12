@@ -257,7 +257,9 @@ def test_active_off_including_bare_mode_off(text):
     b = brain()
     b.active_hud = True
     b.on_hud = got.append
-    assert b._hud_command(text) == "액티브 모드를 해제합니다." and got == ["active_off"]
+    from jarvis import persona
+    lines = [persona.pick(x, title="주인님") for x in persona.ACTIVE_OFF]
+    assert b._hud_command(text) in lines and got == ["active_off"]
 
 
 def test_bare_mode_off_with_nothing_on_does_not_close_an_app():
