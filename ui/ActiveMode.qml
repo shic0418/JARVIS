@@ -1,10 +1,11 @@
-// 액티브 모드 — 화면 전체에 펼쳐지는 헬멧 시야 HUD (수트를 입는 느낌)
-//   켜질 때: 페이스플레이트가 위아래에서 닫혀 눈높이 틈만 남기고 봉인(덜컹) → 다시 열리며
-//            섬광 · 렌즈 플레어 · 충격파가 퍼지고, 휜 보정 격자가 그려졌다 사라진다. SYSLOG 에는 실제 점검 결과가
-//            한 줄씩 찍히고(→ ALL SYSTEMS ONLINE), VITALS 도식은 부위마다 실제 하위 시스템 상태를 보여 준다.
-//            조준경과 양쪽 눈 고리가 그려지며,
-//            패널들이 헬멧 곡면을 따라 휘어진 채 가운데에서 날아가 자리를 잡는다. 글자는 암호가 풀리듯 나타난다.
-//   꺼질 때: 같은 과정을 거꾸로 — 모든 것이 가운데로 빨려 들어가며 사라진다.
+// 액티브 모드 — 화면 전체에 펼쳐지는 헬멧 시야 HUD (수트를 입은 채 앞을 보는 느낌)
+//   생김새: 가운데는 비워 두어 뒤 화면이 그대로 보이고, 가장자리는 헬멧 안쪽처럼 어둡다.
+//           정보는 상자에 담지 않고 얇은 선 · 글자로 된 홀로그램이 헬멧 곡면을 따라 양쪽에 떠 있다
+//           (왼쪽: 시간 · VITALS · SYSLOG / 오른쪽: 진단 · 날씨 · 통신). 가운데에는 작은 비행 조준경과 수평 사다리.
+//   켜질 때: 페이스플레이트가 위아래에서 닫혀 눈높이 틈만 남기고 봉인(덜컹) → 다시 열리며 섬광 · 충격파 · 휜 보정 격자,
+//            위젯들이 곡면을 따라 날아가 자리를 잡고, SYSLOG 에 실제 점검 결과가 한 줄씩 찍힌다(→ ALL SYSTEMS ONLINE).
+//   꺼질 때: 위젯이 바깥쪽부터 차례로 꺼지고 → 조준경이 풀리고 → 화면 전체가 가로 한 줄로 접혀(옛 모니터 전원을 끄듯)
+//            점이 되어 사라진다 → 그 틈을 페이스플레이트가 덮었다가 위아래로 열리며 원래 화면이 드러난다.
 //   마우스 · 키보드 입력은 그대로 아래 창으로 통과한다 (켜 둔 채로 PC 를 쓸 수 있음).
 //   단, 아래 가운데의 채팅 입력 바만은 따로 뜬 창이라 눌러서 글로 명령할 수 있다.
 import QtQuick
@@ -26,8 +27,9 @@ Window {
     readonly property color cyan: "#46d9ff"
     readonly property color hot: "#eafdff"
     readonly property color red: "#ff3b4f"
-    readonly property color shade: Qt.rgba(0.0, 0.03, 0.06, 0.9)     // 글자 테두리 · 받침 (밝은 화면 위에서도 읽히게)
-    property color accent: st === "thinking" ? "#ffb347" : st === "offline" ? "#ff4d61" : st === "listening" ? "#8af4ff" : cyan
+    readonly property color amber: "#ffb347"
+    readonly property color shade: Qt.rgba(0.0, 0.03, 0.06, 0.9)     // 글자 테두리 (밝은 화면 위에서도 읽히게)
+    property color accent: st === "thinking" ? amber : st === "offline" ? "#ff4d61" : st === "listening" ? "#8af4ff" : cyan
     Behavior on accent { ColorAnimation { duration: 450 } }
     readonly property real level: Math.max(jarvis.micLevel, jarvis.voiceLevel)
     readonly property var stats: JSON.parse(jarvis.statsJson)
@@ -45,8 +47,9 @@ Window {
     readonly property real cy: height / 2
     readonly property real diag: Math.sqrt(width * width + height * height)
 
-    // ---- 펼침 진행도 p: 0(꺼짐) → 1(완전히 펼쳐짐) ----
+    // ---- 펼침 진행도 p: 0(꺼짐) → 1(완전히 펼쳐짐) / 종료 진행도 down: 0 → 1 ----
     property real p: 0
+    property real down: 0
     readonly property bool live: visible && p > 0
     // Windows 설정 '애니메이션 효과' 꺼짐 또는 hud_motion: off → 회전 · 스캔 · 깜빡임 연출을 멈춤 (app.py 가 reduceMotion 을 넘겨줌)
     readonly property bool calm: typeof reduceMotion !== "undefined" && reduceMotion === true
@@ -69,14 +72,19 @@ Window {
             NumberAnimation { target: ov; property: "seal"; to: 2; duration: ov.skipSeal ? 0 : 560; easing.type: Easing.OutCubic }
         }
     }
+    // 종료: 위젯 차례로 꺼짐 → 조준경 풀림 → 가로 한 줄로 접힘 → 점 → 페이스플레이트 덮임(덜컹) → 위아래로 열림
     SequentialAnimation {
         id: closeAnim
-        NumberAnimation { target: ov; property: "p"; to: 0; duration: ov.calm ? 300 : 950; easing.type: Easing.InQuad }
-        ScriptAction { script: { ov.visible = false; ov.seal = 2 } }
+        ScriptAction { script: if (ov.booted) ov.log("SYSTEM", "POWERING DOWN", "warn") }
+        NumberAnimation { target: ov; property: "down"; from: 0; to: 0.56; duration: ov.calm ? 150 : 1060 }
+        ScriptAction { script: if (!ov.calm) joltAnim.restart() }
+        NumberAnimation { target: ov; property: "down"; to: 1; duration: ov.calm ? 150 : 840 }
+        ScriptAction { script: { ov.visible = false; ov.p = 0; ov.down = 0; ov.seal = 2 } }
     }
     function engage() {
         closeAnim.stop()
         bootTimer.stop()
+        down = 0
         skipSeal = calm || p > 0.05
         seal = skipSeal ? 2 : 0
         if (!skipSeal) {                      // 처음부터 켤 때만 로그를 새로 시작 (열리던 중 다시 켜면 이어서)
@@ -92,15 +100,18 @@ Window {
         else if (visible) {
             openAnim.stop(); bootTimer.stop(); seal = 2
             if (p < 0.001) visible = false   // 아직 봉인 단계였으면 보여 줄 것이 없으므로 바로 닫는다
-            else closeAnim.restart()
+            else if (!closeAnim.running) closeAnim.restart()
         }
     }
     Component.onCompleted: if (on) engage()
 
     function lin(a, b) { return Math.max(0, Math.min(1, (p - a) / (b - a))) }
     function seg(a, b) { const x = lin(a, b); return 1 - Math.pow(1 - x, 3) }
+    function dlin(a, b) { return Math.max(0, Math.min(1, (down - a) / (b - a))) }
+    function din(a, b) { const x = dlin(a, b); return x * x * x }
     function rnd(i) { const x = Math.sin(i * 12.9898 + 78.233) * 43758.5453; return x - Math.floor(x) }
     function c(a) { return Qt.rgba(accent.r, accent.g, accent.b, a) }
+    function hc(a) { return Qt.rgba(hot.r, hot.g, hot.b, a) }
     function rc(a) { return Qt.rgba(red.r, red.g, red.b, a) }
     function pad(n) { return n < 10 ? "0" + n : "" + n }
     function left(t) { return Math.max(0, (t.end - now.getTime()) / 1000) }
@@ -133,12 +144,11 @@ Window {
     Timer { interval: ov.idle ? 1000 : 250; running: ov.visible; repeat: true; triggeredOnStart: true; onTriggered: ov.now = new Date() }
 
     // ---- 하나의 시계로 모든 연출을 돌린다 ----
-    // 예전에는 회전 · 스캔 · 맥박 애니메이션 6개와 70ms 타이머가 따로 돌며 모니터 주사율대로(60~144fps) 화면 전체 글로우까지
-    // 매 프레임 다시 그렸다. 이제 시간 t 하나만 흐르고 나머지는 t 에서 계산한다.
-    // 대기 중(조용하고, 켜짐 연출 · 잠금 · 지직거림이 끝난 상태)에는 1초에 15번만 t 를 올린다.
+    // 시간 t 하나만 흐르고 회전 · 스캔 · 맥박은 모두 t 에서 계산한다.
+    // 대기 중(조용하고, 켜짐 · 꺼짐 연출 · 잠금 · 지직거림이 끝난 상태)에는 1초에 15번만 t 를 올린다.
     // 듣기 · 생각 · 말하기 · 연출 중에는 매 프레임 갱신.
     property real t: 0
-    readonly property bool idle: p >= 1 && seal >= 2 && (st === "standby" || st === "offline" || st === "boot")
+    readonly property bool idle: p >= 1 && seal >= 2 && down <= 0 && (st === "standby" || st === "offline" || st === "boot")
                                  && lock >= 1 && flick >= 1 && jolt <= 0
     function advance(dt) {
         dt = Math.min(dt, 0.1)
@@ -164,13 +174,14 @@ Window {
     readonly property real scan: t / 6 % 1
     readonly property real pulse: 0.5 - 0.5 * Math.cos(t * Math.PI / 1.1)
     readonly property real roll: -2.2 * Math.cos(t * Math.PI / 4.2)   // 헬멧이 살짝 기우는 느낌
+    readonly property real pitch: 7 * Math.sin(t * 0.35)               // 수평 사다리가 아주 천천히 오르내림
     property real lvl: 0
     onLevelChanged: if (!moving) lvl = Math.min(1, level)   // 움직임 줄이기: 시계가 멈춰 있으므로 바로 반영
 
     // 홀로그램이 가끔 지직거림
     property real flick: 1
     Timer {
-        interval: 5000; running: ov.moving && ov.p >= 1; repeat: true
+        interval: 5000; running: ov.moving && ov.p >= 1 && ov.down <= 0; repeat: true
         onTriggered: { interval = 3500 + Math.random() * 6500; flickAnim.restart() }
     }
     SequentialAnimation {
@@ -191,14 +202,14 @@ Window {
             }
             const d = new Date()
             acts.insert(0, { aid: id, label: label, status: status, t: ov.pad(d.getHours()) + ":" + ov.pad(d.getMinutes()) })
-            while (acts.count > 4) acts.remove(acts.count - 1)
+            while (acts.count > 3) acts.remove(acts.count - 1)
         }
     }
 
     // ---- 시스템 로그: 착용 직후 실제 점검 결과를 한 줄씩 찍고, 그 뒤에는 상태 · 추적 · 작업 결과를 이어서 기록 ----
     // lv: ok | warn | err | info | lock
     ListModel { id: syslog }
-    readonly property int logMax: 10
+    readonly property int logMax: 9
     function log(tag, val, lv) {
         const d = new Date()
         syslog.append({ tag: String(tag), val: String(val), lv: lv,
@@ -214,7 +225,7 @@ Window {
             ["VISOR SEAL", "OK", "ok"],
             ["J.A.R.V.I.S CORE", "ONLINE", "ok"],
             ["AUDIO INPUT", st === "offline" ? "OFFLINE" : "OK", st === "offline" ? "err" : "ok"],
-            ["VOICE CHANNEL", jarvis.wakeEnabled ? "WAKE WORD" : "HOTKEY", "ok"],
+            ["VOICE CHANNEL", jarvis.wakeEnabled ? "WAKE WORD" : "HOTKEY " + jarvis.hotkeyText, "ok"],
             ["AI LINK", jarvis.hasApiKey ? "ONLINE" : "LOCAL ONLY", jarvis.hasApiKey ? "ok" : "warn"],
             ["TELEMETRY", "CPU " + Math.round(s.cpu || 0) + "% · RAM " + Math.round(s.ram || 0) + "%",
              (s.cpu || 0) > 90 || (s.ram || 0) > 90 ? "warn" : "ok"],
@@ -226,7 +237,7 @@ Window {
         ]
     }
     property int bootWarn: 0
-    // SYSLOG 패널(Fly d 0.48)이 날아와 자리 잡을 즈음부터 한 줄씩 찍는다
+    // SYSLOG 위젯이 날아와 자리 잡을 즈음부터 한 줄씩 찍는다
     onPChanged: if (on && p > 0.5 && !booted && !bootTimer.running && openAnim.running) bootTimer.start()
     Timer {
         id: bootTimer
@@ -279,19 +290,37 @@ Window {
         NumberAnimation { target: ov; property: "lock"; to: 1; duration: 480; easing.type: Easing.OutBack }
     }
 
+    // ---------------------------------------------------------------- 배치: 헬멧 곡면을 따라 휘는 양쪽 열
+    readonly property real colW: 286 * u
+    readonly property real colTop: height * 0.155
+    readonly property real gapY: 30 * u
+    // 세로 가운데에서 멀수록 안쪽으로 조금 들어오고(곡면), 열 모양 '(' ')' 을 따라 살짝 기운다
+    function colX(side, y, h) {
+        const k = (y + h / 2 - cy) / (height * 0.5)
+        const m = (54 + 30 * k * k) * u
+        return side < 0 ? m : width - m - colW
+    }
+    function colRot(side, y, h) { return side * 6 * (y + h / 2 - cy) / (height * 0.5) }
+
     // ---------------------------------------------------------------- 공용 조각
     // 가운데에서 제자리로 날아오며 깜빡이며 켜지는 묶음. tilt: 헬멧 곡면처럼 바깥쪽이 다가오게 기울임
+    // 끌 때는 d 순서대로(바깥 위젯이 먼저) 지직거리며 꺼진다.
     component Fly: Item {
         id: fly
         property real d: 0.3
         property real tilt: 0
+        property real zrot: 0
         readonly property real e: ov.seg(d, d + 0.32)
-        visible: e > 0
-        opacity: e >= 1 ? 1 : e * (0.35 + 0.65 * ov.rnd(Math.floor(ov.p * 70) + d * 977))
+        readonly property real off: ov.down <= 0 ? 0 : ov.dlin(0.02 + (d - 0.3) * 0.7, 0.16 + (d - 0.3) * 0.7)
+        visible: e > 0 && off < 1
+        opacity: (e >= 1 ? 1 : e * (0.35 + 0.65 * ov.rnd(Math.floor(ov.p * 70) + d * 977)))
+                 * (off <= 0 ? 1 : (1 - off) * (0.3 + 0.7 * ov.rnd(Math.floor(ov.down * 90) + d * 331)))
         transform: [
             Rotation { origin.x: fly.tilt > 0 ? fly.width : 0; origin.y: fly.height / 2; axis { x: 0; y: 1; z: 0 }
                        angle: fly.tilt * (0.4 + 0.6 * fly.e) },
-            Scale { origin.x: fly.width / 2; origin.y: fly.height / 2; xScale: 0.5 + 0.5 * fly.e; yScale: 0.5 + 0.5 * fly.e },
+            Rotation { origin.x: fly.width / 2; origin.y: fly.height / 2; angle: fly.zrot * fly.e },
+            Scale { origin.x: fly.width / 2; origin.y: fly.height / 2
+                    xScale: (0.5 + 0.5 * fly.e) * (1 + 0.15 * fly.off); yScale: (0.5 + 0.5 * fly.e) * (1 - 0.6 * fly.off) },
             Translate { x: (ov.cx - (fly.x + fly.width / 2)) * (1 - fly.e); y: (ov.cy - (fly.y + fly.height / 2)) * (1 - fly.e) }
         ]
     }
@@ -309,6 +338,76 @@ Window {
         color: ov.c(0.62)
         font.family: "Bahnschrift"; font.pixelSize: 9 * ov.u; font.letterSpacing: 2 * ov.u; font.weight: Font.DemiBold
     }
+    // 홀로그램 위젯: 상자 없이 머리줄 · 바깥쪽 눈금 받침대 · 아래 점선만. 헬멧 열 위치와 기울기는 side 로 정해진다.
+    component Wid: Fly {
+        id: w
+        property string title: ""
+        property string tag: ""
+        property int side: -1                     // -1 왼쪽 열, 1 오른쪽 열 (받침대는 바깥쪽)
+        readonly property real hh: 20 * ov.u      // 머리줄 높이 (내용은 그 아래부터)
+        width: ov.colW
+        x: ov.colX(side, y, height)
+        tilt: side < 0 ? 16 : -16
+        zrot: ov.colRot(side, y, height)
+        // 아주 옅은 빛 (글로우가 상자 모양으로 번지지 않을 만큼)
+        Rectangle {
+            y: w.hh; width: w.width; height: Math.min(w.height - w.hh, 64 * ov.u)
+            gradient: Gradient {
+                GradientStop { position: 0.0; color: ov.c(0.075) }
+                GradientStop { position: 1.0; color: ov.c(0) }
+            }
+        }
+        // 머리줄: ◆ 제목 ───── 태그, 바깥쪽 끝에 밝은 막대
+        Rectangle { y: w.hh - 1; width: w.width; height: 1; color: ov.c(0.4) }
+        Rectangle { x: w.side < 0 ? 0 : w.width - width; y: w.hh - 2; width: 38 * ov.u; height: 3; color: ov.hot }
+        Rectangle {
+            x: w.side < 0 ? 2 * ov.u : 0; y: w.hh / 2 - height / 2 - 2 * ov.u
+            width: 5 * ov.u; height: width; rotation: 45; color: ov.accent
+        }
+        HText {
+            x: w.side < 0 ? 14 * ov.u : 12 * ov.u; y: w.hh / 2 - height / 2 - 2 * ov.u
+            text: w.title; color: ov.hc(0.95)
+            font.family: "Bahnschrift"; font.pixelSize: 10 * ov.u; font.letterSpacing: 3 * ov.u; font.weight: Font.DemiBold
+        }
+        HText {
+            anchors.right: parent.right; anchors.rightMargin: w.side < 0 ? 0 : 44 * ov.u
+            y: w.hh / 2 - height / 2 - 2 * ov.u
+            text: w.tag; color: ov.c(0.6)
+            font.family: "Bahnschrift"; font.pixelSize: 9 * ov.u; font.letterSpacing: 1.5 * ov.u
+        }
+        // 바깥쪽 받침대: 눈금 달린 세로줄
+        Item {
+            x: w.side < 0 ? -12 * ov.u : w.width + 12 * ov.u
+            y: w.hh; width: 1; height: w.height - w.hh
+            Rectangle { width: 1.5; height: parent.height; color: ov.c(0.6) }
+            Repeater {
+                model: Math.max(0, Math.floor(parent.height / (12 * ov.u)))
+                Rectangle {
+                    y: index * 12 * ov.u
+                    width: (index % 4 === 0 ? 7 : 3.5) * ov.u; height: 1
+                    x: w.side < 0 ? 0 : 1.5 - width
+                    color: ov.c(index % 4 === 0 ? 0.8 : 0.45)
+                }
+            }
+            Rectangle { y: parent.height - 1.5; width: 18 * ov.u; height: 2; x: w.side < 0 ? 0 : 1.5 - width; color: ov.hot }
+            Rectangle { y: -6 * ov.u; width: 1.5; height: 6 * ov.u; color: ov.hot }
+        }
+        // 아래 점선 + 안쪽 끝 꺾쇠
+        Shape {
+            ShapePath {
+                strokeColor: ov.c(0.35); strokeWidth: 1; fillColor: "transparent"
+                strokeStyle: ShapePath.DashLine; dashPattern: [2, 4]
+                PathMove { x: 0; y: w.height }
+                PathLine { x: w.width; y: w.height }
+            }
+            ShapePath {
+                strokeColor: ov.c(0.75); strokeWidth: 1.5; fillColor: "transparent"
+                PathMove { x: w.side < 0 ? w.width : 0; y: w.height - 10 * ov.u }
+                PathLine { x: w.side < 0 ? w.width : 0; y: w.height }
+                PathLine { x: w.side < 0 ? w.width - 10 * ov.u : 10 * ov.u; y: w.height }
+            }
+        }
+    }
     // 원형 게이지 (CPU / RAM)
     component Gauge: Item {
         id: g
@@ -325,170 +424,104 @@ Window {
             width: g.width; height: g.width
             preferredRendererType: Shape.CurveRenderer
             ShapePath {
-                strokeColor: ov.c(0.14); strokeWidth: 5 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                strokeColor: ov.c(0.16); strokeWidth: 4 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
                 PathAngleArc { centerX: g.width / 2; centerY: g.width / 2; radiusX: g.r; radiusY: g.r; startAngle: 135; sweepAngle: 270 * g.e }
             }
             ShapePath {
-                strokeColor: g.v > 85 ? ov.red : ov.hot; strokeWidth: 5 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                strokeColor: g.v > 85 ? ov.red : ov.hot; strokeWidth: 4 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
                 PathAngleArc { centerX: g.width / 2; centerY: g.width / 2; radiusX: g.r; radiusY: g.r; startAngle: 135
                                sweepAngle: 270 * Math.max(0.005, g.shown / 100) * g.e }
             }
             ShapePath {
                 strokeColor: ov.c(0.4); strokeWidth: 1; fillColor: "transparent"
                 strokeStyle: ShapePath.DashLine; dashPattern: [1, 3]
-                PathAngleArc { centerX: g.width / 2; centerY: g.width / 2; radiusX: g.r - 9 * ov.u; radiusY: g.r - 9 * ov.u; startAngle: 0; sweepAngle: 360 * g.e }
+                PathAngleArc { centerX: g.width / 2; centerY: g.width / 2; radiusX: g.r - 8 * ov.u; radiusY: g.r - 8 * ov.u; startAngle: 0; sweepAngle: 360 * g.e }
             }
         }
         HText {
             x: 0; width: g.width; y: g.width / 2 - height / 2
             horizontalAlignment: Text.AlignHCenter
             text: Math.round(g.shown * g.e) + "%"
-            color: ov.hot; font.family: "Bahnschrift"; font.pixelSize: 14 * ov.u
+            color: ov.hot; font.family: "Bahnschrift"; font.pixelSize: 15 * ov.u; font.weight: Font.Light
         }
-        Label { anchors.horizontalCenter: parent.horizontalCenter; y: g.width - 4 * ov.u; text: g.label; font.pixelSize: 8 * ov.u }
-    }
-    // 양쪽 눈 위치의 조준 고리
-    component EyeRing: Item {
-        id: er
-        property string tag: ""
-        property bool mirror: false
-        property real e: 1
-        property real rr: 64 * ov.u
-        readonly property int dir: mirror ? -1 : 1
-        width: rr * 2; height: rr * 2
-        Item {
-            anchors.fill: parent
-            rotation: ov.spin * 1.6 * er.dir
-            Repeater {
-                model: 48
-                Rectangle {
-                    visible: index < 48 * er.e
-                    width: 1.5; height: index % 4 === 0 ? 9 * ov.u : 4 * ov.u
-                    x: er.rr - width / 2; y: 0
-                    color: ov.c(index % 4 === 0 ? 0.9 : 0.4)
-                    transform: Rotation { origin.x: 0.75; origin.y: er.rr; angle: index * 7.5 }
-                }
-            }
-        }
-        Shape {
-            anchors.fill: parent
-            rotation: -ov.spin * 2.4 * er.dir
-            preferredRendererType: Shape.CurveRenderer
-            ShapePath {
-                strokeColor: ov.hot; strokeWidth: 3 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
-                PathAngleArc { centerX: er.rr; centerY: er.rr; radiusX: er.rr * 0.8; radiusY: er.rr * 0.8; startAngle: 200; sweepAngle: 120 * er.e }
-            }
-            ShapePath {
-                strokeColor: ov.accent; strokeWidth: 7 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
-                PathAngleArc { centerX: er.rr; centerY: er.rr; radiusX: er.rr * 0.8; radiusY: er.rr * 0.8; startAngle: 20; sweepAngle: 55 * er.e }
-            }
-            ShapePath {
-                strokeColor: ov.c(0.6); strokeWidth: 1.5; fillColor: "transparent"
-                strokeStyle: ShapePath.DashLine; dashPattern: [3, 3]
-                PathAngleArc { centerX: er.rr; centerY: er.rr; radiusX: er.rr * 0.62; radiusY: er.rr * 0.62; startAngle: 90; sweepAngle: 360 * er.e }
-            }
-        }
-        Rectangle {
-            width: er.rr * 0.92; height: width; radius: width / 2; anchors.centerIn: parent
-            color: ov.c(0.05 + 0.05 * ov.pulse); border.color: ov.c(0.3); border.width: 1
-        }
-        Rectangle { width: er.rr * 0.36; height: 1; anchors.centerIn: parent; color: ov.c(0.7) }
-        Rectangle { width: 1; height: er.rr * 0.36; anchors.centerIn: parent; color: ov.c(0.7) }
-        Rectangle { width: 5 * ov.u; height: width; radius: width / 2; anchors.centerIn: parent; color: ov.hot }
-        Column {
-            x: er.mirror ? -width - 10 * ov.u : er.width + 10 * ov.u
-            y: er.rr * 0.15
-            spacing: 2
-            Decode { full: er.tag; t: er.e; seed: 11; font.pixelSize: 9 * ov.u; color: ov.c(0.9); anchors.right: er.mirror ? parent.right : undefined }
-            HText {
-                anchors.right: er.mirror ? parent.right : undefined
-                text: (96 + 3.9 * ov.rnd(ov.slow + er.rr + (er.mirror ? 5 : 0))).toFixed(1) + " %"
-                color: ov.hot; font.family: "Bahnschrift"; font.pixelSize: 15 * ov.u
-            }
-            HText {
-                anchors.right: er.mirror ? parent.right : undefined
-                text: "FOCUS " + (1.2 + ov.rnd(ov.slow * 2 + (er.mirror ? 3 : 0)) * 0.6).toFixed(2) + " m"
-                color: ov.c(0.55); font.family: "Bahnschrift"; font.pixelSize: 8 * ov.u; font.letterSpacing: 1.5 * ov.u
-            }
-        }
+        Label { anchors.horizontalCenter: parent.horizontalCenter; y: g.width - 2 * ov.u; text: g.label; font.pixelSize: 8 * ov.u }
     }
 
     // =====================================================================
-    // 바탕: 헬멧 안쪽 (어두운 가장자리 + 청록 빛 + 미세한 주사선) — 빛 번짐 효과는 받지 않음
+    // 바탕: 헬멧 안쪽 — 가운데는 맑고 가장자리로 갈수록 어두워진다 (빛 번짐 효과는 받지 않음)
     Item {
+        id: bg
         anchors.fill: parent
-        opacity: ov.seg(0.1, 0.45) * ov.flick
+        opacity: ov.seg(0.1, 0.45) * ov.flick * (ov.calm ? 1 - ov.down : 1 - ov.dlin(0.3, 0.55))
         transform: Translate { x: ov.joltX; y: ov.joltY }
-        Rectangle {   // 헬멧 바이저 색: 화면 전체를 살짝 어둡게 (뒤 창은 그대로 보임)
+        Rectangle {   // 바이저 색: 아주 옅게 (뒤 화면은 그대로 보임)
             anchors.fill: parent
-            color: Qt.rgba(0.0, 0.025, 0.05, 0.42)
+            color: Qt.rgba(0.0, 0.03, 0.06, 0.14)
         }
-        Repeater {    // 조준경 · 눈 고리 뒤 어두운 원 (가운데가 가장 진함)
-            model: [[0, 0, 245], [-300, -40, 120], [300, -40, 120]]
+        // 헬멧 테두리: 가로로 넓은 타원 모양으로 가장자리가 어둡다
+        Item {
+            width: ov.width; height: ov.width
+            y: ov.cy - height / 2
+            transform: Scale { origin.x: ov.width / 2; origin.y: ov.width / 2; yScale: ov.height / ov.width * 1.18 }
             Shape {
-                readonly property real r: modelData[2] * ov.u
-                readonly property real px: ov.cx + modelData[0] * ov.u
-                readonly property real py: ov.cy + modelData[1] * ov.u
                 anchors.fill: parent
                 ShapePath {
                     strokeColor: "transparent"
                     fillGradient: RadialGradient {
-                        centerX: px; centerY: py; centerRadius: r
-                        focalX: px; focalY: py; focalRadius: 0
-                        GradientStop { position: 0.0; color: Qt.rgba(0.0, 0.03, 0.06, 0.62) }
-                        GradientStop { position: 0.72; color: Qt.rgba(0.0, 0.03, 0.06, 0.45) }
-                        GradientStop { position: 1.0; color: Qt.rgba(0.0, 0.03, 0.06, 0.0) }
+                        centerX: ov.width / 2; centerY: ov.width / 2; centerRadius: ov.width * 0.6
+                        focalX: ov.width / 2; focalY: ov.width / 2; focalRadius: 0
+                        GradientStop { position: 0.0; color: "transparent" }
+                        GradientStop { position: 0.6; color: "transparent" }
+                        GradientStop { position: 0.8; color: Qt.rgba(0.0, 0.025, 0.05, 0.5) }
+                        GradientStop { position: 0.93; color: Qt.rgba(0.0, 0.015, 0.03, 0.85) }
+                        GradientStop { position: 1.0; color: Qt.rgba(0.0, 0.01, 0.02, 0.95) }
                     }
-                    PathAngleArc { centerX: px; centerY: py; radiusX: r; radiusY: r; startAngle: 0; sweepAngle: 360 }
+                    PathPolyline { path: [Qt.point(0, 0), Qt.point(ov.width, 0), Qt.point(ov.width, ov.width), Qt.point(0, ov.width), Qt.point(0, 0)] }
                 }
             }
         }
-        Rectangle {   // 위 제목 · 방위 테이프 뒤 띠
-            x: ov.cx - width / 2; y: 10 * ov.u
-            width: ov.width * 0.42; height: 84 * ov.u
+        // 양쪽 열 뒤: 글자가 읽히도록 바깥에서 안쪽으로 옅어지는 그늘
+        Rectangle {
+            width: ov.colX(-1, 0, 0) + ov.colW + 90 * ov.u; height: parent.height
             gradient: Gradient { orientation: Gradient.Horizontal
-                GradientStop { position: 0.0; color: Qt.rgba(0, 0.03, 0.06, 0) }
-                GradientStop { position: 0.2; color: Qt.rgba(0, 0.03, 0.06, 0.62) }
-                GradientStop { position: 0.8; color: Qt.rgba(0, 0.03, 0.06, 0.62) }
-                GradientStop { position: 1.0; color: Qt.rgba(0, 0.03, 0.06, 0) } }
+                GradientStop { position: 0.0; color: Qt.rgba(0, 0.02, 0.05, 0.55) }
+                GradientStop { position: 0.7; color: Qt.rgba(0, 0.02, 0.05, 0.38) }
+                GradientStop { position: 1.0; color: Qt.rgba(0, 0.02, 0.05, 0) } }
         }
-        Rectangle {   // 아래 상태 글 · 파형 뒤 띠
-            x: ov.cx - width / 2; y: ov.cy + 168 * ov.u + 8 * ov.u
-            width: 520 * ov.u; height: 150 * ov.u
+        Rectangle {
+            width: ov.colX(-1, 0, 0) + ov.colW + 90 * ov.u; height: parent.height; anchors.right: parent.right
             gradient: Gradient { orientation: Gradient.Horizontal
-                GradientStop { position: 0.0; color: Qt.rgba(0, 0.03, 0.06, 0) }
-                GradientStop { position: 0.2; color: Qt.rgba(0, 0.03, 0.06, 0.62) }
-                GradientStop { position: 0.8; color: Qt.rgba(0, 0.03, 0.06, 0.62) }
-                GradientStop { position: 1.0; color: Qt.rgba(0, 0.03, 0.06, 0) } }
+                GradientStop { position: 0.0; color: Qt.rgba(0, 0.02, 0.05, 0) }
+                GradientStop { position: 0.3; color: Qt.rgba(0, 0.02, 0.05, 0.38) }
+                GradientStop { position: 1.0; color: Qt.rgba(0, 0.02, 0.05, 0.55) } }
         }
-        Shape {
-            anchors.fill: parent
-            ShapePath {
-                strokeColor: "transparent"
-                fillGradient: RadialGradient {
-                    centerX: ov.cx; centerY: ov.cy; centerRadius: ov.diag * 0.56
-                    focalX: ov.cx; focalY: ov.cy; focalRadius: 0
-                    GradientStop { position: 0.0; color: "transparent" }
-                    GradientStop { position: 0.55; color: Qt.rgba(0.0, 0.03, 0.06, 0.0) }
-                    GradientStop { position: 0.82; color: Qt.rgba(0.0, 0.05, 0.09, 0.42) }
-                    GradientStop { position: 1.0; color: Qt.rgba(0.0, 0.02, 0.05, 0.78) }
+        // 위 방위 테이프 · 제목 뒤, 아래 상태 글 · 파형 뒤: 가장자리가 부드러운 타원 그늘
+        Repeater {
+            model: [[ov.cx, 44 * ov.u, 380 * ov.u, 70 * ov.u, 0.38], [ov.cx, ov.cy + reticle.rr + 64 * ov.u, 300 * ov.u, 80 * ov.u, 0.3]]
+            Item {
+                readonly property real rx: modelData[2]
+                x: modelData[0] - rx; y: modelData[1] - rx
+                width: rx * 2; height: rx * 2
+                transform: Scale { origin.x: modelData[2]; origin.y: modelData[2]; yScale: modelData[3] / modelData[2] }
+                Shape {
+                    anchors.fill: parent
+                    ShapePath {
+                        strokeColor: "transparent"
+                        fillGradient: RadialGradient {
+                            centerX: modelData[2]; centerY: modelData[2]; centerRadius: modelData[2]
+                            focalX: modelData[2]; focalY: modelData[2]; focalRadius: 0
+                            GradientStop { position: 0.0; color: Qt.rgba(0, 0.02, 0.05, modelData[4]) }
+                            GradientStop { position: 0.6; color: Qt.rgba(0, 0.02, 0.05, modelData[4] * 0.7) }
+                            GradientStop { position: 1.0; color: Qt.rgba(0, 0.02, 0.05, 0) }
+                        }
+                        PathAngleArc { centerX: modelData[2]; centerY: modelData[2]; radiusX: modelData[2]; radiusY: modelData[2]; startAngle: 0; sweepAngle: 360 }
+                    }
                 }
-                PathPolyline { path: [Qt.point(0, 0), Qt.point(ov.width, 0), Qt.point(ov.width, ov.height), Qt.point(0, ov.height), Qt.point(0, 0)] }
             }
-        }
-        Rectangle {
-            width: parent.width * 0.14; height: parent.height
-            gradient: Gradient { orientation: Gradient.Horizontal
-                GradientStop { position: 0; color: ov.c(0.2) } GradientStop { position: 1; color: ov.c(0) } }
-        }
-        Rectangle {
-            width: parent.width * 0.14; height: parent.height; anchors.right: parent.right
-            gradient: Gradient { orientation: Gradient.Horizontal
-                GradientStop { position: 0; color: ov.c(0) } GradientStop { position: 1; color: ov.c(0.2) } }
         }
         Canvas {   // 홀로그램 주사선 (한 번만 그림)
             anchors.fill: parent
-            opacity: 0.5
+            opacity: 0.35
             onWidthChanged: requestPaint()
             onHeightChanged: requestPaint()
             onPaint: {
@@ -504,18 +537,27 @@ Window {
             y: -height + (parent.height + height) * ov.scan
             gradient: Gradient {
                 GradientStop { position: 0.0; color: ov.c(0) }
-                GradientStop { position: 0.9; color: ov.c(0.05) }
-                GradientStop { position: 1.0; color: ov.c(0.2) }
+                GradientStop { position: 0.9; color: ov.c(0.04) }
+                GradientStop { position: 1.0; color: ov.c(0.14) }
             }
         }
     }
 
-    // HUD 본체 — 전체에 빛 번짐(글로우)
+    // HUD 본체 — 전체에 빛 번짐(글로우). 끌 때는 가로 한 줄로 접혔다가 점이 된다.
     Item {
         id: hud
         anchors.fill: parent
         opacity: (ov.p < 1 && ov.p > 0.12 ? (0.6 + 0.4 * ov.rnd(Math.floor(ov.p * 90))) : 1) * ov.flick
-        transform: Translate { x: ov.joltX; y: ov.joltY }
+                 * (ov.calm ? 1 - ov.down : 1 - ov.dlin(0.6, 0.66))
+        visible: opacity > 0.001
+        transform: [
+            Scale {
+                origin.x: ov.cx; origin.y: ov.cy
+                yScale: ov.calm ? 1 : 1 - 0.996 * ov.din(0.34, 0.48)
+                xScale: ov.calm ? 1 : 1 - 0.98 * ov.din(0.48, 0.6)
+            },
+            Translate { x: ov.joltX; y: ov.joltY }
+        ]
         layer.enabled: ov.visible
         layer.effect: MultiEffect {
             shadowEnabled: true
@@ -528,45 +570,46 @@ Window {
             autoPaddingEnabled: false
         }
 
-        // ---- 헬멧 바이저 곡선 + 모서리 꺾쇠 ----
+        // ---- 헬멧 바이저 가장자리 (위아래로 휜 선) ----
         Shape {
             anchors.fill: parent
             opacity: ov.seg(0.18, 0.5)
             preferredRendererType: Shape.CurveRenderer
             ShapePath {
-                strokeColor: ov.c(0.55); strokeWidth: 1.5; fillColor: "transparent"
-                PathMove { x: 0; y: 0.16 * ov.height }
-                PathQuad { x: ov.width; y: 0.16 * ov.height; controlX: ov.cx; controlY: -0.06 * ov.height }
-                PathMove { x: 0; y: 0.86 * ov.height }
-                PathQuad { x: ov.width; y: 0.86 * ov.height; controlX: ov.cx; controlY: 1.08 * ov.height }
+                strokeColor: ov.c(0.5); strokeWidth: 1.5; fillColor: "transparent"
+                PathMove { x: 0; y: 0.15 * ov.height }
+                PathQuad { x: ov.width; y: 0.15 * ov.height; controlX: ov.cx; controlY: -0.07 * ov.height }
+                PathMove { x: 0; y: 0.87 * ov.height }
+                PathQuad { x: ov.width; y: 0.87 * ov.height; controlX: ov.cx; controlY: 1.09 * ov.height }
             }
             ShapePath {
-                strokeColor: ov.c(0.25); strokeWidth: 1; fillColor: "transparent"
-                strokeStyle: ShapePath.DashLine; dashPattern: [6, 6]
-                PathMove { x: 0; y: 0.185 * ov.height }
-                PathQuad { x: ov.width; y: 0.185 * ov.height; controlX: ov.cx; controlY: -0.03 * ov.height }
-                PathMove { x: 0; y: 0.835 * ov.height }
-                PathQuad { x: ov.width; y: 0.835 * ov.height; controlX: ov.cx; controlY: 1.05 * ov.height }
+                strokeColor: ov.c(0.18); strokeWidth: 6 * ov.u; fillColor: "transparent"
+                PathMove { x: 0; y: 0.15 * ov.height + 4 * ov.u }
+                PathQuad { x: ov.width; y: 0.15 * ov.height + 4 * ov.u; controlX: ov.cx; controlY: -0.07 * ov.height + 4 * ov.u }
+                PathMove { x: 0; y: 0.87 * ov.height - 4 * ov.u }
+                PathQuad { x: ov.width; y: 0.87 * ov.height - 4 * ov.u; controlX: ov.cx; controlY: 1.09 * ov.height - 4 * ov.u }
             }
         }
+        // 바이저 가장자리를 따라 찍힌 눈금 (위 · 아래)
         Repeater {
-            model: 4
-            Shape {
-                id: corner
-                readonly property bool onRight: index % 2 === 1
-                readonly property bool onBottom: index >= 2
-                readonly property real m: 20 * ov.u
-                readonly property real len: 64 * ov.u * ov.seg(0.22, 0.55)
-                width: len; height: len
-                x: onRight ? ov.width - m - len : m
-                y: onBottom ? ov.height - m - len : m
-                opacity: ov.seg(0.22, 0.4)
-                preferredRendererType: Shape.CurveRenderer
-                ShapePath {
-                    strokeColor: ov.hot; strokeWidth: 2.5; fillColor: "transparent"; capStyle: ShapePath.FlatCap
-                    PathMove { x: corner.onRight ? 0 : corner.len; y: corner.onBottom ? corner.len : 0 }
-                    PathLine { x: corner.onRight ? corner.len : 0; y: corner.onBottom ? corner.len : 0 }
-                    PathLine { x: corner.onRight ? corner.len : 0; y: corner.onBottom ? 0 : corner.len }
+            model: 2
+            Item {
+                readonly property bool lower: index === 1
+                anchors.fill: parent
+                opacity: ov.seg(0.3, 0.6)
+                Repeater {
+                    model: 41
+                    Rectangle {
+                        // 휜 선 위의 점: 2차 베지어 (끝 0.15h · 조절점 -0.07h)
+                        readonly property real s: 0.2 + 0.6 * index / 40
+                        readonly property real yy0: parent.lower ? 0.87 : 0.15
+                        readonly property real ctl: parent.lower ? 1.09 : -0.07
+                        readonly property real yy: ((1 - s) * (1 - s) * yy0 + 2 * (1 - s) * s * ctl + s * s * yy0) * ov.height
+                        x: s * ov.width - width / 2
+                        y: parent.lower ? yy - height - 6 * ov.u : yy + 6 * ov.u
+                        width: 1.2; height: (index % 5 === 0 ? 8 : 3) * ov.u
+                        color: ov.c(index % 5 === 0 ? 0.75 : 0.35)
+                    }
                 }
             }
         }
@@ -647,7 +690,7 @@ Window {
             }
             HText {
                 anchors.horizontalCenter: parent.horizontalCenter
-                y: ov.cy - 214 * ov.u
+                y: ov.cy - 176 * ov.u
                 text: ov.decode("CALIBRATING VIRTUAL HORIZON  ·  " + Math.round(calib.e * 100) + "%", Math.min(1, calib.e * 3), 21)
                 color: ov.hot
                 font.family: "Bahnschrift"; font.pixelSize: 11 * ov.u; font.letterSpacing: 3 * ov.u; font.weight: Font.DemiBold
@@ -657,7 +700,7 @@ Window {
         // ---- 추적 박스: 지금 쓰고 있는 창을 따라다니고, 자비스가 짚은 곳에는 빨갛게 잠금 ----
         Item {
             id: tg
-            readonly property bool has: ov.target.kind !== undefined && ov.p >= 1
+            readonly property bool has: ov.target.kind !== undefined && ov.p >= 1 && ov.down <= 0
             readonly property bool pt: ov.target.kind === "point"
             readonly property color col: pt ? ov.red : ov.accent
             readonly property real mg: 6 * ov.u
@@ -672,7 +715,7 @@ Window {
             Behavior on y { NumberAnimation { duration: 420; easing.type: Easing.OutCubic } }
             Behavior on width { NumberAnimation { duration: 420; easing.type: Easing.OutCubic } }
             Behavior on height { NumberAnimation { duration: 420; easing.type: Easing.OutCubic } }
-            opacity: has ? (pt ? 1 : 0.85) : 0
+            opacity: has ? (pt ? 1 : 0.8) : 0
             Behavior on opacity { NumberAnimation { duration: 300 } }
             visible: opacity > 0.01
 
@@ -682,13 +725,13 @@ Window {
                     id: tc
                     readonly property bool onRight: index % 2 === 1
                     readonly property bool onBottom: index >= 2
-                    readonly property real len: Math.min((tg.pt ? 16 : 26) * ov.u, tg.width / 3, tg.height / 3)
+                    readonly property real len: Math.min((tg.pt ? 16 : 22) * ov.u, tg.width / 3, tg.height / 3)
                     width: len; height: len
                     x: onRight ? tg.width - len : 0
                     y: onBottom ? tg.height - len : 0
                     preferredRendererType: Shape.CurveRenderer
                     ShapePath {
-                        strokeColor: tg.col; strokeWidth: tg.pt ? 2.5 : 2; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                        strokeColor: tg.col; strokeWidth: tg.pt ? 2.5 : 1.5; fillColor: "transparent"; capStyle: ShapePath.FlatCap
                         PathMove { x: tc.onRight ? 0 : tc.len; y: tc.onBottom ? tc.len : 0 }
                         PathLine { x: tc.onRight ? tc.len : 0; y: tc.onBottom ? tc.len : 0 }
                         PathLine { x: tc.onRight ? tc.len : 0; y: tc.onBottom ? 0 : tc.len }
@@ -710,12 +753,6 @@ Window {
                 color: ov.red
             }
             // 이름표: 박스 위에 자리가 없으면 안쪽 위
-            Rectangle {
-                x: tgLabel.x - 6 * ov.u; y: tgLabel.y - 4 * ov.u
-                width: tgLabel.width + 12 * ov.u; height: tgLabel.height + 8 * ov.u
-                color: Qt.rgba(0, 0.03, 0.06, 0.72)
-                border.color: Qt.rgba(tg.col.r, tg.col.g, tg.col.b, 0.5); border.width: 1
-            }
             Column {
                 id: tgLabel
                 readonly property bool inside: tg.y < 46 * ov.u
@@ -740,32 +777,34 @@ Window {
             }
         }
 
-        // ---- 가운데 조준경 ----
+        // ---- 가운데 조준경: 작고 얇게 (가운데는 비워 둔다) ----
         Item {
             id: reticle
-            readonly property real rr: 168 * ov.u
+            readonly property real rr: 118 * ov.u
             readonly property real e: ov.seg(0.05, 0.45)
-            readonly property real draw: ov.seg(0.2, 0.7)     // 고리가 그려지는 진행도
+            readonly property real draw: ov.seg(0.2, 0.7) * (1 - ov.dlin(0.12, 0.34))     // 고리가 그려지는 / 풀리는 진행도
             width: rr * 2; height: rr * 2
             x: ov.cx - rr; y: ov.cy - rr
             visible: e > 0
             opacity: Math.min(1, e * 1.4)
             scale: 0.15 + 0.85 * e + Math.sin(e * Math.PI) * 0.14
 
-            Rectangle { anchors.fill: parent; radius: width / 2; color: "transparent"; border.color: ov.c(0.25); border.width: 1 }
-            // 바깥 눈금 고리
+            Rectangle { anchors.fill: parent; radius: width / 2; color: "transparent"; border.color: ov.c(0.18 * reticle.draw); border.width: 1 }
+            // 바깥 눈금: 네 토막만 (천천히 돎)
             Item {
                 anchors.fill: parent
                 rotation: -ov.spin * 0.25
                 Repeater {
-                    model: 120
+                    model: 72
                     Rectangle {
-                        visible: index < 120 * reticle.draw
-                        width: index % 10 === 0 ? 2 : 1
-                        height: index % 10 === 0 ? 14 * ov.u : (index % 5 === 0 ? 8 * ov.u : 4 * ov.u)
+                        readonly property real a: index * 5
+                        readonly property bool inArc: (a % 90) >= 15 && (a % 90) <= 75
+                        visible: inArc && index < 72 * reticle.draw
+                        width: index % 6 === 0 ? 2 : 1
+                        height: index % 6 === 0 ? 10 * ov.u : 4 * ov.u
                         x: reticle.rr - width / 2; y: 2
-                        color: index % 10 === 0 ? ov.hot : ov.c(0.4)
-                        transform: Rotation { origin.x: width / 2; origin.y: reticle.rr - 2; angle: index * 3 }
+                        color: index % 6 === 0 ? ov.hot : ov.c(0.45)
+                        transform: Rotation { origin.x: width / 2; origin.y: reticle.rr - 2; angle: a }
                     }
                 }
                 Repeater {
@@ -774,39 +813,36 @@ Window {
                         x: reticle.rr; y: reticle.rr
                         rotation: index * 90
                         HText {
-                            x: -width / 2; y: -reticle.rr - 18 * ov.u
+                            x: -width / 2; y: -reticle.rr - 16 * ov.u
                             text: ("00" + index * 90).slice(-3)
-                            color: ov.c(0.7); font.family: "Bahnschrift"; font.pixelSize: 9 * ov.u
+                            opacity: reticle.draw
+                            color: ov.c(0.7); font.family: "Bahnschrift"; font.pixelSize: 8 * ov.u
                         }
                     }
                 }
             }
             // 소리 스펙트럼 고리 (목소리 · 마이크에 반응)
             Repeater {
-                model: 72
+                model: 60
                 Rectangle {
-                    readonly property real amp: (0.08 + ov.lvl * (0.35 + 0.65 * ov.rnd(index * 3.3 + ov.tick))) * (index < 72 * reticle.draw ? 1 : 0)
-                    width: 2 * ov.u; height: 3 * ov.u + 26 * ov.u * amp
+                    readonly property real amp: (0.06 + ov.lvl * (0.35 + 0.65 * ov.rnd(index * 3.3 + ov.tick))) * (index < 60 * reticle.draw ? 1 : 0)
+                    width: 1.5 * ov.u; height: 2 * ov.u + 22 * ov.u * amp
                     x: reticle.rr - width / 2
-                    y: reticle.rr - reticle.rr * 0.74 - height
-                    color: ov.c(0.35 + 0.6 * amp)
-                    transform: Rotation { origin.x: width / 2; origin.y: reticle.rr * 0.74 + height; angle: index * 5 }
+                    y: reticle.rr - reticle.rr * 0.7 - height
+                    color: ov.c(0.3 + 0.65 * amp)
+                    transform: Rotation { origin.x: width / 2; origin.y: reticle.rr * 0.7 + height; angle: index * 6 }
                 }
             }
-            // 분절 고리 (시계 방향)
+            // 분절 호 (시계 방향)
             Shape {
                 anchors.fill: parent
                 rotation: ov.spin
                 preferredRendererType: Shape.CurveRenderer
                 ShapePath {
-                    strokeColor: ov.hot; strokeWidth: 6 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
-                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.88; radiusY: reticle.rr * 0.88; startAngle: 10; sweepAngle: 70 * reticle.draw }
-                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.88; radiusY: reticle.rr * 0.88; startAngle: 130; sweepAngle: 40 * reticle.draw }
-                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.88; radiusY: reticle.rr * 0.88; startAngle: 215; sweepAngle: 95 * reticle.draw }
-                }
-                ShapePath {
-                    strokeColor: ov.c(0.35); strokeWidth: 1; fillColor: "transparent"
-                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.94; radiusY: reticle.rr * 0.94; startAngle: 0; sweepAngle: 360 * reticle.draw }
+                    strokeColor: ov.hot; strokeWidth: 2.5 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.86; radiusY: reticle.rr * 0.86; startAngle: 10; sweepAngle: 60 * reticle.draw }
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.86; radiusY: reticle.rr * 0.86; startAngle: 130; sweepAngle: 30 * reticle.draw }
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.86; radiusY: reticle.rr * 0.86; startAngle: 215; sweepAngle: 85 * reticle.draw }
                 }
             }
             // 점선 고리 (반시계 방향)
@@ -815,13 +851,13 @@ Window {
                 rotation: -ov.spin * 2.2
                 preferredRendererType: Shape.CurveRenderer
                 ShapePath {
-                    strokeColor: ov.c(0.5); strokeWidth: 2; fillColor: "transparent"
+                    strokeColor: ov.c(0.45); strokeWidth: 1.5; fillColor: "transparent"
                     strokeStyle: ShapePath.DashLine; dashPattern: [2, 5]
-                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.6; radiusY: reticle.rr * 0.6; startAngle: 0; sweepAngle: 300 * reticle.draw }
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.52; radiusY: reticle.rr * 0.52; startAngle: 0; sweepAngle: 300 * reticle.draw }
                 }
                 ShapePath {
-                    strokeColor: ov.accent; strokeWidth: 4 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
-                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.6; radiusY: reticle.rr * 0.6; startAngle: 310; sweepAngle: 40 * reticle.draw }
+                    strokeColor: ov.accent; strokeWidth: 3 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.52; radiusY: reticle.rr * 0.52; startAngle: 310; sweepAngle: 40 * reticle.draw }
                 }
             }
             // 목소리 크기에 따라 늘어나는 호 (좌우)
@@ -829,25 +865,11 @@ Window {
                 anchors.fill: parent
                 preferredRendererType: Shape.CurveRenderer
                 ShapePath {
-                    strokeColor: ov.hot; strokeWidth: 3 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
-                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.5; radiusY: reticle.rr * 0.5
-                                   startAngle: 180 - (8 + 62 * ov.lvl); sweepAngle: 2 * (8 + 62 * ov.lvl) }
-                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.5; radiusY: reticle.rr * 0.5
-                                   startAngle: -(8 + 62 * ov.lvl); sweepAngle: 2 * (8 + 62 * ov.lvl) }
-                }
-            }
-            // 수평선 (헬멧 기울기)
-            Item {
-                anchors.fill: parent
-                rotation: ov.roll
-                Repeater {
-                    model: 2
-                    Item {
-                        x: index === 0 ? -64 * ov.u : reticle.width + 8 * ov.u
-                        y: reticle.rr
-                        Rectangle { width: 56 * ov.u; height: 1.5; color: ov.c(0.85) }
-                        Rectangle { x: index === 0 ? 56 * ov.u - 1.5 : 0; width: 1.5; height: 8 * ov.u; color: ov.c(0.85) }
-                    }
+                    strokeColor: ov.hot; strokeWidth: 2 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.42; radiusY: reticle.rr * 0.42
+                                   startAngle: 180 - (6 + 60 * ov.lvl) * reticle.draw; sweepAngle: 2 * (6 + 60 * ov.lvl) * reticle.draw }
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.42; radiusY: reticle.rr * 0.42
+                                   startAngle: -(6 + 60 * ov.lvl) * reticle.draw; sweepAngle: 2 * (6 + 60 * ov.lvl) * reticle.draw }
                 }
             }
             // 가장 가까운 타이머: 줄어드는 고리 + 남은 시간
@@ -861,42 +883,38 @@ Window {
                     anchors.fill: parent
                     preferredRendererType: Shape.CurveRenderer
                     ShapePath {
-                        strokeColor: ov.c(0.16); strokeWidth: 4 * ov.u; fillColor: "transparent"
-                        PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.4; radiusY: reticle.rr * 0.4; startAngle: 0; sweepAngle: 360 }
+                        strokeColor: ov.c(0.16); strokeWidth: 3 * ov.u; fillColor: "transparent"
+                        PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.32; radiusY: reticle.rr * 0.32; startAngle: 0; sweepAngle: 360 }
                     }
                     ShapePath {
-                        strokeColor: tmr.frac < 0.1 ? ov.red : ov.hot; strokeWidth: 4 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
-                        PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.4; radiusY: reticle.rr * 0.4
+                        strokeColor: tmr.frac < 0.1 ? ov.red : ov.hot; strokeWidth: 3 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                        PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.32; radiusY: reticle.rr * 0.32
                                        startAngle: -90; sweepAngle: 360 * Math.max(0.002, tmr.frac) }
                     }
                 }
                 HText {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    y: reticle.rr + 15 * ov.u
+                    y: reticle.rr + 16 * ov.u
                     text: tmr.t0 ? ov.hms(ov.left(tmr.t0)) : ""
                     color: tmr.frac < 0.1 ? ov.red : ov.hot
-                    font.family: "Bahnschrift"; font.pixelSize: 17 * ov.u; font.weight: Font.DemiBold
-                    style: Text.Outline; styleColor: Qt.rgba(0, 0.05, 0.1, 0.5)
+                    font.family: "Bahnschrift"; font.pixelSize: 13 * ov.u; font.weight: Font.DemiBold
                 }
             }
-            // 가운데 십자선
-            Repeater {
-                model: 4
+            // 가운데: 비행 경로 표시 (작은 원 + 양 날개 + 꼬리)
+            Item {
+                x: reticle.rr; y: reticle.rr
+                opacity: reticle.draw
                 Rectangle {
-                    readonly property bool hz: index < 2
-                    readonly property real gap: 12 * ov.u
-                    readonly property real len: 30 * ov.u
-                    width: hz ? len : 1.5; height: hz ? 1.5 : len
-                    x: hz ? (index === 0 ? reticle.rr - gap - len : reticle.rr + gap) : reticle.rr - 0.75
-                    y: hz ? reticle.rr - 0.75 : (index === 2 ? reticle.rr - gap - len : reticle.rr + gap)
-                    color: ov.c(0.85)
+                    width: 14 * ov.u; height: width; radius: width / 2; x: -width / 2; y: -height / 2
+                    color: "transparent"; border.color: ov.hot; border.width: 1.5
                 }
-            }
-            Rectangle {
-                width: 6 * ov.u; height: width; radius: width / 2
-                x: reticle.rr - width / 2; y: reticle.rr - height / 2
-                color: ov.hot
-                opacity: 0.6 + 0.4 * ov.pulse
+                Rectangle { x: -7 * ov.u - 16 * ov.u; y: -0.75; width: 16 * ov.u; height: 1.5; color: ov.hot }
+                Rectangle { x: 7 * ov.u; y: -0.75; width: 16 * ov.u; height: 1.5; color: ov.hot }
+                Rectangle { x: -0.75; y: -7 * ov.u - 9 * ov.u; width: 1.5; height: 9 * ov.u; color: ov.hot }
+                Rectangle {
+                    width: 3 * ov.u; height: width; radius: width / 2; x: -width / 2; y: -height / 2
+                    color: ov.hot; opacity: 0.5 + 0.5 * ov.pulse
+                }
             }
             Repeater {
                 model: 4
@@ -904,47 +922,67 @@ Window {
                     x: reticle.rr; y: reticle.rr
                     rotation: index * 90 + 45
                     Rectangle {
-                        width: 9 * ov.u; height: 9 * ov.u; rotation: 45
-                        x: -width / 2; y: -reticle.rr - 12 * ov.u - 6 * ov.u * ov.pulse
+                        width: 7 * ov.u; height: 7 * ov.u; rotation: 45
+                        x: -width / 2; y: -reticle.rr - 10 * ov.u - 5 * ov.u * ov.pulse
+                        opacity: reticle.draw
                         color: "transparent"; border.color: ov.accent; border.width: 1.5
                     }
                 }
             }
         }
-        // 조준경 바깥 큰 괄호 호 (좌우)
-        Shape {
-            id: brk
-            readonly property real e: ov.seg(0.3, 0.7)
-            readonly property real r1: reticle.rr * 1.24
-            x: ov.cx - r1; y: ov.cy - r1
-            width: r1 * 2; height: r1 * 2
-            opacity: e
-            preferredRendererType: Shape.CurveRenderer
-            ShapePath {
-                strokeColor: ov.c(0.75); strokeWidth: 2; fillColor: "transparent"; capStyle: ShapePath.FlatCap
-                PathAngleArc { centerX: brk.r1; centerY: brk.r1; radiusX: brk.r1; radiusY: brk.r1; startAngle: 180 - 32 * brk.e; sweepAngle: 64 * brk.e }
-                PathAngleArc { centerX: brk.r1; centerY: brk.r1; radiusX: brk.r1; radiusY: brk.r1; startAngle: -32 * brk.e; sweepAngle: 64 * brk.e }
-            }
-            ShapePath {
-                strokeColor: ov.c(0.35); strokeWidth: 5 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
-                strokeStyle: ShapePath.DashLine; dashPattern: [0.6, 1.2]
-                PathAngleArc { centerX: brk.r1; centerY: brk.r1; radiusX: brk.r1 - 8 * ov.u; radiusY: brk.r1 - 8 * ov.u; startAngle: 180 - 24 * brk.e; sweepAngle: 48 * brk.e }
-                PathAngleArc { centerX: brk.r1; centerY: brk.r1; radiusX: brk.r1 - 8 * ov.u; radiusY: brk.r1 - 8 * ov.u; startAngle: -24 * brk.e; sweepAngle: 48 * brk.e }
+
+        // ---- 수평 사다리 (헬멧 기울기 · 오르내림): 조준경 바깥 양쪽 ----
+        Item {
+            id: ladder
+            x: ov.cx; y: ov.cy
+            rotation: ov.roll * 1.6
+            opacity: ov.seg(0.45, 0.8) * (1 - ov.dlin(0.1, 0.3))
+            visible: opacity > 0
+            readonly property real gap: reticle.rr + 16 * ov.u
+            Repeater {
+                model: [-2, -1, 0, 1, 2]
+                Item {
+                    id: rung
+                    readonly property int k: modelData
+                    readonly property real len: (k === 0 ? 64 : 36) * ov.u
+                    y: -k * 42 * ov.u + ov.pitch * ov.u
+                    Repeater {
+                        model: 2
+                        Item {
+                            readonly property int sd: index === 0 ? -1 : 1
+                            Shape {
+                                ShapePath {
+                                    strokeColor: ov.c(rung.k === 0 ? 0.9 : 0.6); strokeWidth: rung.k === 0 ? 2 : 1.2; fillColor: "transparent"
+                                    strokeStyle: rung.k < 0 ? ShapePath.DashLine : ShapePath.SolidLine; dashPattern: [4, 3]
+                                    PathMove { x: sd * ladder.gap; y: 0 }
+                                    PathLine { x: sd * (ladder.gap + rung.len); y: 0 }
+                                    PathLine { x: sd * (ladder.gap + rung.len); y: rung.k === 0 ? 0 : (rung.k > 0 ? 6 : -6) * ov.u }
+                                }
+                            }
+                            HText {
+                                visible: rung.k !== 0
+                                x: sd < 0 ? -(ladder.gap + rung.len) - width - 5 * ov.u : ladder.gap + rung.len + 5 * ov.u
+                                y: -height / 2
+                                text: Math.abs(rung.k) * 10
+                                color: ov.c(0.7); font.family: "Bahnschrift"; font.pixelSize: 8 * ov.u
+                            }
+                        }
+                    }
+                }
             }
         }
-        // 조준경 대각선 수치
+        // 조준경 대각선 수치 — 모두 실제 값: 전원(배터리 · 충전) / 목소리 · 마이크 크기 / 내려받는 속도 / CPU · RAM
         Repeater {
-            // 모두 실제 값: 전원(배터리 · 충전) / 목소리 · 마이크 크기 / 내려받는 속도 / CPU · RAM
             model: [["PWR", ov.stats.bat === undefined || ov.stats.bat < 0 ? "AC LINE" : ov.stats.bat + " %" + (ov.stats.plugged ? " CHG" : "")],
                     ["VOX", Math.round(ov.lvl * 100) + " %"],
                     ["NET", "▼ " + ov.rate(ov.stats.down)], ["SYS", Math.round(ov.stats.cpu || 0) + " / " + Math.round(ov.stats.ram || 0)]]
             Column {
                 readonly property bool onRight: index % 2 === 1
                 readonly property bool onBottom: index >= 2
-                readonly property real off: reticle.rr * 0.86
+                readonly property real off: reticle.rr * 1.0
                 x: onRight ? ov.cx + off : ov.cx - off - width
                 y: onBottom ? ov.cy + off - height : ov.cy - off
-                opacity: ov.seg(0.55, 0.85)
+                opacity: ov.seg(0.55, 0.85) * (1 - ov.dlin(0.1, 0.28))
                 spacing: 0
                 HText { anchors.right: parent.onRight ? undefined : parent.right; text: modelData[0]
                        color: ov.c(0.6); font.family: "Bahnschrift"; font.pixelSize: 8 * ov.u; font.letterSpacing: 2 * ov.u; font.weight: Font.DemiBold }
@@ -952,177 +990,155 @@ Window {
                        color: ov.hot; font.family: "Bahnschrift"; font.pixelSize: 12 * ov.u }
             }
         }
-        // 조준경 아래 상태 글
+
+        // ---- 조준경 아래: 상태 글 + 턱선을 따라 휜 음성 파형 ----
         Column {
             anchors.horizontalCenter: parent.horizontalCenter
-            y: ov.cy + reticle.rr + 18 * ov.u
+            y: ov.cy + reticle.rr + 22 * ov.u
             spacing: 4 * ov.u
-            opacity: ov.seg(0.45, 0.7)
+            opacity: ov.seg(0.45, 0.7) * (1 - ov.dlin(0.06, 0.24))
             Decode {
                 anchors.horizontalCenter: parent.horizontalCenter
-                full: ov.p < 1 ? "ACTIVE MODE ENGAGED" : (ov.stateLabels[ov.st] || ov.st.toUpperCase())
+                full: ov.down > 0 ? "DISENGAGING" : ov.p < 1 ? "ACTIVE MODE ENGAGED" : (ov.stateLabels[ov.st] || ov.st.toUpperCase())
                 t: ov.lin(0.45, 0.8); seed: 3
-                color: ov.hot
-                font.pixelSize: 15 * ov.u; font.letterSpacing: 6 * ov.u; font.weight: Font.DemiBold
+                color: ov.down > 0 ? ov.amber : ov.hot
+                font.pixelSize: 15 * ov.u; font.letterSpacing: 7 * ov.u; font.weight: Font.DemiBold
             }
             Decode {
                 anchors.horizontalCenter: parent.horizontalCenter
                 full: jarvis.statusText
                 t: ov.lin(0.6, 0.92); seed: 5
-                color: ov.c(0.65)
+                color: ov.c(0.7)
                 font.pixelSize: 10 * ov.u
             }
-            HText {
-                anchors.horizontalCenter: parent.horizontalCenter
-                visible: ov.timers.length > 0
-                text: ov.timers.length ? "⏱  " + ov.timers[0].label + (ov.timers.length > 1 ? "   +" + (ov.timers.length - 1) : "") : ""
-                color: ov.hot; font.pixelSize: 11 * ov.u
+        }
+        Item {
+            id: wave
+            readonly property real e: ov.seg(0.55, 0.85)
+            readonly property real r: reticle.rr + 112 * ov.u
+            x: ov.cx; y: ov.cy
+            opacity: e * (1 - ov.dlin(0.04, 0.22))
+            visible: opacity > 0
+            Repeater {
+                model: 41
+                Item {
+                    readonly property real centerFade: 1 - Math.abs(index - 20) / 21
+                    readonly property real wob: 0.5 + 0.5 * Math.sin(ov.sweep * Math.PI / 180 * 6 + index * 0.9)
+                    rotation: (index - 20) * 1.25 * wave.e
+                    Rectangle {
+                        x: -width / 2
+                        y: wave.r
+                        width: 3 * ov.u
+                        height: Math.max(2, 34 * ov.u * parent.centerFade * (0.1 + ov.lvl * (0.5 + 0.5 * parent.wob)))
+                        radius: 1
+                        color: ov.c(0.35 + 0.6 * parent.centerFade)
+                    }
+                }
+            }
+            Repeater {   // 파형 양 끝의 작은 괄호
+                model: 2
+                Item {
+                    rotation: (index === 0 ? -1 : 1) * 28 * wave.e
+                    Rectangle { x: -0.75; y: wave.r - 4 * ov.u; width: 1.5; height: 22 * ov.u; color: ov.c(0.75) }
+                }
             }
         }
 
-        // ---- 양쪽 눈 조준 고리 ----
-        EyeRing {
-            tag: "OPTIC · L"; mirror: true
-            e: ov.seg(0.35, 0.75)
-            visible: e > 0
-            x: ov.cx - 300 * ov.u - rr; y: ov.cy - 40 * ov.u - rr
-            opacity: e
-        }
-        EyeRing {
-            tag: "OPTIC · R"
-            e: ov.seg(0.38, 0.78)
-            visible: e > 0
-            x: ov.cx + 300 * ov.u - rr; y: ov.cy - 40 * ov.u - rr
-            opacity: e
-        }
-
-        // ---- 위쪽: 방위 테이프 + 제목 ----
+        // ---- 위쪽: 휜 방위 테이프 + 제목 ----
         Fly {
             d: 0.3
-            width: ov.width * 0.36; height: 64 * ov.u
-            x: ov.cx - width / 2; y: 20 * ov.u
+            width: ov.width * 0.4; height: 74 * ov.u
+            x: ov.cx - width / 2; y: 14 * ov.u
             Item {
                 id: hd
-                width: parent.width; height: 30 * ov.u
+                width: parent.width; height: 44 * ov.u
                 clip: true
                 readonly property real k: width / 120    // 화면에 보이는 각도 120°
-                // 보이는 120° 안의 눈금 자리만 만든다 (예전: 한 바퀴 반 144개를 매 프레임 계산)
+                // 보이는 120° 안의 눈금 자리만 만든다
                 readonly property int base: Math.floor(ov.heading / 5) - 13
                 Repeater {
                     model: 27
                     Item {
                         readonly property int dd: (((hd.base + index) * 5) % 360 + 360) % 360
                         readonly property real xx: hd.width / 2 + ((hd.base + index) * 5 - ov.heading) * hd.k
+                        readonly property real q: (xx - hd.width / 2) / (hd.width / 2)
+                        readonly property real bend: 14 * ov.u * q * q      // 헬멧 윗선을 따라 양 끝이 내려감
                         visible: xx > -10 && xx < hd.width + 10
                         x: xx
-                        readonly property real fade: 1 - Math.min(1, Math.abs(xx - hd.width / 2) / (hd.width / 2))
+                        readonly property real fade: 1 - Math.min(1, Math.abs(q))
                         Rectangle {
                             width: 1; height: (dd / 5) % 3 === 0 ? 10 * ov.u : 5 * ov.u
-                            y: hd.height - height
+                            y: 26 * ov.u - height + parent.bend
                             color: ov.c(0.2 + 0.7 * parent.fade)
                         }
                         HText {
                             visible: dd % 45 === 0
                             text: dd % 45 === 0 ? ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][dd / 45] : ""
-                            x: -width / 2; y: 0
+                            x: -width / 2; y: parent.bend
                             color: dd === 0 ? ov.hot : ov.c(0.25 + 0.7 * parent.fade)
-                            font.family: "Bahnschrift"; font.pixelSize: 11 * ov.u; font.weight: Font.DemiBold
+                            font.family: "Bahnschrift"; font.pixelSize: 10 * ov.u; font.weight: Font.DemiBold
                         }
                     }
                 }
             }
-            Rectangle { width: 1.5; height: 16 * ov.u; color: ov.hot; x: parent.width / 2; y: 26 * ov.u }
+            Shape {   // 가운데 방위 표시 (아래를 가리키는 작은 삼각형)
+                x: parent.width / 2; y: 28 * ov.u
+                ShapePath {
+                    strokeColor: "transparent"; fillColor: ov.hot
+                    PathMove { x: -5 * ov.u; y: 8 * ov.u }
+                    PathLine { x: 5 * ov.u; y: 8 * ov.u }
+                    PathLine { x: 0; y: 0 }
+                    PathLine { x: -5 * ov.u; y: 8 * ov.u }
+                }
+            }
             Decode {
                 anchors.horizontalCenter: parent.horizontalCenter
-                y: 44 * ov.u
-                full: "J.A.R.V.I.S   ·   ACTIVE MODE   ·   HDG " + ("00" + Math.floor(ov.heading)).slice(-3)
+                y: 46 * ov.u
+                full: "J.A.R.V.I.S   ·   ACTIVE   ·   HDG " + ("00" + Math.floor(ov.heading)).slice(-3)
                 t: ov.lin(0.4, 0.75); seed: 1
-                font.letterSpacing: 4 * ov.u; font.weight: Font.DemiBold
-            }
-        }
-        // CPU 기록 막대
-        Fly {
-            d: 0.55
-            width: 240 * ov.u; height: 40 * ov.u
-            x: ov.cx - width / 2; y: ov.height * 0.17 + 24 * ov.u
-            Row {
-                anchors.bottom: parent.bottom
-                anchors.horizontalCenter: parent.horizontalCenter
-                spacing: 1
-                Repeater {
-                    model: ov.cpuHist
-                    Rectangle {
-                        width: 4 * ov.u; height: Math.max(1, 32 * ov.u * modelData / 100)
-                        anchors.bottom: parent.bottom
-                        color: ov.c(0.25 + 0.6 * (index / Math.max(1, ov.cpuHist.length)))
-                    }
-                }
-            }
-            Label { text: "LOAD HISTORY · 48 s"; font.pixelSize: 8 * ov.u; anchors.horizontalCenter: parent.horizontalCenter; y: -6 * ov.u }
-        }
-
-        // ---- 왼쪽 가장자리: 빨간 화살표 기둥 ----
-        Item {
-            x: 22 * ov.u; y: ov.cy - 120 * ov.u
-            width: 30 * ov.u; height: 240 * ov.u
-            opacity: ov.seg(0.5, 0.75)
-            Repeater {
-                model: 6
-                HText {
-                    readonly property real ph: ((ov.scan * 6 + index) % 6) / 6
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    y: parent.height * (1 - ph) - height
-                    text: "︿"
-                    color: ov.red
-                    opacity: Math.sin(ph * Math.PI)
-                    font.pixelSize: 26 * ov.u; font.weight: Font.Bold
-                }
-            }
-            HText {
-                anchors.horizontalCenter: parent.horizontalCenter
-                y: parent.height + 6 * ov.u
-                text: "LIFT"
-                color: ov.red; font.family: "Bahnschrift"; font.pixelSize: 9 * ov.u; font.letterSpacing: 2 * ov.u; font.weight: Font.DemiBold
+                color: ov.hc(0.9)
+                font.pixelSize: 11 * ov.u; font.letterSpacing: 4 * ov.u; font.weight: Font.DemiBold
             }
         }
 
-        // ---- 왼쪽 위: 시간 ----
-        Fly {
-            d: 0.34; tilt: 22
-            x: 62 * ov.u; y: ov.height * 0.2
-            width: 300 * ov.u; height: 132 * ov.u
-            HoloPanel { anchors.fill: parent; accent: ov.accent; fillAlpha: 0.82; cut: 12; title: "SYSTEM TIME"; tag: "KST // UTC+9" }
-            // 날짜 고리
+        // ================================================================ 왼쪽 열
+        // ---- 시간 (+ 가장 가까운 타이머) ----
+        Wid {
+            id: wTime
+            side: -1; d: 0.34
+            title: "SYSTEM TIME"; tag: "KST // UTC+9"
+            y: ov.colTop; height: 106 * ov.u
             Item {
                 id: dayRing
-                x: 14 * ov.u; y: 32 * ov.u
-                width: 88 * ov.u; height: width
+                x: 2 * ov.u; y: wTime.hh + 6 * ov.u
+                width: 80 * ov.u; height: width
                 Shape {
                     anchors.fill: parent
                     preferredRendererType: Shape.CurveRenderer
                     ShapePath {
-                        strokeColor: ov.c(0.18); strokeWidth: 4 * ov.u; fillColor: "transparent"
-                        PathAngleArc { centerX: dayRing.width / 2; centerY: dayRing.width / 2; radiusX: 40 * ov.u; radiusY: 40 * ov.u; startAngle: 0; sweepAngle: 360 }
+                        strokeColor: ov.c(0.18); strokeWidth: 3 * ov.u; fillColor: "transparent"
+                        PathAngleArc { centerX: dayRing.width / 2; centerY: dayRing.width / 2; radiusX: 36 * ov.u; radiusY: 36 * ov.u; startAngle: 0; sweepAngle: 360 }
                     }
                     ShapePath {
-                        strokeColor: ov.hot; strokeWidth: 4 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
-                        PathAngleArc { centerX: dayRing.width / 2; centerY: dayRing.width / 2; radiusX: 40 * ov.u; radiusY: 40 * ov.u
+                        strokeColor: ov.hot; strokeWidth: 3 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                        PathAngleArc { centerX: dayRing.width / 2; centerY: dayRing.width / 2; radiusX: 36 * ov.u; radiusY: 36 * ov.u
                                        startAngle: -90; sweepAngle: Math.max(1, 6 * (ov.now.getSeconds() + (ov.idle ? 0 : ov.now.getMilliseconds() / 1000))) }
                     }
                     ShapePath {
                         strokeColor: ov.c(0.45); strokeWidth: 1; fillColor: "transparent"
                         strokeStyle: ShapePath.DashLine; dashPattern: [1, 4]
-                        PathAngleArc { centerX: dayRing.width / 2; centerY: dayRing.width / 2; radiusX: 32 * ov.u; radiusY: 32 * ov.u; startAngle: 0; sweepAngle: 360 }
+                        PathAngleArc { centerX: dayRing.width / 2; centerY: dayRing.width / 2; radiusX: 29 * ov.u; radiusY: 29 * ov.u; startAngle: 0; sweepAngle: 360 }
                     }
                 }
                 HText {
                     anchors.centerIn: parent
                     text: ov.now.getDate()
-                    color: ov.hot; font.family: "Bahnschrift"; font.pixelSize: 30 * ov.u; font.weight: Font.Light
+                    color: ov.hot; font.family: "Bahnschrift"; font.pixelSize: 26 * ov.u; font.weight: Font.Light
                 }
             }
             Column {
-                x: 112 * ov.u; y: 30 * ov.u
+                x: 96 * ov.u; y: wTime.hh + 2 * ov.u
+                width: wTime.width - x
                 spacing: 0
                 HText {
                     text: ov.pad(ov.now.getHours()) + ":" + ov.pad(ov.now.getMinutes())
@@ -1130,296 +1146,29 @@ Window {
                 }
                 Decode {
                     full: ["SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"][ov.now.getDay()]
+                          + "  ·  " + ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"][ov.now.getMonth()]
+                          + " " + ov.now.getFullYear()
                     t: ov.lin(0.5, 0.8); seed: 7
-                    font.pixelSize: 12 * ov.u; font.letterSpacing: 3 * ov.u
+                    font.pixelSize: 9 * ov.u; font.letterSpacing: 2 * ov.u
                 }
-                HText {
-                    text: ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"][ov.now.getMonth()] + " " + ov.now.getFullYear()
-                          + "   ·   " + ov.pad(ov.now.getSeconds()) + " s"
-                    color: ov.c(0.55); font.family: "Bahnschrift"; font.pixelSize: 9 * ov.u; font.letterSpacing: 2 * ov.u
-                }
-            }
-        }
-
-        // ---- 왼쪽 가운데: 타이머 (돌고 있을 때만) ----
-        Fly {
-            d: 0.4; tilt: 22
-            visible: e > 0 && ov.timers.length > 0
-            x: 62 * ov.u; y: ov.height * 0.2 + 146 * ov.u
-            width: 300 * ov.u; height: 150 * ov.u
-            HoloPanel {
-                anchors.fill: parent; accent: ov.accent; fillAlpha: 0.82; cut: 12
-                title: "TIMERS"
-                tag: ov.timers.length + " ACTIVE"
-            }
-            Column {
-                x: 14 * ov.u; y: 32 * ov.u
-                width: parent.width - 28 * ov.u
-                spacing: 7 * ov.u
-                Repeater {
-                    model: ov.timers.slice(0, 4)
-                    Column {
-                        readonly property real rem: ov.left(modelData)
-                        readonly property real frac: rem / Math.max(1, modelData.total)
-                        width: parent.width
-                        spacing: 3 * ov.u
-                        Item {
-                            width: parent.width; height: 16 * ov.u
-                            HText { text: modelData.label; color: ov.hot; font.pixelSize: 12 * ov.u
-                                   width: parent.width - 80 * ov.u; elide: Text.ElideRight; anchors.verticalCenter: parent.verticalCenter }
-                            HText { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-                                   text: ov.hms(parent.parent.rem); color: parent.parent.frac < 0.1 ? ov.red : ov.hot
-                                   font.family: "Bahnschrift"; font.pixelSize: 14 * ov.u }
-                        }
-                        Rectangle {
-                            width: parent.width; height: 3 * ov.u; color: ov.c(0.15)
-                            Rectangle { width: parent.width * parent.parent.frac; height: parent.height
-                                        color: parent.parent.frac < 0.1 ? ov.red : ov.accent }
-                        }
-                    }
+                HText {   // 타이머가 돌면 가장 가까운 것, 아니면 초
+                    width: parent.width; elide: Text.ElideRight
+                    readonly property var t0: ov.timers.length ? ov.timers[0] : null
+                    text: t0 ? "⏱ " + t0.label + "  " + ov.hms(ov.left(t0)) + (ov.timers.length > 1 ? "  +" + (ov.timers.length - 1) : "")
+                             : ov.pad(ov.now.getSeconds()) + " SEC  ·  SESSION " + ov.hms(Math.max(0, (ov.now.getTime() - ov.engagedAt) / 1000))
+                    color: t0 ? (ov.left(t0) / Math.max(1, t0.total) < 0.1 ? ov.red : ov.hot) : ov.c(0.6)
+                    font.family: "Bahnschrift"; font.pixelSize: (t0 ? 11 : 8) * ov.u; font.letterSpacing: 1.5 * ov.u
                 }
             }
         }
 
-        // ---- 왼쪽 아래: 날씨 ----
-        Fly {
-            id: wx
-            d: 0.46; tilt: 22
-            x: 62 * ov.u; width: 300 * ov.u; height: 214 * ov.u
-            y: ov.height * 0.8 - height
-            readonly property bool ready: ov.weather.temp !== undefined
-            HoloPanel {
-                anchors.fill: parent; accent: ov.accent; fillAlpha: 0.82; cut: 12
-                title: "ATMOSPHERICS"; tag: wx.ready ? String(ov.weather.loc).toUpperCase() : ""
-            }
-            HText {
-                visible: !wx.ready
-                anchors.centerIn: parent
-                text: ov.weather.error ? "WEATHER LINK OFFLINE" : "SCANNING ATMOSPHERE" + ".".repeat(1 + ov.tick % 3)
-                color: ov.weather.error ? ov.red : ov.c(0.75)
-                font.family: "Bahnschrift"; font.pixelSize: 11 * ov.u; font.letterSpacing: 2 * ov.u
-            }
-            // 기온 + 강수 확률 고리
-            Item {
-                id: wring
-                visible: wx.ready
-                x: 14 * ov.u; y: 32 * ov.u
-                width: 96 * ov.u; height: width
-                Shape {
-                    anchors.fill: parent
-                    preferredRendererType: Shape.CurveRenderer
-                    ShapePath {
-                        strokeColor: ov.c(0.16); strokeWidth: 5 * ov.u; fillColor: "transparent"
-                        PathAngleArc { centerX: wring.width / 2; centerY: wring.width / 2; radiusX: 44 * ov.u; radiusY: 44 * ov.u; startAngle: 135; sweepAngle: 270 }
-                    }
-                    ShapePath {
-                        strokeColor: ov.accent; strokeWidth: 5 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
-                        PathAngleArc { centerX: wring.width / 2; centerY: wring.width / 2; radiusX: 44 * ov.u; radiusY: 44 * ov.u
-                                       startAngle: 135; sweepAngle: 270 * Math.max(0.005, (ov.weather.rain || 0) / 100) * wx.e }
-                    }
-                }
-                HText {
-                    anchors.centerIn: parent; anchors.verticalCenterOffset: -4 * ov.u
-                    text: (ov.weather.temp !== undefined ? ov.weather.temp : "-") + "°"
-                    color: ov.hot; font.family: "Bahnschrift"; font.pixelSize: 32 * ov.u; font.weight: Font.Light
-                }
-                HText {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    y: parent.height - 18 * ov.u
-                    text: "RAIN " + (ov.weather.rain || 0) + "%"
-                    color: ov.c(0.75); font.family: "Bahnschrift"; font.pixelSize: 8 * ov.u; font.letterSpacing: 1.5 * ov.u
-                }
-            }
-            Column {
-                visible: wx.ready
-                x: 124 * ov.u; y: 36 * ov.u
-                width: parent.width - 138 * ov.u
-                spacing: 4 * ov.u
-                HText { width: parent.width; elide: Text.ElideRight; text: ov.weather.desc || ""; color: ov.hot; font.pixelSize: 14 * ov.u }
-                HText { text: "체감 " + ov.weather.feels + "°   ·   습도 " + ov.weather.humidity + "%"; color: ov.c(0.85); font.pixelSize: 10 * ov.u }
-                HText { text: "바람 " + ov.weather.wind + " km/h"; color: ov.c(0.85); font.pixelSize: 10 * ov.u }
-                HText { text: "최고 " + ov.weather.max + "°  /  최저 " + ov.weather.min + "°"; color: ov.hot; font.pixelSize: 11 * ov.u }
-            }
-            // 오늘 3시간 간격 기온
-            Row {
-                id: hourly
-                visible: wx.ready
-                x: 14 * ov.u; y: 138 * ov.u
-                spacing: 6 * ov.u
-                readonly property var hs: ov.weather.hourly || []
-                readonly property real lo: Math.min.apply(null, hs.map(h => h.t).concat([99])) - 1
-                readonly property real hi: Math.max.apply(null, hs.map(h => h.t).concat([-99])) + 1
-                readonly property int nowSlot: Math.floor(ov.now.getHours() / 3)
-                Repeater {
-                    model: hourly.hs
-                    Column {
-                        spacing: 2 * ov.u
-                        width: 28 * ov.u
-                        readonly property bool cur: index === hourly.nowSlot
-                        HText { anchors.horizontalCenter: parent.horizontalCenter; text: modelData.t + "°"
-                               color: parent.cur ? ov.hot : ov.c(0.7); font.family: "Bahnschrift"; font.pixelSize: 8 * ov.u }
-                        Item {
-                            width: parent.width; height: 24 * ov.u
-                            Rectangle {
-                                anchors.bottom: parent.bottom; anchors.horizontalCenter: parent.horizontalCenter
-                                width: 8 * ov.u
-                                height: Math.max(2, parent.height * (modelData.t - hourly.lo) / Math.max(1, hourly.hi - hourly.lo) * wx.e)
-                                color: parent.parent.cur ? ov.hot : ov.c(0.45 + 0.4 * modelData.rain / 100)
-                            }
-                        }
-                        HText { anchors.horizontalCenter: parent.horizontalCenter; text: ov.pad(modelData.h)
-                               color: parent.cur ? ov.hot : ov.c(0.5); font.family: "Bahnschrift"; font.pixelSize: 8 * ov.u }
-                    }
-                }
-            }
-        }
-
-        // ---- 오른쪽 가운데: 진단 게이지 ----
-        Fly {
-            d: 0.42; tilt: -22
-            width: 300 * ov.u; height: 150 * ov.u
-            x: ov.width - 62 * ov.u - width; y: ov.height * 0.2
-            HoloPanel { anchors.fill: parent; accent: ov.accent; fillAlpha: 0.82; cut: 12; title: "DIAGNOSTICS"; tag: "SUBSYSTEMS" }
-            Row {
-                x: 16 * ov.u; y: 32 * ov.u
-                spacing: 24 * ov.u
-                Gauge { v: ov.stats.cpu || 0; label: "CPU"; e: ov.seg(0.5, 0.85) }
-                Gauge { v: ov.stats.ram || 0; label: "MEMORY"; e: ov.seg(0.55, 0.9) }
-                // 저장공간: 파이
-                Item {
-                    id: pie
-                    width: 70 * ov.u; height: width + 16 * ov.u
-                    readonly property real used: (ov.stats.disk || 0) / 100 * ov.seg(0.6, 0.95)
-                    Shape {
-                        width: pie.width; height: pie.width
-                        preferredRendererType: Shape.CurveRenderer
-                        ShapePath {
-                            strokeColor: ov.c(0.5); strokeWidth: 1; fillColor: ov.c(0.08)
-                            PathAngleArc { centerX: pie.width / 2; centerY: pie.width / 2; radiusX: pie.width / 2 - 3; radiusY: pie.width / 2 - 3; startAngle: 0; sweepAngle: 360 }
-                        }
-                        ShapePath {
-                            strokeColor: "transparent"; fillColor: ov.c(0.75)
-                            PathMove { x: pie.width / 2; y: pie.width / 2 }
-                            PathAngleArc { moveToStart: false; centerX: pie.width / 2; centerY: pie.width / 2; radiusX: pie.width / 2 - 7; radiusY: pie.width / 2 - 7
-                                           startAngle: -90; sweepAngle: 360 * Math.max(0.002, pie.used) }
-                            PathLine { x: pie.width / 2; y: pie.width / 2 }
-                        }
-                    }
-                    HText { anchors.horizontalCenter: parent.horizontalCenter; y: pie.width / 2 - height / 2
-                           text: Math.round(pie.used * 100) + "%"; color: "#ffffff"; font.family: "Bahnschrift"; font.pixelSize: 12 * ov.u
-                           style: Text.Outline; styleColor: Qt.rgba(0, 0.1, 0.15, 0.6) }
-                    Label { anchors.horizontalCenter: parent.horizontalCenter; y: pie.width - 4 * ov.u; text: "STORAGE"; font.pixelSize: 8 * ov.u }
-                }
-            }
-            Row {
-                x: 16 * ov.u; y: 124 * ov.u
-                spacing: 18 * ov.u
-                Label { text: "▼ " + ov.rate(ov.stats.down); color: ov.hot; font.pixelSize: 9 * ov.u }
-                Label { text: "▲ " + ov.rate(ov.stats.up); color: ov.hot; font.pixelSize: 9 * ov.u }
-                Label { text: "SYNC " + (97 + ov.rnd(ov.slow) * 2.9).toFixed(1) + "%"; font.pixelSize: 9 * ov.u }
-            }
-        }
-
-        // ---- 오른쪽 아래: 통신 기록 ----
-        Fly {
-            d: 0.5; tilt: -22
-            width: 300 * ov.u; height: 214 * ov.u
-            x: ov.width - 62 * ov.u - width; y: ov.height * 0.8 - height
-            HoloPanel { anchors.fill: parent; accent: ov.accent; fillAlpha: 0.82; cut: 12; title: "COMMS LINK"; tag: jarvis.chatMode ? "CHAT MODE" : "SECURE" }
-            Column {
-                x: 14 * ov.u; y: 32 * ov.u
-                width: parent.width - 28 * ov.u
-                spacing: 5 * ov.u
-                Label { text: "▸ OPERATOR"; font.pixelSize: 8 * ov.u }
-                HText {
-                    width: parent.width; text: jarvis.userText || "—"
-                    color: ov.hot; font.pixelSize: 12 * ov.u; elide: Text.ElideRight; maximumLineCount: 2; wrapMode: Text.Wrap
-                }
-                Label { text: "▸ J.A.R.V.I.S"; font.pixelSize: 8 * ov.u }
-                HText {
-                    width: parent.width; text: jarvis.replyText || "—"
-                    color: ov.c(0.95); font.pixelSize: 12 * ov.u; elide: Text.ElideRight; maximumLineCount: 2; wrapMode: Text.Wrap
-                }
-                Rectangle { width: parent.width; height: 1; color: ov.c(0.25) }
-                Repeater {
-                    model: acts
-                    Row {
-                        spacing: 6 * ov.u
-                        Rectangle {
-                            width: 5 * ov.u; height: width; rotation: 45
-                            anchors.verticalCenter: parent.verticalCenter
-                            color: status === "error" ? ov.red : status === "run" ? "#ffb347" : "#53ffa8"
-                        }
-                        HText { text: t; color: ov.c(0.55); font.family: "Bahnschrift"; font.pixelSize: 9 * ov.u }
-                        HText { text: label; color: ov.c(0.85); font.pixelSize: 10 * ov.u; elide: Text.ElideRight; width: 220 * ov.u }
-                    }
-                }
-            }
-        }
-
-        // ---- 가운데 왼쪽 아래: 시스템 로그 (착용 점검 → 이후 상태 · 추적 · 작업 기록) ----
-        Fly {
-            d: 0.48
-            width: 206 * ov.u; height: 206 * ov.u
-            x: ov.cx - 430 * ov.u; y: ov.cy + 92 * ov.u
-            HoloPanel {
-                anchors.fill: parent; accent: ov.accent; fillAlpha: 0.78; cut: 10
-                title: "SYSLOG"; tag: ov.booted ? "LIVE" : "SUIT-UP " + Math.round(100 * ov.bootStep / ov.bootCount) + "%"
-            }
-            Column {
-                x: 10 * ov.u; y: 28 * ov.u
-                width: parent.width - 20 * ov.u
-                Repeater {
-                    model: syslog
-                    Item {
-                        id: row
-                        width: parent.width; height: 15 * ov.u
-                        property real tp: 0
-                        NumberAnimation on tp { from: 0; to: 1; duration: ov.calm ? 0 : 420 }
-                        readonly property color lc: lv === "err" || lv === "lock" ? ov.red : lv === "warn" ? "#ffb347"
-                                                  : lv === "ok" ? "#53ffa8" : ov.hot
-                        HText {
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: ts; color: ov.c(0.42)
-                            font.family: "Bahnschrift"; font.pixelSize: 8 * ov.u
-                        }
-                        HText {
-                            x: 44 * ov.u; anchors.verticalCenter: parent.verticalCenter
-                            width: Math.max(0, row.width - x - rowVal.implicitWidth - 6 * ov.u); elide: Text.ElideRight
-                            text: ov.decode(tag, row.tp, index * 3 + 1)
-                            color: lv === "lock" ? ov.red : ov.c(0.88)
-                            font.family: "Bahnschrift"; font.pixelSize: 9 * ov.u; font.letterSpacing: 1 * ov.u
-                        }
-                        HText {
-                            id: rowVal
-                            anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-                            text: ov.decode(val, Math.max(0, row.tp * 1.6 - 0.6), index * 5 + 2)
-                            color: row.lc
-                            font.family: "Bahnschrift"; font.pixelSize: 9 * ov.u; font.weight: Font.DemiBold
-                        }
-                    }
-                }
-            }
-            HText {
-                x: 10 * ov.u; y: parent.height - 18 * ov.u
-                text: "SESSION " + ov.hms(Math.max(0, (ov.now.getTime() - ov.engagedAt) / 1000))
-                color: ov.c(0.55); font.family: "Bahnschrift"; font.pixelSize: 8 * ov.u; font.letterSpacing: 1.5 * ov.u
-            }
-            Rectangle {   // 끝에서 깜빡이는 커서
-                anchors.right: parent.right; anchors.rightMargin: 10 * ov.u
-                y: parent.height - 16 * ov.u
-                width: 6 * ov.u; height: 9 * ov.u
-                color: ov.hot
-                visible: ov.tick % 14 < 7 || !ov.booted
-            }
-        }
-
-        // ---- 가운데 오른쪽 아래: 시스템 무결성 (사람 모양 도식, 부위마다 실제 하위 시스템 상태) ----
-        Fly {
+        // ---- VITALS: 사람 모양 도식, 부위마다 실제 하위 시스템 상태 ----
+        Wid {
             id: integ
-            d: 0.52
-            width: 206 * ov.u; height: 206 * ov.u
-            x: ov.cx + 224 * ov.u; y: ov.cy + 92 * ov.u
+            side: -1; d: 0.42
+            y: wTime.y + wTime.height + ov.gapY; height: 232 * ov.u
+            title: "VITALS"
+            tag: integ.errs ? integ.errs + " FAULT" : integ.warns ? integ.warns + " CAUTION" : "NOMINAL"
             readonly property var s: ov.stats
             readonly property real cpu: s.cpu || 0
             readonly property real ram: s.ram || 0
@@ -1447,17 +1196,13 @@ Window {
             readonly property int errs: ["ai", "aud", "cpu", "mem", "dsk", "pwr"].filter(k => lvl[k] === 2).length
             readonly property int score: Math.max(0, 100 - 8 * warns - 22 * errs)
             function col(n, a) {
-                return n === 2 ? ov.rc(a) : n === 1 ? Qt.rgba(1, 0.70, 0.28, a) : n === 3 ? Qt.rgba(ov.hot.r, ov.hot.g, ov.hot.b, a) : ov.c(a)
+                return n === 2 ? ov.rc(a) : n === 1 ? Qt.rgba(1, 0.70, 0.28, a) : n === 3 ? ov.hc(a) : ov.c(a)
             }
-            readonly property real fx: 65 * ov.u      // 도식 왼쪽 위 (76 × 150 단위)
-            readonly property real fy: 30 * ov.u
+            readonly property real fs: 1.1 * ov.u               // 도식 축척 (76 × 150 단위)
+            readonly property real fx: (width - 76 * fs) / 2
+            readonly property real fy: hh + 10 * ov.u
             readonly property real reveal: ov.seg(0.55, 0.95)
-            HoloPanel {
-                anchors.fill: parent; accent: ov.accent; fillAlpha: 0.78; cut: 10
-                title: "VITALS"
-                tag: integ.errs ? integ.errs + " FAULT" : integ.warns ? integ.warns + " CAUTION" : "NOMINAL"
-            }
-            // 부위: [키, 다각형 (76 × 150 단위)]
+            // 부위: [키, 다각형]
             Repeater {
                 model: [
                     ["ai",  [[28, 4], [48, 4], [52, 14], [50, 26], [38, 30], [26, 26], [24, 14]]],
@@ -1472,20 +1217,20 @@ Window {
                     readonly property int n: integ.lvl[modelData[0]]
                     visible: integ.reveal > 0 && index < 7 * integ.reveal + 0.5
                     x: integ.fx; y: integ.fy
-                    width: 76 * ov.u; height: 150 * ov.u
+                    width: 76 * integ.fs; height: 150 * integ.fs
                     preferredRendererType: Shape.CurveRenderer
                     ShapePath {
                         strokeColor: integ.col(n, 0.9); strokeWidth: 1.2
-                        fillColor: integ.col(n, n === 0 ? 0.13 : n === 3 ? 0.3 + 0.25 * ov.pulse : 0.38)
+                        fillColor: integ.col(n, n === 0 ? 0.1 : n === 3 ? 0.3 + 0.25 * ov.pulse : 0.38)
                         joinStyle: ShapePath.MiterJoin
-                        PathPolyline { path: modelData[1].concat([modelData[1][0]]).map(q => Qt.point(q[0] * ov.u, q[1] * ov.u)) }
+                        PathPolyline { path: modelData[1].concat([modelData[1][0]]).map(q => Qt.point(q[0] * integ.fs, q[1] * integ.fs)) }
                     }
                 }
             }
             // 가슴의 동력원: 전원 상태 · 목소리에 맞춰 빛남
             Rectangle {
-                readonly property real r: (6 + 2.5 * ov.lvl) * ov.u
-                x: integ.fx + 38 * ov.u - r; y: integ.fy + 48 * ov.u - r
+                readonly property real r: (6 + 2.5 * ov.lvl) * integ.fs
+                x: integ.fx + 38 * integ.fs - r; y: integ.fy + 48 * integ.fs - r
                 width: r * 2; height: width; radius: r
                 visible: integ.reveal > 0.3
                 color: integ.col(integ.lvl.pwr === 0 ? 3 : integ.lvl.pwr, 0.35 + 0.4 * ov.pulse)
@@ -1494,57 +1239,56 @@ Window {
             // 위에서 아래로 훑는 검사선
             Rectangle {
                 visible: ov.p >= 1
-                x: integ.fx - 4 * ov.u; width: 84 * ov.u; height: 1.5
-                y: integ.fy + 150 * ov.u * ov.scan
+                x: integ.fx - 6 * ov.u; width: 76 * integ.fs + 12 * ov.u; height: 1.5
+                y: integ.fy + 150 * integ.fs * ov.scan
                 color: ov.c(0.75)
             }
-            // 이름표 + 지시선: [키, 이름, 왼쪽?, 줄 y, 닿는 점 x, y]
+            // 이름표 + 지시선: [키, 이름, 왼쪽?, 줄 y, 닿는 점 x, y] (도식 단위)
             Repeater {
                 model: [["ai", "AI CORE", true, 4, 25, 14], ["cpu", "CPU", true, 40, 19, 50], ["aud", "AUDIO IN", true, 76, 4, 70],
-                        ["dsk", "STORAGE", true, 112, 23, 128], ["pwr", "POWER", false, 4, 44, 48], ["vox", "VOICE OUT", false, 40, 72, 66],
-                        ["mem", "MEMORY", false, 76, 51, 86], ["net", "NETWORK", false, 112, 53, 128]]
+                        ["dsk", "STORAGE", true, 116, 23, 128], ["pwr", "POWER", false, 4, 44, 48], ["vox", "VOICE OUT", false, 40, 72, 66],
+                        ["mem", "MEMORY", false, 76, 51, 86], ["net", "NETWORK", false, 116, 53, 128]]
                 Item {
                     readonly property bool lf: modelData[2]
                     readonly property int n: integ.lvl[modelData[0]]
+                    readonly property real ly: integ.fy + (modelData[3] + 7) * integ.fs
                     visible: integ.reveal > 0.2 + (index % 4) * 0.18
                     Shape {
-                        x: 0; y: 0
                         ShapePath {
                             strokeColor: integ.col(n, 0.55); strokeWidth: 1; fillColor: "transparent"
                             PathPolyline { path: [
-                                Qt.point(lf ? integ.fx - 8 * ov.u : integ.fx + 84 * ov.u, integ.fy + (modelData[3] + 7) * ov.u),
-                                Qt.point(lf ? integ.fx - 4 * ov.u : integ.fx + 80 * ov.u, integ.fy + (modelData[3] + 7) * ov.u),
-                                Qt.point(integ.fx + modelData[4] * ov.u, integ.fy + modelData[5] * ov.u)
+                                Qt.point(lf ? integ.fx - 10 * ov.u : integ.fx + 76 * integ.fs + 10 * ov.u, ly),
+                                Qt.point(lf ? integ.fx - 5 * ov.u : integ.fx + 76 * integ.fs + 5 * ov.u, ly),
+                                Qt.point(integ.fx + modelData[4] * integ.fs, integ.fy + modelData[5] * integ.fs)
                             ] }
                         }
                     }
                     Rectangle {
                         width: 3 * ov.u; height: width; radius: width / 2; color: integ.col(n, 1)
-                        x: integ.fx + modelData[4] * ov.u - width / 2; y: integ.fy + modelData[5] * ov.u - width / 2
+                        x: integ.fx + modelData[4] * integ.fs - width / 2; y: integ.fy + modelData[5] * integ.fs - width / 2
                     }
                     Column {
-                        x: lf ? integ.fx - 10 * ov.u - width : integ.fx + 86 * ov.u
-                        y: integ.fy + modelData[3] * ov.u
+                        x: lf ? integ.fx - 12 * ov.u - width : integ.fx + 76 * integ.fs + 12 * ov.u
+                        y: integ.fy + modelData[3] * integ.fs
                         HText {
                             anchors.right: lf ? parent.right : undefined
-                            text: modelData[1]; color: ov.c(0.6)
-                            font.family: "Bahnschrift"; font.pixelSize: 7 * ov.u; font.letterSpacing: 1 * ov.u; font.weight: Font.DemiBold
+                            text: modelData[1]; color: ov.c(0.62)
+                            font.family: "Bahnschrift"; font.pixelSize: 8 * ov.u; font.letterSpacing: 1 * ov.u; font.weight: Font.DemiBold
                         }
                         HText {
                             anchors.right: lf ? parent.right : undefined
                             text: integ.val[modelData[0]]
                             color: n === 0 ? ov.hot : integ.col(n, 1)
-                            font.family: "Bahnschrift"; font.pixelSize: 10 * ov.u
+                            font.family: "Bahnschrift"; font.pixelSize: 12 * ov.u
                         }
                     }
                 }
             }
             // 아래: 무결성 점수 막대
             Item {
-                x: 10 * ov.u; y: parent.height - 20 * ov.u
-                width: parent.width - 20 * ov.u; height: 12 * ov.u
+                y: integ.height - 16 * ov.u
+                width: integ.width; height: 10 * ov.u
                 HText {
-                    id: integLbl
                     anchors.verticalCenter: parent.verticalCenter
                     text: "INTEGRITY " + Math.round(integ.score * integ.reveal) + "%"
                     color: integ.errs ? ov.red : ov.hot
@@ -1554,44 +1298,248 @@ Window {
                     anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
                     spacing: 2 * ov.u
                     Repeater {
-                        model: 20
+                        model: 25
                         Rectangle {
-                            width: 3 * ov.u; height: 8 * ov.u
-                            color: index < Math.round(integ.score * integ.reveal / 5)
-                                   ? (integ.errs ? ov.red : integ.warns ? "#ffb347" : ov.accent) : ov.c(0.14)
+                            width: 3 * ov.u; height: 7 * ov.u
+                            color: index < Math.round(integ.score * integ.reveal / 4)
+                                   ? (integ.errs ? ov.red : integ.warns ? ov.amber : ov.accent) : ov.c(0.14)
                         }
                     }
                 }
             }
         }
 
-        // ---- 아래 가운데: 음성 파형 ----
-        Fly {
-            d: 0.55
-            width: 420 * ov.u; height: 70 * ov.u
-            x: ov.cx - width / 2; y: ov.cy + reticle.rr + 70 * ov.u
-            Row {
-                anchors.horizontalCenter: parent.horizontalCenter
-                height: 44 * ov.u
-                spacing: 3 * ov.u
+        // ---- SYSLOG: 착용 점검 → 이후 상태 · 추적 · 작업 기록 ----
+        Wid {
+            id: wLog
+            side: -1; d: 0.5
+            y: integ.y + integ.height + ov.gapY; height: 188 * ov.u
+            title: "SYSLOG"
+            tag: ov.down > 0 ? "SHUTDOWN" : ov.booted ? "LIVE" : "SUIT-UP " + Math.round(100 * ov.bootStep / ov.bootCount) + "%"
+            Column {
+                y: wLog.hh + 6 * ov.u
+                width: wLog.width
                 Repeater {
-                    model: 41
+                    model: syslog
+                    Item {
+                        id: row
+                        width: parent.width; height: 15 * ov.u
+                        property real tp: 0
+                        NumberAnimation on tp { from: 0; to: 1; duration: ov.calm ? 0 : 420 }
+                        readonly property color lc: lv === "err" || lv === "lock" ? ov.red : lv === "warn" ? ov.amber
+                                                  : lv === "ok" ? "#53ffa8" : ov.hot
+                        HText {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: ts; color: ov.c(0.45)
+                            font.family: "Bahnschrift"; font.pixelSize: 8 * ov.u
+                        }
+                        HText {
+                            x: 48 * ov.u; anchors.verticalCenter: parent.verticalCenter
+                            width: Math.max(0, row.width - x - rowVal.implicitWidth - 8 * ov.u); elide: Text.ElideRight
+                            text: ov.decode(tag, row.tp, index * 3 + 1)
+                            color: lv === "lock" ? ov.red : ov.hc(0.88)
+                            font.family: "Bahnschrift"; font.pixelSize: 9 * ov.u; font.letterSpacing: 1 * ov.u
+                        }
+                        HText {
+                            id: rowVal
+                            anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                            text: ov.decode(val, Math.max(0, row.tp * 1.6 - 0.6), index * 5 + 2)
+                            color: row.lc
+                            font.family: "Bahnschrift"; font.pixelSize: 9 * ov.u; font.weight: Font.DemiBold
+                        }
+                    }
+                }
+            }
+            Rectangle {   // 끝에서 깜빡이는 커서
+                anchors.right: parent.right
+                y: parent.height - 14 * ov.u
+                width: 6 * ov.u; height: 9 * ov.u
+                color: ov.hot
+                visible: ov.tick % 14 < 7 || !ov.booted
+            }
+        }
+
+        // ================================================================ 오른쪽 열
+        // ---- 진단: CPU · 메모리 · 저장공간 + 부하 기록 + 통신량 ----
+        Wid {
+            id: wDiag
+            side: 1; d: 0.38
+            title: "DIAGNOSTICS"; tag: "SUBSYSTEMS"
+            y: ov.colTop; height: 150 * ov.u
+            Row {
+                x: 8 * ov.u; y: wDiag.hh + 8 * ov.u
+                spacing: 26 * ov.u
+                Gauge { v: ov.stats.cpu || 0; label: "CPU"; e: ov.seg(0.5, 0.85) }
+                Gauge { v: ov.stats.ram || 0; label: "MEMORY"; e: ov.seg(0.55, 0.9) }
+                // 저장공간: 파이
+                Item {
+                    id: pie
+                    width: 70 * ov.u; height: width + 16 * ov.u
+                    readonly property real used: (ov.stats.disk || 0) / 100 * ov.seg(0.6, 0.95)
+                    Shape {
+                        width: pie.width; height: pie.width
+                        preferredRendererType: Shape.CurveRenderer
+                        ShapePath {
+                            strokeColor: ov.c(0.5); strokeWidth: 1; fillColor: "transparent"
+                            PathAngleArc { centerX: pie.width / 2; centerY: pie.width / 2; radiusX: pie.width / 2 - 3; radiusY: pie.width / 2 - 3; startAngle: 0; sweepAngle: 360 }
+                        }
+                        ShapePath {
+                            strokeColor: "transparent"; fillColor: ov.c(0.45)
+                            PathMove { x: pie.width / 2; y: pie.width / 2 }
+                            PathAngleArc { moveToStart: false; centerX: pie.width / 2; centerY: pie.width / 2; radiusX: pie.width / 2 - 8; radiusY: pie.width / 2 - 8
+                                           startAngle: -90; sweepAngle: 360 * Math.max(0.002, pie.used) }
+                            PathLine { x: pie.width / 2; y: pie.width / 2 }
+                        }
+                    }
+                    HText { anchors.horizontalCenter: parent.horizontalCenter; y: pie.width / 2 - height / 2
+                           text: Math.round(pie.used * 100) + "%"; color: "#ffffff"; font.family: "Bahnschrift"; font.pixelSize: 13 * ov.u }
+                    Label { anchors.horizontalCenter: parent.horizontalCenter; y: pie.width - 2 * ov.u; text: "STORAGE"; font.pixelSize: 8 * ov.u }
+                }
+            }
+            // 부하 기록 (48초)
+            Row {
+                x: 8 * ov.u; y: wDiag.height - 6 * ov.u - 16 * ov.u
+                height: 16 * ov.u
+                spacing: 1
+                Repeater {
+                    model: ov.cpuHist
                     Rectangle {
-                        readonly property real centerFade: 1 - Math.abs(index - 20) / 21
-                        readonly property real wob: 0.5 + 0.5 * Math.sin(ov.sweep * Math.PI / 180 * 6 + index * 0.9)
-                        width: 4 * ov.u
-                        height: Math.max(2, 44 * ov.u * centerFade * (0.08 + ov.lvl * (0.5 + 0.5 * wob)))
-                        anchors.verticalCenter: parent.verticalCenter
-                        radius: 1
-                        color: ov.c(0.35 + 0.6 * centerFade)
+                        width: 2 * ov.u; height: Math.max(1, 16 * ov.u * modelData / 100)
+                        anchors.bottom: parent.bottom
+                        color: ov.c(0.25 + 0.6 * (index / Math.max(1, ov.cpuHist.length)))
                     }
                 }
             }
             Label {
-                anchors.horizontalCenter: parent.horizontalCenter
-                y: 50 * ov.u
-                text: "VOICE CHANNEL  ·  " + (jarvis.wakeEnabled ? "WAKE WORD ARMED" : "HOTKEY " + jarvis.hotkeyText)
-                font.pixelSize: 9 * ov.u
+                anchors.right: parent.right; y: wDiag.height - 8 * ov.u - height
+                text: "LOAD 48 s   ▼ " + ov.rate(ov.stats.down) + "   ▲ " + ov.rate(ov.stats.up)
+                color: ov.hc(0.85); font.pixelSize: 8 * ov.u; font.letterSpacing: 1 * ov.u
+            }
+        }
+
+        // ---- 날씨 ----
+        Wid {
+            id: wx
+            side: 1; d: 0.46
+            y: wDiag.y + wDiag.height + ov.gapY; height: 188 * ov.u
+            readonly property bool ready: ov.weather.temp !== undefined
+            title: "ATMOSPHERICS"; tag: wx.ready ? String(ov.weather.loc).toUpperCase() : ""
+            HText {
+                visible: !wx.ready
+                anchors.centerIn: parent
+                text: ov.weather.error ? "WEATHER LINK OFFLINE" : "SCANNING ATMOSPHERE" + ".".repeat(1 + ov.tick % 3)
+                color: ov.weather.error ? ov.red : ov.c(0.75)
+                font.family: "Bahnschrift"; font.pixelSize: 11 * ov.u; font.letterSpacing: 2 * ov.u
+            }
+            // 기온 + 강수 확률 고리
+            Item {
+                id: wring
+                visible: wx.ready
+                x: 4 * ov.u; y: wx.hh + 8 * ov.u
+                width: 92 * ov.u; height: width
+                Shape {
+                    anchors.fill: parent
+                    preferredRendererType: Shape.CurveRenderer
+                    ShapePath {
+                        strokeColor: ov.c(0.16); strokeWidth: 4 * ov.u; fillColor: "transparent"
+                        PathAngleArc { centerX: wring.width / 2; centerY: wring.width / 2; radiusX: 42 * ov.u; radiusY: 42 * ov.u; startAngle: 135; sweepAngle: 270 }
+                    }
+                    ShapePath {
+                        strokeColor: ov.accent; strokeWidth: 4 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                        PathAngleArc { centerX: wring.width / 2; centerY: wring.width / 2; radiusX: 42 * ov.u; radiusY: 42 * ov.u
+                                       startAngle: 135; sweepAngle: 270 * Math.max(0.005, (ov.weather.rain || 0) / 100) * wx.e }
+                    }
+                }
+                HText {
+                    anchors.centerIn: parent; anchors.verticalCenterOffset: -4 * ov.u
+                    text: (ov.weather.temp !== undefined ? ov.weather.temp : "-") + "°"
+                    color: ov.hot; font.family: "Bahnschrift"; font.pixelSize: 32 * ov.u; font.weight: Font.Light
+                }
+                HText {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    y: parent.height - 18 * ov.u
+                    text: "RAIN " + (ov.weather.rain || 0) + "%"
+                    color: ov.c(0.75); font.family: "Bahnschrift"; font.pixelSize: 8 * ov.u; font.letterSpacing: 1.5 * ov.u
+                }
+            }
+            Column {
+                visible: wx.ready
+                x: 112 * ov.u; y: wx.hh + 12 * ov.u
+                width: wx.width - x
+                spacing: 4 * ov.u
+                HText { width: parent.width; elide: Text.ElideRight; text: ov.weather.desc || ""; color: ov.hot; font.pixelSize: 15 * ov.u }
+                HText { text: "체감 " + ov.weather.feels + "°   ·   습도 " + ov.weather.humidity + "%"; color: ov.c(0.85); font.pixelSize: 10 * ov.u }
+                HText { text: "바람 " + ov.weather.wind + " km/h"; color: ov.c(0.85); font.pixelSize: 10 * ov.u }
+                HText { text: "최고 " + ov.weather.max + "°  /  최저 " + ov.weather.min + "°"; color: ov.hot; font.pixelSize: 11 * ov.u }
+            }
+            // 오늘 3시간 간격 기온
+            Row {
+                id: hourly
+                visible: wx.ready
+                x: 4 * ov.u; y: wx.height - 58 * ov.u
+                spacing: 7 * ov.u
+                readonly property var hs: ov.weather.hourly || []
+                readonly property real lo: Math.min.apply(null, hs.map(h => h.t).concat([99])) - 1
+                readonly property real hi: Math.max.apply(null, hs.map(h => h.t).concat([-99])) + 1
+                readonly property int nowSlot: Math.floor(ov.now.getHours() / 3)
+                Repeater {
+                    model: hourly.hs
+                    Column {
+                        spacing: 2 * ov.u
+                        width: 28 * ov.u
+                        readonly property bool cur: index === hourly.nowSlot
+                        HText { anchors.horizontalCenter: parent.horizontalCenter; text: modelData.t + "°"
+                               color: parent.cur ? ov.hot : ov.c(0.7); font.family: "Bahnschrift"; font.pixelSize: 8 * ov.u }
+                        Item {
+                            width: parent.width; height: 22 * ov.u
+                            Rectangle {
+                                anchors.bottom: parent.bottom; anchors.horizontalCenter: parent.horizontalCenter
+                                width: 6 * ov.u
+                                height: Math.max(2, parent.height * (modelData.t - hourly.lo) / Math.max(1, hourly.hi - hourly.lo) * wx.e)
+                                color: parent.parent.cur ? ov.hot : ov.c(0.45 + 0.4 * modelData.rain / 100)
+                            }
+                        }
+                        HText { anchors.horizontalCenter: parent.horizontalCenter; text: ov.pad(modelData.h)
+                               color: parent.cur ? ov.hot : ov.c(0.5); font.family: "Bahnschrift"; font.pixelSize: 8 * ov.u }
+                    }
+                }
+            }
+        }
+
+        // ---- 통신 기록 ----
+        Wid {
+            id: wComms
+            side: 1; d: 0.54
+            y: wx.y + wx.height + ov.gapY; height: 188 * ov.u
+            title: "COMMS LINK"; tag: jarvis.chatMode ? "CHAT MODE" : "SECURE"
+            Column {
+                y: wComms.hh + 8 * ov.u
+                width: wComms.width
+                spacing: 4 * ov.u
+                Label { text: "▸ OPERATOR"; font.pixelSize: 8 * ov.u }
+                HText {
+                    width: parent.width; text: jarvis.userText || "—"
+                    color: ov.hot; font.pixelSize: 12 * ov.u; elide: Text.ElideRight; maximumLineCount: 2; wrapMode: Text.Wrap
+                }
+                Label { text: "▸ J.A.R.V.I.S"; font.pixelSize: 8 * ov.u }
+                HText {
+                    width: parent.width; text: jarvis.replyText || "—"
+                    color: ov.hc(0.92); font.pixelSize: 12 * ov.u; elide: Text.ElideRight; maximumLineCount: 2; wrapMode: Text.Wrap
+                }
+                Rectangle { width: parent.width; height: 1; color: ov.c(0.25) }
+                Repeater {
+                    model: acts
+                    Row {
+                        spacing: 6 * ov.u
+                        Rectangle {
+                            width: 5 * ov.u; height: width; rotation: 45
+                            anchors.verticalCenter: parent.verticalCenter
+                            color: status === "error" ? ov.red : status === "run" ? ov.amber : "#53ffa8"
+                        }
+                        HText { text: t; color: ov.c(0.55); font.family: "Bahnschrift"; font.pixelSize: 9 * ov.u }
+                        HText { text: label; color: ov.c(0.85); font.pixelSize: 10 * ov.u; elide: Text.ElideRight; width: 220 * ov.u }
+                    }
+                }
             }
         }
     }
@@ -1600,13 +1548,13 @@ Window {
     Rectangle {
         anchors.fill: parent
         readonly property real t: ov.lin(0.0, 0.16)
-        visible: t > 0 && t < 1
+        visible: t > 0 && t < 1 && ov.down <= 0
         color: ov.hot
         opacity: Math.sin(t * Math.PI) * 0.22
     }
     Item {
         readonly property real t: ov.lin(0.0, 0.32)
-        visible: t > 0 && t < 1
+        visible: t > 0 && t < 1 && ov.down <= 0
         anchors.fill: parent
         opacity: Math.sin(t * Math.PI)
         Rectangle {
@@ -1637,16 +1585,48 @@ Window {
         }
     }
 
-    // ---- 페이스플레이트: 위아래 판이 닫혀 눈높이의 좁은 틈만 남기고, 봉인되면 덜컹한 뒤 다시 열린다 ----
+    // ---- 꺼지는 순간: 가로 한 줄 → 점 (옛 모니터 전원을 끄듯) ----
+    Item {
+        anchors.fill: parent
+        visible: !ov.calm && ov.down > 0.32 && ov.down < 0.76
+        Rectangle {
+            readonly property real squeeze: ov.din(0.48, 0.6)
+            width: Math.max(4 * ov.u, ov.width * (1 - 0.99 * squeeze)); height: (1.5 + 3 * (1 - ov.dlin(0.34, 0.48))) * ov.u
+            x: ov.cx - width / 2; y: ov.cy - height / 2
+            opacity: ov.dlin(0.32, 0.4) * (1 - ov.dlin(0.6, 0.64))
+            gradient: Gradient { orientation: Gradient.Horizontal
+                GradientStop { position: 0.0; color: ov.c(0) }
+                GradientStop { position: 0.15; color: ov.c(0.9) }
+                GradientStop { position: 0.5; color: "#ffffff" }
+                GradientStop { position: 0.85; color: ov.c(0.9) }
+                GradientStop { position: 1.0; color: ov.c(0) } }
+        }
+        Rectangle {   // 마지막 점
+            width: (10 + 34 * (1 - ov.dlin(0.6, 0.74))) * ov.u; height: width; radius: width / 2
+            x: ov.cx - width / 2; y: ov.cy - height / 2
+            opacity: ov.dlin(0.54, 0.6) * (1 - ov.dlin(0.62, 0.74))
+            gradient: Gradient {
+                GradientStop { position: 0.0; color: ov.c(0) }
+                GradientStop { position: 0.5; color: Qt.rgba(1, 1, 1, 0.9) }
+                GradientStop { position: 1.0; color: ov.c(0) }
+            }
+        }
+    }
+
+    // ---- 페이스플레이트 ----
+    //   켤 때: 위아래 판이 닫혀 눈높이의 좁은 틈만 남기고, 봉인되면 덜컹한 뒤 다시 열린다.
+    //   끌 때: 화면이 한 줄로 접히는 동안 판이 닫혀 덮고(덜컹), 위아래로 열리며 원래 화면이 드러난다.
     Item {
         id: plates
         anchors.fill: parent
-        readonly property real cover: ov.seal <= 1 ? ov.seal : 2 - ov.seal
+        readonly property real closeCover: ov.down < 0.44 ? 0 : ov.down < 0.56 ? Math.pow((ov.down - 0.44) / 0.12, 2)
+                                         : ov.down < 0.74 ? 1 : 1 - (1 - Math.pow(1 - (ov.down - 0.74) / 0.26, 3))
+        readonly property real cover: ov.down > 0 ? closeCover : ov.seal <= 1 ? ov.seal : 2 - ov.seal
         readonly property real slit: 34 * ov.u                     // 다 닫혔을 때 남는 눈높이 틈
         readonly property real dip: 22 * ov.u * cover               // 콧등: 가운데가 내려와 틈이 양쪽 눈 모양이 됨
         readonly property real hTop: (ov.cy - slit / 2) * cover
         readonly property real hBot: (ov.height - ov.cy - slit / 2) * cover
-        visible: !ov.skipSeal && cover > 0.002
+        visible: cover > 0.002 && (ov.down > 0 ? !ov.calm : !ov.skipSeal)
         transform: Translate { x: ov.joltX; y: ov.joltY }
         Shape {
             anchors.fill: parent
@@ -1696,7 +1676,7 @@ Window {
                 PathLine { x: ov.width; y: ov.height - plates.hBot * 0.55 }
             }
             ShapePath {   // 판 끝의 밝은 안쪽 선
-                strokeColor: Qt.rgba(ov.hot.r, ov.hot.g, ov.hot.b, 0.35 + 0.65 * plates.cover); strokeWidth: 1; fillColor: "transparent"
+                strokeColor: ov.hc(0.35 + 0.65 * plates.cover); strokeWidth: 1; fillColor: "transparent"
                 PathMove { x: 0; y: plates.hTop - 5 * ov.u }
                 PathLine { x: ov.cx - 330 * ov.u; y: plates.hTop - 5 * ov.u }
                 PathMove { x: ov.cx + 330 * ov.u; y: plates.hTop - 5 * ov.u }
@@ -1705,9 +1685,9 @@ Window {
                 PathLine { x: ov.width; y: ov.height - plates.hBot + 5 * ov.u }
             }
         }
-        // 봉인되는 순간 틈 사이로 번지는 빛줄기
+        // 봉인되는 순간 틈 사이로 번지는 빛줄기 (켤 때)
         Rectangle {
-            readonly property real t: ov.seal < 0.85 ? 0 : ov.seal <= 1 ? (ov.seal - 0.85) / 0.15 : Math.max(0, 1 - (ov.seal - 1) * 3)
+            readonly property real t: ov.down > 0 ? 0 : ov.seal < 0.85 ? 0 : ov.seal <= 1 ? (ov.seal - 0.85) / 0.15 : Math.max(0, 1 - (ov.seal - 1) * 3)
             visible: t > 0
             width: ov.width * (0.2 + 0.8 * t); height: 2 * ov.u
             x: ov.cx - width / 2; y: ov.cy - height / 2
@@ -1722,8 +1702,8 @@ Window {
             y: plates.hTop - height - 12 * ov.u
             visible: plates.cover > 0.5
             opacity: (plates.cover - 0.5) * 2
-            text: ov.seal < 1 ? "FACEPLATE  ·  SEALING" : "FACEPLATE  ·  SEALED"
-            color: ov.seal < 1 ? ov.c(0.8) : ov.hot
+            text: ov.down > 0 ? "J.A.R.V.I.S  ·  STANDING BY" : ov.seal < 1 ? "FACEPLATE  ·  SEALING" : "FACEPLATE  ·  SEALED"
+            color: ov.down > 0 || ov.seal >= 1 ? ov.hot : ov.c(0.8)
             font.family: "Bahnschrift"; font.pixelSize: 10 * ov.u; font.letterSpacing: 4 * ov.u; font.weight: Font.DemiBold
         }
     }
@@ -1738,15 +1718,15 @@ Window {
         color: "transparent"
         flags: Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
         readonly property real e: ov.seg(0.62, 0.94)
-        visible: ov.visible && e > 0
+        visible: ov.visible && e > 0 && ov.down <= 0
         width: Math.max(340, 420 * ov.u); height: Math.max(34, 36 * ov.u)
         x: ov.x + ov.cx - width / 2
-        y: ov.y + Math.min(ov.height - height - 24 * ov.u, ov.cy + reticle.rr + 150 * ov.u)
+        y: ov.y + Math.min(ov.height * 0.87 - height - 18 * ov.u, ov.cy + reticle.rr + 178 * ov.u)
 
         Item {
             anchors.fill: parent
             opacity: chatBar.e * ov.flick
-            HoloPanel { anchors.fill: parent; accent: ov.accent; fillAlpha: chatBar.active ? 0.94 : 0.82; cut: 9 }
+            HoloPanel { anchors.fill: parent; accent: ov.accent; fillAlpha: chatBar.active ? 0.9 : 0.62; cut: 9 }
             HText {
                 id: chatCaret
                 x: 14; anchors.verticalCenter: parent.verticalCenter
