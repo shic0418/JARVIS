@@ -19,7 +19,7 @@ import numpy as np
 import psutil
 from PySide6.QtCore import (Property, QObject, QPointF, QRect, QTimer, QUrl, Signal,
                             Slot)
-from PySide6.QtGui import (QAction, QColor, QGuiApplication, QIcon, QPainter, QPen,
+from PySide6.QtGui import (QAction, QColor, QCursor, QGuiApplication, QIcon, QPainter, QPen,
                            QPixmap, QRadialGradient)
 from PySide6.QtMultimedia import QSoundEffect
 from PySide6.QtQml import QQmlApplicationEngine
@@ -73,6 +73,7 @@ class Bridge(QObject):
     timersJsonChanged = Signal()
     weatherJsonChanged = Signal()
     targetJsonChanged = Signal()
+    gazeJsonChanged = Signal()
 
     actionEvent = Signal(str, str, str, str)     # id, label, status(run|ok|error), detail
     confirmRequest = Signal(str, str, str)       # id, title, detail
@@ -99,6 +100,7 @@ class Bridge(QObject):
     timersJson = _ro("timersJson", str, timersJsonChanged)      # 돌고 있는 타이머 [{label, end(ms), total(s)}]
     weatherJson = _ro("weatherJson", str, weatherJsonChanged)   # 액티브 모드: 날씨
     targetJson = _ro("targetJson", str, targetJsonChanged)      # 액티브 모드: 추적 박스 (지금 창 / 짚은 위치)
+    gazeJson = _ro("gazeJson", str, gazeJsonChanged)            # 액티브 모드: 시선 {x, y, src: eye|cursor, conf}
 
     def __init__(self, core: "Jarvis") -> None:
         super().__init__()
@@ -123,6 +125,7 @@ class Bridge(QObject):
         self._timersJson = "[]"
         self._weatherJson = "{}"
         self._targetJson = "{}"
+        self._gazeJson = "{}"
 
     def set(self, name: str, value) -> None:
         if getattr(self, "_" + name) != value:
@@ -244,6 +247,8 @@ class Jarvis(QObject):
         self._timers: dict[str, dict] = {}     # 돌고 있는 타이머 (id → label, end, total, qt)
         self._feed_stop = threading.Event()
         self._feed_stop.set()
+        self._gaze = None                  # 시선 추적 (액티브 모드 동안만 카메라를 연다, gaze.py)
+        self._gaze_last = (-1, -1, "")
         self._proc_watch: hud_feed.ProcWatch | None = None
         self._weather_at = 0.0
         self._point_until = 0.0
@@ -969,6 +974,7 @@ class Jarvis(QObject):
             self._focus_timer.setInterval(350)
             self._focus_timer.timeout.connect(self._update_target)
         self._focus_timer.start()
+        self._start_gaze()
         if self._feed_stop.is_set():
             self._feed_stop = threading.Event()
             threading.Thread(target=self._proc_loop, args=(self._feed_stop,), daemon=True, name="hud-procs").start()
@@ -980,9 +986,53 @@ class Jarvis(QObject):
         self._feed_stop.set()
         if hasattr(self, "_focus_timer"):
             self._focus_timer.stop()
+        self._stop_gaze()
         self._point_until = 0.0
         self._target_hwnd = 0
         self.bridge.set("targetJson", "{}")
+
+    # ---- 시선 추적: 홀로그램 고리가 눈이 가는 곳을 따라간다 ----
+    def _start_gaze(self) -> None:
+        mode = str(self.cfg.get("eye_tracking", "auto")).lower()
+        if mode == "off":
+            self.bridge.set("gazeJson", "{}")
+            return
+        if mode != "cursor":
+            from . import gaze
+            if self._gaze is None:
+                self._gaze = gaze.GazeTracker(int(self.cfg.get("eye_camera", 0) or 0))
+            if not self._gaze.start():
+                log.info("시선 추적: 카메라 · 모델을 쓸 수 없어 마우스 커서를 따라갑니다")
+        if not hasattr(self, "_gaze_timer"):
+            self._gaze_timer = QTimer(self)
+            self._gaze_timer.setInterval(50)
+            self._gaze_timer.timeout.connect(self._update_gaze)
+        self._gaze_last = (-1, -1, "")
+        self._gaze_timer.start()
+
+    def _stop_gaze(self) -> None:
+        if hasattr(self, "_gaze_timer"):
+            self._gaze_timer.stop()
+        if self._gaze is not None:
+            self._gaze.stop()           # 카메라를 바로 닫는다
+        self.bridge.set("gazeJson", "{}")
+
+    def _update_gaze(self) -> None:
+        """웹캠 시선이 있으면 그것을, 얼굴을 놓쳤거나 카메라가 없으면 마우스 커서를 HUD 좌표로 보낸다."""
+        if self.overlay is None or not self.bridge._activeMode:
+            return
+        g = self.overlay.geometry()
+        v = self._gaze.latest() if self._gaze is not None and self._gaze.running else None
+        if v is not None:
+            x, y, conf, src = v[0] * g.width(), v[1] * g.height(), v[2], "eye"
+        else:
+            c = QCursor.pos()
+            x, y, conf, src = c.x() - g.x(), c.y() - g.y(), 1.0, "cursor"
+        last = self._gaze_last
+        if src == last[2] and abs(x - last[0]) < 2 and abs(y - last[1]) < 2:
+            return
+        self._gaze_last = (x, y, src)
+        self.bridge.set("gazeJson", json.dumps({"x": round(x), "y": round(y), "src": src, "conf": round(conf, 2)}))
 
     def _proc_loop(self, stop: threading.Event) -> None:
         """프로세스별 CPU · 메모리 측정 (2초마다, 추적 박스용). 첫 측정은 CPU 값이 없어 곧바로 한 번 더 잰다."""

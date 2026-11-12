@@ -70,6 +70,8 @@ DEFAULTS: dict = {
     "sentinel_requester": "",         # Sentinel 감사 기록에 남는 요청자 이름 (비워두면 Windows 사용자 이름)
     "sentinel_basis": "owner",        # 검사 근거 기본값: owner | written_permission | bug_bounty_scope | internal_lab
     "hud_motion": "auto",             # 액티브 모드 회전 · 스캔 연출: auto = Windows '애니메이션 효과' 설정을 따름 | on | off
+    "eye_tracking": "auto",           # 액티브 모드 시선 고리: auto = 웹캠으로 시선 추적(안 되면 마우스 커서) | cursor | off
+    "eye_camera": 0,                  # 시선 추적에 쓸 카메라 번호
 }
 
 _lock = threading.Lock()
