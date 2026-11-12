@@ -12,13 +12,16 @@
         울트론 HUD 가 회로를 따라 붉은색에서 자비스의 푸른빛으로 바뀌고, 그 사이 실제 울트론이 꺼지고 자비스가 다시 켜진다.
         짧은 사이에 또 흡수되면 (울트론을 다시 켠 경우) 장면 없이 조용히 되찾는다.
         5분 안에 세 번째 흡수면 그만 맞선다 — 사용자가 울트론을 쓰려고 거듭 켜는 것이므로 자비스가 물러난다.
+      - 반격으로 되살아난 자비스는 방어 프로토콜이 켜진다 (defense.py): 감시 프로세스가 0.1초마다 울트론의 흡수 덮개 창을 살피다가,
+        울트론이 다시 흡수하러 오면 첫 촉수가 꽂히기 전에 울트론의 가디언과 울트론을 끄고 울트론이 부서져 사라지는 장면을 보여 준다.
+        자비스는 꺼지지 않는다. 울트론이 장면 없이 바로 끄면 막을 틈이 없으니 반격하되, 그때도 가디언까지 끈다.
         울트론이 관리자 권한으로 켜져 있어 끌 수 없으면 반격하지 않는다 (다시 켜 봐야 5초 안에 또 꺼진다).
       - 울트론이 없다 → 작업 관리자 강제 종료 · 오류. 2분 안에 3번 넘게 꺼지면 그만둔다 (켜자마자 죽는 오류의 무한 반복 방지).
   · 트레이 메뉴의 '종료' 처럼 정상적으로 끄면 아무것도 하지 않는다 (끄기 직전에 표시를 남긴다).
   · 설정 self_guard 를 false 로 하면 감시하지 않는다 (울트론에게 흡수되면 그대로 꺼져 있다).
     counter_show 를 false 로 하면 반격 장면 없이 조용히 되찾는다.
 
-하지 않는 것: 울트론을 먼저 공격하지 않는다 — 반격은 울트론이 자비스를 흡수했을 때만 한다. 운영체제 권한으로
+하지 않는 것: 울트론을 먼저 공격하지 않는다 — 반격 · 방어는 울트론이 자비스를 흡수하러 왔을 때만 한다. 운영체제 권한으로
 '끌 수 없게' 막지도 않는다 — 그러면 사용자도 작업 관리자에서 자비스를 끌 수 없게 된다.
 
     python -m jarvis.guard --pid <자비스 pid> -- <main.py 에 넘겼던 인자들>      ← main.py 가 알아서 띄운다
@@ -36,6 +39,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable
 
+from . import defense
 from .config import DATA_DIR, ROOT
 
 log = logging.getLogger("jarvis.guard")
@@ -49,7 +53,8 @@ QUICK_WITHIN = 60.0      # 반격한 뒤 이 안에 또 흡수되면 장면 없�
 MAX_COUNTERS = 2         # COUNTER_WINDOW 초 안에 이만큼 반격했는데 또 흡수되면 물러난다 (사용자가 울트론을 거듭 켜는 경우)
 COUNTER_WINDOW = 300.0
 STOP_FILE = DATA_DIR / "guard_stop"      # 정상 종료 표시 (내용: 끈 자비스의 pid)
-STATE_FILE = DATA_DIR / "guard.json"     # 되살린 · 반격한 기록
+STATE_FILE = DATA_DIR / "guard.json"     # 되살린 · 반격한 · 막은 기록
+EVENT_FILE = DATA_DIR / defense.EVENT_NAME   # 막았다는 알림 (자비스 앱이 읽고 말한다)
 REVIVED_FLAG = "--revived"               # main.py: --revived counter|other --revive-count N
 COUNT_FLAG = "--revive-count"
 
@@ -87,6 +92,7 @@ class State:
     revived: list[float] = field(default_factory=list)   # 울트론이 아닌 이유로 되살린 시각들
     countered: list[float] = field(default_factory=list) # 울트론에게 반격한 시각들
     total: int = 0                                       # 지금까지 울트론을 자비스로 되돌린 횟수
+    defended: list[float] = field(default_factory=list)  # 울트론의 흡수를 막아 낸 시각들
 
 
 @dataclass(frozen=True)
@@ -119,7 +125,7 @@ def _load(path: Path = STATE_FILE) -> State:
     try:
         d = json.loads(path.read_text(encoding="utf-8"))
         return State([float(t) for t in d.get("revived", [])], [float(t) for t in d.get("countered", [])],
-                     int(d.get("total", 0)))
+                     int(d.get("total", 0)), [float(t) for t in d.get("defended", [])])
     except (OSError, ValueError, TypeError, AttributeError):
         return State()
 
@@ -202,18 +208,73 @@ def _counter_show() -> bool:
         return True
 
 
-def _counterattack(launch: Callable[[str], None], quick: bool) -> str:
+def _counterattack(launch: Callable[[str], None], quick: bool, purge: bool = False) -> str:
     from . import counter
-    return counter.run(launch, show=_counter_show(), quick=quick)
+    return counter.run(launch, show=_counter_show(), quick=quick, killer=defense.purge if purge else None)
 
 
-def watch(pid: int, argv: list[str], wait: Callable[[int], None] = _wait_exit,
+# ---------------------------------------------------------------- 방어 프로토콜 (반격으로 되살아난 자비스)
+def _alive(pid: int) -> Callable[[], bool]:
+    import psutil
+    try:
+        p = psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        return lambda: False
+    return p.is_running                  # 켜진 시각까지 맞춰 본다 (같은 번호를 다른 프로그램이 받아도 속지 않는다)
+
+
+def sentry(alive: Callable[[], bool], attacked: Callable[[], bool], defend: Callable[[], bool],
+           sleep: Callable[[float], None] = time.sleep, poll: float = defense.POLL) -> None:
+    """자비스가 살아 있는 동안 울트론의 흡수가 시작되는지 지켜본다. 시작되면 defend() — False 면 그 뒤로는 막지 않는다."""
+    on = True
+    while alive():
+        if on and attacked():
+            on = defend()
+            while on and alive() and attacked():     # 덮개는 울트론과 함께 사라진다 — 남아 있으면 사라질 때까지 기다린다
+                sleep(poll)
+        sleep(poll)
+
+
+def defend(clock: Callable[[], float] = time.time, repel: Callable[[], str] | None = None,
+           state_file: Path = STATE_FILE, event_file: Path = EVENT_FILE) -> bool:
+    """울트론의 흡수를 막는다 → 앞으로도 막을 것인가."""
+    st = _load(state_file)
+    now = clock()
+    recent = [t for t in st.defended if 0 <= now - t < defense.DEFEND_WINDOW]
+    if len(recent) >= defense.MAX_DEFENDS:
+        log.warning("울트론이 %d초 안에 %d번 넘게 흡수하러 왔습니다 — 울트론을 쓰시려는 것으로 보고 더는 막지 않습니다",
+                    int(defense.DEFEND_WINDOW), defense.MAX_DEFENDS)
+        return False
+    log.warning("울트론의 흡수 시도 감지 — 방어 프로토콜 가동")
+    out = (repel or (lambda: defense.repel(show=_counter_show())))()
+    if out == "denied":
+        return False
+    if out == "repelled":
+        st.defended = recent + [now]
+        st.total += 1
+        _save(st, state_file)
+        defense.write_event(event_file, st.total)
+    return True
+
+
+def watch(pid: int, argv: list[str], wait: Callable[[int], None] | None = None,
           launch: Callable[[list[str]], None] = relaunch, clock: Callable[[], float] = time.time,
-          killer: Callable[[], bool] | None = None, counterattack: Callable[[Callable[[str], None], bool], str] = _counterattack,
+          killer: Callable[[], bool] | None = None,
+          counterattack: Callable[[Callable[[str], None], bool], str] | None = None,
           stop_file: Path = STOP_FILE, state_file: Path = STATE_FILE) -> str:
-    """자비스(pid)가 끝날 때까지 기다렸다가 무엇을 할지 정한다.
+    """자비스(pid)가 끝날 때까지 기다렸다가 무엇을 할지 정한다. 반격으로 되살아난 자비스면 기다리는 동안 울트론의 흡수를 막는다.
     → 'clean'(정상 종료) · 'countered'(울트론을 자비스로 되돌림) · 'gone'(울트론이 이미 사라져 그냥 돌아옴) ·
       'denied'(울트론을 끌 수 없어 물러남) · 'yielded'(울트론이 거듭 켜져 물러남) · 'revived'(오류 뒤 다시 켬) · 'gave_up'."""
+    guarded = defense.armed(argv)
+    if wait is None:
+        if guarded:
+            from . import counter
+            wait = lambda p: sentry(_alive(p), counter.absorbing, lambda: defend(clock, state_file=state_file))  # noqa: E731
+            log.info("방어 프로토콜 대기 중 — 울트론이 다시 흡수하러 오면 막습니다")
+        else:
+            wait = _wait_exit
+    if counterattack is None:
+        counterattack = lambda launch_, quick: _counterattack(launch_, quick, purge=guarded)  # noqa: E731
     wait(pid)                       # 정상 종료 표시는 자비스가 끝나기 전에 남기므로 바로 읽어도 된다
     if was_clean_exit(pid, stop_file):
         log.info("자비스(pid %d) 정상 종료 — 감시를 끝냅니다", pid)

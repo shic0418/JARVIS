@@ -242,6 +242,17 @@ def hud_rect(found: Found) -> tuple[int, int, int, int] | None:
     return None
 
 
+def grab_hud(found: list[Found]) -> tuple[np.ndarray, tuple[int, int, int, int]] | None:
+    """화면에 보이는 울트론 HUD 를 찍는다 → (RGBA 그림, 실제 픽셀 영역). 보이지 않으면 None. (Qt 없이 — 빨라야 한다)"""
+    for f in found:
+        rect = hud_rect(f)
+        if not rect:
+            continue
+        from PIL import ImageGrab
+        return np.asarray(ImageGrab.grab(bbox=rect, all_screens=True).convert("RGBA")).copy(), rect
+    return None
+
+
 # ---------------------------------------------------------------- 시간표 (초)
 AWAKE = 0.0           # 보안 콘솔이 열리기 시작
 SPARK = 0.6           # 울트론 코어 한가운데에 푸른 점이 켜진다
@@ -484,10 +495,15 @@ def play_wav(path: Path) -> None:
 def run(launch: Callable[[str], None], show: bool = True, quick: bool = False,
         wait: Callable[[], bool] = wait_absorb, finder: Callable[[], list[Found]] = find_ultron,
         stopper: Callable[[Found], tuple[bool, str]] = stop, fullscreen: Callable[[], bool] = foreground_fullscreen,
-        play: Callable[..., str] | None = None) -> str:
+        play: Callable[..., str] | None = None, killer: Callable[[list[Found]], bool] | None = None) -> str:
     """울트론에게 흡수된 뒤의 반격 → 'countered'(울트론을 자비스로 바꿈) · 'gone'(울트론이 이미 없음 — 그냥 돌아옴) ·
     'denied'(울트론을 끌 수 없음 — 돌아오지 않는다).
-    launch(누가) 는 자비스를 다시 켠다 ('counter' | 'other')."""
+    launch(누가) 는 자비스를 다시 켠다 ('counter' | 'other').
+    killer: 울트론을 끄는 방법 (기본은 본체만 끈다 — 방어 프로토콜이 켜진 자비스는 가디언까지 끈다, defense.purge)."""
+    if killer is not None:
+        stop_all_ = killer
+    else:
+        stop_all_ = lambda fs: stop_all(fs, stopper)      # noqa: E731
     wait()                                       # 울트론의 흡수 장면 · 승리의 말이 끝나기를 기다린다
     found = finder()
     if not found:
@@ -495,7 +511,7 @@ def run(launch: Callable[[str], None], show: bool = True, quick: bool = False,
         launch("other")
         return "gone"
     if not show or quick or fullscreen():
-        if not stop_all(found, stopper):
+        if not stop_all_(found):
             return "denied"
         log.warning("보안 프로토콜: 울트론(pid %s)을 조용히 끄고 돌아갑니다", ", ".join(str(f.pid) for f in found))
         launch("counter")
@@ -508,7 +524,7 @@ def run(launch: Callable[[str], None], show: bool = True, quick: bool = False,
 
     def kill() -> bool:                          # 장면 도중 (재작성이 시작될 때) 한 번만
         if not killed:
-            killed.append(stop_all(found, stopper))
+            killed.append(stop_all_(found))
         return killed[0]
 
     def relaunch() -> None:                      # 울트론을 끈 뒤에만, 한 번만

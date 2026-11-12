@@ -376,6 +376,12 @@ class Jarvis(QObject):
         self._bat = None
         self._disk = 0.0
         psutil.cpu_percent(None)
+        # 방어 프로토콜 (defense.py): 반격으로 되살아난 자비스의 감시 프로세스가 울트론의 흡수를 막으면 알림을 남긴다 — 읽고 보고한다
+        if getattr(args, "revived", None) == "counter":
+            self._defense_timer = QTimer(self)
+            self._defense_timer.setInterval(1000)
+            self._defense_timer.timeout.connect(self._defense_report)
+            self._defense_timer.start()
 
         QTimer.singleShot(2300, self._boot_done)
 
@@ -432,6 +438,16 @@ class Jarvis(QObject):
         if self.args.no_greet:
             return
         msg = persona.greeting(self.cfg["user_title"] or "주인님", self.cfg["brain"] or "pro", bool(self.bridge._hasApiKey))
+        self.bridge.set("replyText", msg)
+        self.say(msg, follow_up=False)
+
+    def _defense_report(self) -> None:
+        from . import defense, guard
+        ev = defense.take_event(guard.EVENT_FILE)
+        if not ev:
+            return
+        msg = defense.repelled_line(self.cfg["user_title"] or "주인님")
+        log.warning("방어 프로토콜이 울트론의 흡수를 막음 (%s번째)", ev.get("count"))
         self.bridge.set("replyText", msg)
         self.say(msg, follow_up=False)
 

@@ -216,16 +216,13 @@ class CounterView(QWidget):
 
 def _snapshot(found: list[C.Found]) -> tuple[np.ndarray, QRectF, tuple[float, float]] | None:
     """화면에 보이는 울트론 HUD 를 찍는다 → (그림, 논리 영역, 그림 안 코어 자리). 보이지 않으면 None."""
-    for f in found:
-        rect = C.hud_rect(f)
-        if not rect:
-            continue
-        from PIL import ImageGrab
-        img = np.asarray(ImageGrab.grab(bbox=rect, all_screens=True).convert("RGBA")).copy()
-        h, w = img.shape[:2]
-        core = (w / 2, w * 0.45 if h > w * 1.25 else h / 2)   # 울트론 HUD 의 엠블럼은 위쪽 가운데 (작게 보기면 한가운데)
-        return img, to_logical(rect), core
-    return None
+    shot = C.grab_hud(found)
+    if not shot:
+        return None
+    img, rect = shot
+    h, w = img.shape[:2]
+    core = (w / 2, w * 0.45 if h > w * 1.25 else h / 2)   # 울트론 HUD 의 엠블럼은 위쪽 가운데 (작게 보기면 한가운데)
+    return img, to_logical(rect), core
 
 
 def _stand_in() -> tuple[np.ndarray, QRectF, tuple[float, float]]:
