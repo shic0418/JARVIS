@@ -951,8 +951,11 @@ class Jarvis(QObject):
             self._start_feed()
         else:
             self._stop_feed()
-            if self._hud_before_active or self._pending_confirm:
+            if self._pending_confirm:
                 self.toggle_visible(True)
+            elif self._hud_before_active:
+                # 액티브 모드의 끄기 연출(약 1.9초)이 끝난 뒤에 작은 HUD 를 되돌린다 (그 사이 다시 켰으면 그대로 둔다)
+                QTimer.singleShot(1900, lambda: None if self.bridge._activeMode else self.toggle_visible(True))
             self._hud_for_confirm = False
 
     def _hide_hud_for_active(self) -> None:

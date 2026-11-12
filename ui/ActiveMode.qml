@@ -94,6 +94,8 @@ Window {
         engagedAt = Date.now()
         visible = true
         openAnim.restart()
+        if (skipSeal && !booted && p > 0.5) bootTimer.start()   // 접히던 중 다시 켬: p 가 이미 커서 onPChanged 가 안 올 수 있음
+        if (skipSeal && !calm && p > 0.5) flickAnim.restart()     // 되살아나는 순간 한 번 지직
     }
     onOnChanged: {
         if (on) engage()
@@ -167,7 +169,6 @@ Window {
         onTriggered: { const n = Date.now(); ov.advance((n - last) / 1000); last = n }
     }
     readonly property int tick: Math.floor(t / 0.07)          // 깜빡이는 숫자 · 암호 글자용
-    readonly property int slow: Math.floor(tick / 9)
     readonly property real spin: t * 360 / 26 % 360
     readonly property real sweep: t * 360 / 3.2 % 360
     readonly property real heading: t * 4 % 360
@@ -497,7 +498,7 @@ Window {
         }
         // 위 방위 테이프 · 제목 뒤, 아래 상태 글 · 파형 뒤: 가장자리가 부드러운 타원 그늘
         Repeater {
-            model: [[ov.cx, 44 * ov.u, 380 * ov.u, 70 * ov.u, 0.38], [ov.cx, ov.cy + reticle.rr + 64 * ov.u, 300 * ov.u, 80 * ov.u, 0.3]]
+            model: [[ov.cx, 44 * ov.u, 380 * ov.u, 70 * ov.u, 0.38], [ov.cx, ov.cy + reticle.rr + 64 * ov.u, 380 * ov.u, 80 * ov.u, 0.18]]
             Item {
                 readonly property real rx: modelData[2]
                 x: modelData[0] - rx; y: modelData[1] - rx
@@ -756,6 +757,9 @@ Window {
             Column {
                 id: tgLabel
                 readonly property bool inside: tg.y < 46 * ov.u
+                readonly property real gx: tg.x + x
+                // 양쪽 위젯 열 위에 걸치면 흐리게 (위젯 글자와 겹쳐 읽기 어려움)
+                opacity: gx < ov.colX(-1, 0, 0) + ov.colW + 20 * ov.u || gx + width > ov.width - ov.colX(-1, 0, 0) - ov.colW - 20 * ov.u ? 0.45 : 1
                 x: Math.min(inside ? 26 * ov.u : 0, Math.max(0, ov.width - tg.x - width - 10))
                 y: inside ? 24 * ov.u : -height - 6 * ov.u
                 spacing: 1
@@ -1402,17 +1406,17 @@ Window {
                 height: 16 * ov.u
                 spacing: 1
                 Repeater {
-                    model: ov.cpuHist
+                    model: ov.cpuHist.slice(-30)
                     Rectangle {
                         width: 2 * ov.u; height: Math.max(1, 16 * ov.u * modelData / 100)
                         anchors.bottom: parent.bottom
-                        color: ov.c(0.25 + 0.6 * (index / Math.max(1, ov.cpuHist.length)))
+                        color: ov.c(0.25 + 0.6 * (index / 30))
                     }
                 }
             }
             Label {
                 anchors.right: parent.right; y: wDiag.height - 8 * ov.u - height
-                text: "LOAD 48 s   ▼ " + ov.rate(ov.stats.down) + "   ▲ " + ov.rate(ov.stats.up)
+                text: "LOAD 30 s   ▼ " + ov.rate(ov.stats.down) + "   ▲ " + ov.rate(ov.stats.up)
                 color: ov.hc(0.85); font.pixelSize: 8 * ov.u; font.letterSpacing: 1 * ov.u
             }
         }
@@ -1718,14 +1722,14 @@ Window {
         color: "transparent"
         flags: Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
         readonly property real e: ov.seg(0.62, 0.94)
-        visible: ov.visible && e > 0 && ov.down <= 0
+        visible: ov.visible && e > 0 && (ov.calm ? ov.down <= 0 : ov.down < 0.16)
         width: Math.max(340, 420 * ov.u); height: Math.max(34, 36 * ov.u)
         x: ov.x + ov.cx - width / 2
         y: ov.y + Math.min(ov.height * 0.87 - height - 18 * ov.u, ov.cy + reticle.rr + 178 * ov.u)
 
         Item {
             anchors.fill: parent
-            opacity: chatBar.e * ov.flick
+            opacity: chatBar.e * ov.flick * (1 - ov.dlin(0, 0.15)) * (ov.down > 0 ? 0.4 + 0.6 * ov.rnd(Math.floor(ov.down * 90) + 7) : 1)
             HoloPanel { anchors.fill: parent; accent: ov.accent; fillAlpha: chatBar.active ? 0.9 : 0.62; cut: 9 }
             HText {
                 id: chatCaret
