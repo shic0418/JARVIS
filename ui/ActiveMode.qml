@@ -123,35 +123,43 @@ Window {
     }
 
     property date now: new Date()
-    Timer { interval: 250; running: ov.visible; repeat: true; triggeredOnStart: true; onTriggered: ov.now = new Date() }
-    property int tick: 0                       // 깜빡이는 숫자 · 암호 글자용
-    Timer { interval: 70; running: ov.moving; repeat: true; onTriggered: ov.tick++ }
-    readonly property int slow: Math.floor(tick / 9)
+    // 대기 중에는 1초에 한 번 (초 단위 표시뿐이라 차이가 없다)
+    Timer { interval: ov.idle ? 1000 : 250; running: ov.visible; repeat: true; triggeredOnStart: true; onTriggered: ov.now = new Date() }
 
-    // 계속 돌아가는 값들 (보일 때만)
-    property real spin: 0
-    NumberAnimation on spin { from: 0; to: 360; duration: 26000; loops: Animation.Infinite; running: ov.moving }
-    property real sweep: 0
-    NumberAnimation on sweep { from: 0; to: 360; duration: 3200; loops: Animation.Infinite; running: ov.moving }
-    property real heading: 0
-    NumberAnimation on heading { from: 0; to: 360; duration: 90000; loops: Animation.Infinite; running: ov.moving }
-    property real scan: 0
-    NumberAnimation on scan { from: 0; to: 1; duration: 6000; loops: Animation.Infinite; running: ov.moving }
-    property real pulse: 0.6
-    SequentialAnimation on pulse {
-        loops: Animation.Infinite; running: ov.moving
-        NumberAnimation { from: 0; to: 1; duration: 1100; easing.type: Easing.InOutSine }
-        NumberAnimation { from: 1; to: 0; duration: 1100; easing.type: Easing.InOutSine }
+    // ---- 하나의 시계로 모든 연출을 돌린다 ----
+    // 예전에는 회전 · 스캔 · 맥박 애니메이션 6개와 70ms 타이머가 따로 돌며 모니터 주사율대로(60~144fps) 화면 전체 글로우까지
+    // 매 프레임 다시 그렸다. 이제 시간 t 하나만 흐르고 나머지는 t 에서 계산한다.
+    // 대기 중(조용하고, 켜짐 연출 · 잠금 · 지직거림이 끝난 상태)에는 1초에 15번만 t 를 올린다.
+    // 듣기 · 생각 · 말하기 · 연출 중에는 매 프레임 갱신.
+    property real t: 0
+    readonly property bool idle: p >= 1 && seal >= 2 && (st === "standby" || st === "offline" || st === "boot")
+                                 && lock >= 1 && flick >= 1 && jolt <= 0
+    function advance(dt) {
+        dt = Math.min(dt, 0.1)
+        t += dt
+        lvl += (Math.min(1, level) - lvl) * (1 - Math.exp(-dt * 22))   // 소리 크기를 부드럽게 따라감
     }
-    property real roll: 0                      // 헬멧이 살짝 기우는 느낌
-    SequentialAnimation on roll {
-        loops: Animation.Infinite; running: ov.moving
-        NumberAnimation { from: -2.2; to: 2.2; duration: 4200; easing.type: Easing.InOutSine }
-        NumberAnimation { from: 2.2; to: -2.2; duration: 4200; easing.type: Easing.InOutSine }
+    FrameAnimation {                       // 연출 중: 매 프레임
+        running: ov.moving && !ov.idle
+        onTriggered: ov.advance(frameTime)
     }
+    Timer {                                // 대기 중: 1초에 15번. 그 사이에는 애니메이션 구동기도 쉬어 화면을 아예 다시 그리지 않는다
+        interval: 66; repeat: true
+        running: ov.moving && ov.idle
+        property real last: 0
+        onRunningChanged: last = Date.now()
+        onTriggered: { const n = Date.now(); ov.advance((n - last) / 1000); last = n }
+    }
+    readonly property int tick: Math.floor(t / 0.07)          // 깜빡이는 숫자 · 암호 글자용
+    readonly property int slow: Math.floor(tick / 9)
+    readonly property real spin: t * 360 / 26 % 360
+    readonly property real sweep: t * 360 / 3.2 % 360
+    readonly property real heading: t * 4 % 360
+    readonly property real scan: t / 6 % 1
+    readonly property real pulse: 0.5 - 0.5 * Math.cos(t * Math.PI / 1.1)
+    readonly property real roll: -2.2 * Math.cos(t * Math.PI / 4.2)   // 헬멧이 살짝 기우는 느낌
     property real lvl: 0
-    Behavior on lvl { NumberAnimation { duration: 90 } }
-    onLevelChanged: lvl = Math.min(1, level)
+    onLevelChanged: if (!moving) lvl = Math.min(1, level)   // 움직임 줄이기: 시계가 멈춰 있으므로 바로 반영
 
     // 홀로그램이 가끔 지직거림
     property real flick: 1
@@ -989,22 +997,22 @@ Window {
                 width: parent.width; height: 30 * ov.u
                 clip: true
                 readonly property real k: width / 120    // 화면에 보이는 각도 120°
+                // 보이는 120° 안의 눈금 자리만 만든다 (예전: 한 바퀴 반 144개를 매 프레임 계산)
+                readonly property int base: Math.floor(ov.heading / 5) - 13
                 Repeater {
-                    model: 72 * 2
+                    model: 27
                     Item {
-                        readonly property real deg: (index % 72) * 5 + (index >= 72 ? 360 : 0)
-                        readonly property real xx: hd.width / 2 + (deg - ov.heading) * hd.k
-                        readonly property real wrapped: xx < -20 ? xx + 360 * hd.k : xx
-                        visible: wrapped > -10 && wrapped < hd.width + 10
-                        x: wrapped
-                        readonly property real fade: 1 - Math.min(1, Math.abs(wrapped - hd.width / 2) / (hd.width / 2))
+                        readonly property int dd: (((hd.base + index) * 5) % 360 + 360) % 360
+                        readonly property real xx: hd.width / 2 + ((hd.base + index) * 5 - ov.heading) * hd.k
+                        visible: xx > -10 && xx < hd.width + 10
+                        x: xx
+                        readonly property real fade: 1 - Math.min(1, Math.abs(xx - hd.width / 2) / (hd.width / 2))
                         Rectangle {
-                            width: 1; height: (index % 72) % 3 === 0 ? 10 * ov.u : 5 * ov.u
+                            width: 1; height: (dd / 5) % 3 === 0 ? 10 * ov.u : 5 * ov.u
                             y: hd.height - height
                             color: ov.c(0.2 + 0.7 * parent.fade)
                         }
                         HText {
-                            readonly property int dd: (index % 72) * 5
                             visible: dd % 45 === 0
                             text: dd % 45 === 0 ? ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][dd / 45] : ""
                             x: -width / 2; y: 0
@@ -1393,7 +1401,7 @@ Window {
                 y: parent.height - 16 * ov.u
                 width: 6 * ov.u; height: 9 * ov.u
                 color: ov.hot
-                visible: ov.now.getMilliseconds() < 500 || !ov.booted
+                visible: ov.tick % 14 < 7 || !ov.booted
             }
         }
 
