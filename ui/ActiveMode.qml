@@ -100,6 +100,7 @@ Window {
             bootStep = 0
         }
         engagedAt = Date.now()
+        if (!skipSeal) { gx = -1; gy = -1; anchorX = -1e6; anchorY = -1e6; dwell = 0 }   // 이전 세션의 시선 위치에서 날아오지 않게
         visible = true
         openAnim.restart()
         if (skipSeal && !booted && p > 0.5) bootTimer.start()   // 접히던 중 다시 켬: p 가 이미 커서 onPChanged 가 안 올 수 있음
@@ -184,7 +185,17 @@ Window {
             } else dwell += dt
         }
     }
-    onGazeChanged: if (!moving && gazeOn) { gx = gaze.x; gy = gaze.y }   // 움직임 줄이기: 시계가 멈춰 있으므로 바로 반영
+    // 움직임 줄이기: 시계가 멈춰 있으므로 바로 반영하고, 잠금 판단은 시선이 들어올 때마다 지난 시간으로 계산
+    property real gazeAt: 0
+    onGazeChanged: {
+        if (moving || !gazeOn) return
+        const n = Date.now()
+        const dt = gazeAt ? Math.min(0.2, (n - gazeAt) / 1000) : 0
+        gazeAt = n
+        gx = gaze.x; gy = gaze.y
+        if (Math.abs(gaze.x - anchorX) > 70 * u || Math.abs(gaze.y - anchorY) > 70 * u) { anchorX = gaze.x; anchorY = gaze.y; dwell = 0 }
+        else dwell += dt
+    }
     FrameAnimation {                       // 연출 중: 매 프레임
         running: ov.moving && !ov.idle
         onTriggered: ov.advance(frameTime)
@@ -1042,7 +1053,7 @@ Window {
                     PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.87; radiusY: reticle.rr * 0.87; startAngle: 215; sweepAngle: 85 * reticle.draw }
                 }
                 ShapePath {
-                    strokeColor: ov.outline; strokeWidth: (6 * ov.u) + 4 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                    strokeColor: ov.outline; strokeWidth: (6 * ov.u) + 3 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
                     PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.87; radiusY: reticle.rr * 0.87; startAngle: 10; sweepAngle: 60 * reticle.draw }
                     PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.87; radiusY: reticle.rr * 0.87; startAngle: 215; sweepAngle: 85 * reticle.draw }
                 }
@@ -1052,7 +1063,7 @@ Window {
                     PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.87; radiusY: reticle.rr * 0.87; startAngle: 215; sweepAngle: 85 * reticle.draw }
                 }
                 ShapePath {
-                    strokeColor: ov.outline; strokeWidth: (6 * ov.u) + 4 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                    strokeColor: ov.outline; strokeWidth: (6 * ov.u) + 3 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
                     PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.87; radiusY: reticle.rr * 0.87; startAngle: 130; sweepAngle: 30 * reticle.draw }
                 }
                 ShapePath {
@@ -1066,7 +1077,7 @@ Window {
                 rotation: -ov.spin * 2.2
                 preferredRendererType: Shape.CurveRenderer
                 ShapePath {
-                    strokeColor: ov.outline; strokeWidth: (3 * ov.u) + 4 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                    strokeColor: ov.outline; strokeWidth: (3 * ov.u) + 3 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
                     PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.52; radiusY: reticle.rr * 0.52; startAngle: 0; sweepAngle: 300 * reticle.draw }
                 }
                 ShapePath {
@@ -1075,7 +1086,7 @@ Window {
                     PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.52; radiusY: reticle.rr * 0.52; startAngle: 0; sweepAngle: 300 * reticle.draw }
                 }
                 ShapePath {
-                    strokeColor: ov.outline; strokeWidth: (6 * ov.u) + 4 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                    strokeColor: ov.outline; strokeWidth: (6 * ov.u) + 3 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
                     PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.52; radiusY: reticle.rr * 0.52; startAngle: 310; sweepAngle: 40 * reticle.draw }
                 }
                 ShapePath {
@@ -1088,7 +1099,7 @@ Window {
                 anchors.fill: parent
                 preferredRendererType: Shape.CurveRenderer
                 ShapePath {
-                    strokeColor: ov.outline; strokeWidth: (4 * ov.u) + 4 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                    strokeColor: ov.outline; strokeWidth: (4 * ov.u) + 3 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
                     PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.4; radiusY: reticle.rr * 0.4
                                    startAngle: 180 - (8 + 58 * ov.lvl) * reticle.draw; sweepAngle: 2 * (8 + 58 * ov.lvl) * reticle.draw }
                     PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.4; radiusY: reticle.rr * 0.4
@@ -1113,7 +1124,7 @@ Window {
                     anchors.fill: parent
                     preferredRendererType: Shape.CurveRenderer
                     ShapePath {
-                        strokeColor: ov.outline; strokeWidth: (5 * ov.u) + 4 * ov.u; fillColor: "transparent"
+                        strokeColor: ov.outline; strokeWidth: (5 * ov.u) + 3 * ov.u; fillColor: "transparent"
                         PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.3; radiusY: reticle.rr * 0.3; startAngle: 0; sweepAngle: 360 }
                     }
                     ShapePath {
@@ -1121,7 +1132,7 @@ Window {
                         PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.3; radiusY: reticle.rr * 0.3; startAngle: 0; sweepAngle: 360 }
                     }
                     ShapePath {
-                        strokeColor: ov.outline; strokeWidth: (5 * ov.u) + 4 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                        strokeColor: ov.outline; strokeWidth: (5 * ov.u) + 3 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
                         PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.3; radiusY: reticle.rr * 0.3
                                        startAngle: -90; sweepAngle: 360 * Math.max(0.002, tmr.frac) }
                     }
@@ -1195,7 +1206,7 @@ Window {
                             readonly property int sd: index === 0 ? -1 : 1
                             Shape {
                                 ShapePath {
-                                    strokeColor: ov.outline; strokeWidth: ((rung.k === 0 ? 4 : 3) * ov.u) + 4 * ov.u
+                                    strokeColor: ov.outline; strokeWidth: ((rung.k === 0 ? 4 : 3) * ov.u) + 3 * ov.u
                                     fillColor: "transparent"; capStyle: ShapePath.FlatCap; joinStyle: ShapePath.MiterJoin
                                     PathMove { x: sd * ladder.gap; y: 0 }
                                     PathLine { x: sd * (ladder.gap + rung.len); y: 0 }
@@ -1805,7 +1816,7 @@ Window {
                 anchors.fill: parent
                 visible: gz.dist > reticle.rr + gz.r
                 ShapePath {
-                    strokeColor: ov.outline; strokeWidth: (2 * ov.u) + 4 * ov.u; fillColor: "transparent"
+                    strokeColor: ov.outline; strokeWidth: (2 * ov.u) + 3 * ov.u; fillColor: "transparent"
                     PathMove { x: ov.cx + (ov.gx - ov.cx) / Math.max(1, gz.dist) * reticle.rr; y: ov.cy + (ov.gy - ov.cy) / Math.max(1, gz.dist) * reticle.rr }
                     PathLine { x: ov.gx - (ov.gx - ov.cx) / Math.max(1, gz.dist) * gz.r; y: ov.gy - (ov.gy - ov.cy) / Math.max(1, gz.dist) * gz.r }
                 }
@@ -1832,7 +1843,7 @@ Window {
                         PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.88; radiusY: gz.r * 0.88; startAngle: 0; sweepAngle: 360 }
                     }
                     ShapePath {
-                        strokeColor: ov.outline; strokeWidth: (7 * ov.u) + 4 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                        strokeColor: ov.outline; strokeWidth: (7 * ov.u) + 3 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
                         PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.88; radiusY: gz.r * 0.88; startAngle: 0; sweepAngle: 46 }
                         PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.88; radiusY: gz.r * 0.88; startAngle: 62; sweepAngle: 46 }
                         PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.88; radiusY: gz.r * 0.88; startAngle: 124; sweepAngle: 46 }
@@ -1856,7 +1867,7 @@ Window {
                     rotation: -ov.spin * 3
                     preferredRendererType: Shape.CurveRenderer
                     ShapePath {
-                        strokeColor: ov.outline; strokeWidth: (3 * ov.u) + 4 * ov.u; fillColor: "transparent"
+                        strokeColor: ov.outline; strokeWidth: (3 * ov.u) + 3 * ov.u; fillColor: "transparent"
                         PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.64; radiusY: gz.r * 0.64; startAngle: 0; sweepAngle: 360 }
                     }
                     ShapePath {
@@ -1865,7 +1876,7 @@ Window {
                         PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.64; radiusY: gz.r * 0.64; startAngle: 0; sweepAngle: 360 }
                     }
                     ShapePath {
-                        strokeColor: ov.outline; strokeWidth: (6 * ov.u) + 4 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                        strokeColor: ov.outline; strokeWidth: (6 * ov.u) + 3 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
                         PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.64; radiusY: gz.r * 0.64; startAngle: 200; sweepAngle: 70 }
                     }
                     ShapePath {
@@ -1902,7 +1913,7 @@ Window {
                         y: onBottom ? gz.r * 2 - len - o : o
                         width: len; height: len
                         ShapePath {
-                            strokeColor: ov.outline; strokeWidth: (4 * ov.u) + 4 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                            strokeColor: ov.outline; strokeWidth: (4 * ov.u) + 3 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
                             joinStyle: ShapePath.MiterJoin
                             PathMove { x: lk.onRight ? 0 : lk.len; y: lk.onBottom ? lk.len : 0 }
                             PathLine { x: lk.onRight ? lk.len : 0; y: lk.onBottom ? lk.len : 0 }

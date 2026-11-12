@@ -155,11 +155,18 @@ class GazeTracker:
 
     @property
     def running(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
+        """카메라 스레드가 살아 있고 멈추라는 요청을 받지 않았다 (끄는 중인 이전 스레드는 치지 않는다)."""
+        return self._thread is not None and self._thread.is_alive() and not self._stop.is_set()
 
     def start(self) -> bool:
-        if self.running or not self.available():
-            return self.running
+        if self.running:
+            return True
+        if not self.available():
+            self.error = "얼굴 모델 또는 OpenCV 가 없습니다"
+            return False
+        old = self._thread
+        if old is not None and old.is_alive():
+            old.join(timeout=3.0)          # 바로 전에 끈 스레드가 카메라를 놓을 때까지 (같은 카메라를 두 번 열지 않게)
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, args=(self._stop,), daemon=True, name="gaze")
         self._thread.start()
@@ -181,12 +188,19 @@ class GazeTracker:
         import cv2
         cap = None
         try:
-            cv2.setNumThreads(1)          # 작은 영상이라 여러 스레드가 오히려 CPU 만 더 쓴다
-            cap = cv2.VideoCapture(self.camera, cv2.CAP_DSHOW)
-            if not cap.isOpened():
+            cv2.setNumThreads(1)          # 작은 영상이라 여러 스레드가 오히려 CPU 만 더 쓴다 (이 프로젝트에서 cv2 는 여기서만 쓴다)
+            # 다른 앱이 카메라를 쓰는 중이면 열리지 않는다 — 5초마다 다시 시도 (그동안 앱은 마우스 커서를 따라간다)
+            while True:
+                cap = cv2.VideoCapture(self.camera, cv2.CAP_DSHOW)
+                if cap.isOpened():
+                    break
+                cap.release()
+                cap = None
+                if not self.error:
+                    log.warning("시선 추적: 카메라를 열 수 없어 5초마다 다시 시도합니다")
                 self.error = "카메라를 열 수 없습니다"
-                log.warning("시선 추적: %s", self.error)
-                return
+                if stop.wait(5.0):
+                    return
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
             det = cv2.FaceDetectorYN.create(str(MODEL), "", DET_SIZE, 0.6, 0.3, 50)

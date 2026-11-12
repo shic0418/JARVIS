@@ -1023,11 +1023,18 @@ class Jarvis(QObject):
             return
         g = self.overlay.geometry()
         v = self._gaze.latest() if self._gaze is not None and self._gaze.running else None
+        if v is None and self._gaze is not None and not self._gaze.running and self._gaze.available()                 and str(self.cfg.get("eye_tracking", "auto")).lower() != "cursor":
+            self._gaze.start()             # 카메라 스레드가 끝나 있으면(오류 등) 다시 켠다 — 이미 돌고 있으면 아무 일도 안 함
         if v is not None:
             x, y, conf, src = v[0] * g.width(), v[1] * g.height(), v[2], "eye"
         else:
             c = QCursor.pos()
             x, y, conf, src = c.x() - g.x(), c.y() - g.y(), 1.0, "cursor"
+            if not (0 <= x <= g.width() and 0 <= y <= g.height()):   # 커서가 다른 모니터에 있으면 고리를 숨긴다
+                if self._gaze_last[2] != "away":
+                    self._gaze_last = (-1, -1, "away")
+                    self.bridge.set("gazeJson", "{}")
+                return
         last = self._gaze_last
         if src == last[2] and abs(x - last[0]) < 2 and abs(y - last[1]) < 2:
             return

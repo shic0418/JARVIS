@@ -63,3 +63,19 @@ def test_pick_largest_confident_face():
     big = [0, 0, 120, 140] + [0] * 10 + [0.9]
     assert pick_face([small, big]) is big
     assert pick_face(None) is None and pick_face([]) is None
+
+
+def test_stopping_thread_does_not_count_as_running():
+    """끄는 중인 이전 카메라 스레드 때문에 다시 켤 때 시작이 건너뛰어지면 안 된다."""
+    import threading
+    from jarvis.gaze import GazeTracker
+    g = GazeTracker()
+    gate = threading.Event()
+    t = threading.Thread(target=gate.wait, daemon=True)
+    t.start()
+    g._thread = t
+    g._stop = threading.Event()
+    assert g.running
+    g._stop.set()
+    assert not g.running
+    gate.set()
