@@ -128,11 +128,24 @@ def test_old_events_are_dropped(tmp_path):
 
 def test_armed_jarvis_that_is_struck_without_warning_counterattacks_and_removes_the_guardian(tmp_path, monkeypatch):
     seen = []
-    monkeypatch.setattr(guard, "_counterattack", lambda launch, quick, purge=False: seen.append(purge) or "countered")
+    monkeypatch.setattr(guard, "_counterattack", lambda launch, quick, purge=False, since=None: seen.append(purge) or "countered")
     for argv in (["--revived", "counter", "--revive-count", "1"], ["--no-mic"]):
         guard.watch(42, argv, wait=lambda p: None, launch=lambda a: None, clock=lambda: 5000.0, killer=lambda: True,
                     stop_file=tmp_path / "stop", state_file=tmp_path / f"s{len(seen)}.json")
     assert seen == [True, False]
+
+
+def test_strikes_the_moment_ultrons_revive_cutscene_ends_or_when_it_reaches_for_jarvis():
+    absorb, revive = [False], [False]
+    th = D.Threat(lambda: absorb[0], lambda: revive[0])
+    assert th() is False                               # 아무 일도 없다
+    revive[0] = True
+    assert th() is False and th() is False             # 컷신이 흐르는 동안은 기다린다
+    revive[0] = False
+    assert th() is True                                # 컷신이 끝난 바로 그 순간
+    assert th() is False                               # 한 번만
+    absorb[0] = True
+    assert th() is True                                # 흡수 덮개가 보이면 촉수가 닿기 전에
 
 
 def test_comeback_line_after_a_defense():
@@ -241,3 +254,27 @@ def test_no_flashing_over_large_areas(qt, bg):
     worst = max((sum(1 for f in flips if a <= f < a + 1) for a in np.arange(0, lum.size / fps, 0.1)), default=0)
     assert worst <= 1, flips
     assert np.abs(np.diff(lum)).max() < 0.05
+
+
+def test_defense_scene_comes_out_of_the_jarvis_emblem_and_follows_it(qt):
+    from PySide6.QtCore import QPointF
+    s = make_scene(qt)
+    assert s.dirty() == s.area
+    s.set_anchor(QPointF(300, 300), 107)
+    assert s.dirty().contains(QPointF(300, 300))
+    a = render_rect(s, 1.2, (20, 20, 20), 280, 280, 40, 40)              # 자비스 엠블럼 안쪽은 비워 둔다
+    s.set_anchor(QPointF(600, 500), 107)                                  # 자비스 HUD 를 옮기면 빛줄기도 옮겨 간다
+    assert s.dirty().contains(QPointF(600, 500))
+    ring = render_rect(s, 1.2, (20, 20, 20), 600 - 125, 500 - 125, 250, 250)
+    assert a.max() <= 21 and ring.max() > 120
+
+
+def render_rect(scene, t, bg, x, y, w, h):
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QColor, QImage, QPainter
+    im = QImage(w, h, QImage.Format_RGBA8888)
+    im.fill(QColor(*bg))
+    g = QPainter(im)
+    scene.paint(g, t, 1.0, QPointF(x, y))
+    g.end()
+    return np.frombuffer(im.constBits(), np.uint8, im.sizeInBytes()).reshape(h, im.bytesPerLine() // 4, 4)[:, :w, :3].copy()

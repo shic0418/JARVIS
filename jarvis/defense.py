@@ -54,6 +54,29 @@ def armed(argv: Iterable[str]) -> bool:
     return False
 
 
+class Threat:
+    """돌아온 울트론을 칠 때인가 (감시 프로세스가 0.1초마다 묻는다).
+      · 울트론의 부활 컷신(전체 화면, 약 16초)이 보이다가 사라진 바로 그 순간 — 컷신이 끝나자마자 친다
+      · 또는 울트론의 흡수 덮개가 보일 때 — 첫 촉수가 꽂히기 전에 막는다
+    덮개 창은 닫히지 않고 숨겨지기만 하므로 '보이는가'로 판단한다."""
+
+    def __init__(self, absorbing: Callable[[], bool] = C.absorbing, reviving: Callable[[], bool] = C.reviving) -> None:
+        self.absorbing, self.reviving = absorbing, reviving
+        self.saw_revive = False
+
+    def __call__(self) -> bool:
+        if self.absorbing():
+            self.saw_revive = False
+            return True
+        if self.reviving():
+            self.saw_revive = True
+            return False
+        if self.saw_revive:                      # 방금까지 보이던 부활 컷신이 끝났다
+            self.saw_revive = False
+            return True
+        return False
+
+
 # ---------------------------------------------------------------- 울트론의 가디언 찾기
 def _norm(p: str | None) -> str:
     return os.path.normcase(os.path.normpath(p)) if p else ""

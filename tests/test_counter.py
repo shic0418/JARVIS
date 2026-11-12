@@ -35,25 +35,35 @@ def test_find_groups_windows_per_process_and_skips_ourselves():
 
 
 def test_absorb_and_jarvis_windows_are_watched_by_exact_title():
-    assert C.absorbing(wins(("U.L.T.R.O.N ABSORB", 10, 1))) and not C.absorbing(wins(("U.L.T.R.O.N", 10, 1)))
+    vis = lambda h: h == 1                                            # noqa: E731
+    assert C.absorbing(wins(("U.L.T.R.O.N ABSORB", 10, 1)), vis) and not C.absorbing(wins(("U.L.T.R.O.N", 10, 1)), vis)
+    # 울트론은 덮개 창을 닫지 않고 숨긴다 — 숨겨진 창은 '진행 중'이 아니다 (예전에는 이것 때문에 매번 14초를 기다렸다)
+    assert not C.absorbing(wins(("U.L.T.R.O.N ABSORB", 10, 2)), vis)
+    assert C.reviving(wins(("U.L.T.R.O.N REVIVE", 10, 1)), vis) and not C.reviving(wins(("U.L.T.R.O.N REVIVE", 10, 2)), vis)
     shown = C.jarvis_shown(wins(("J.A.R.V.I.S", 5, 7)), visible=lambda h: h == 7)
     hidden = C.jarvis_shown(wins(("J.A.R.V.I.S", 5, 8)), visible=lambda h: h == 7)
     other = C.jarvis_shown(wins(("J.A.R.V.I.S PROTOCOL", 5, 7)), visible=lambda h: True)
     assert shown and not hidden and not other
 
 
-def test_waits_for_ultrons_absorb_scene_and_victory_line():
-    now = [0.0]
+def test_strikes_exactly_five_seconds_after_jarvis_went_down():
     slept = []
+    assert C.STRIKE_DELAY == 5.0
+    C.wait_strike(since=100.0, clock=lambda: 101.5, sleep=slept.append)
+    assert slept == [3.5]                                             # 꺼진 때에서 5초 — 이미 지난 시간은 뺀다
+    slept.clear()
+    C.wait_strike(since=100.0, clock=lambda: 109.0, sleep=slept.append)
+    assert slept == []                                                # 벌써 지났으면 바로
+    C.wait_strike(C.QUICK_DELAY, sleep=slept.append)
+    assert slept == [1.0]
 
-    def sleep(s):
-        slept.append(s)
-        now[0] += s
-    seen = iter([True] * 30 + [False])
-    assert C.wait_absorb(clock=lambda: now[0], sleep=sleep, seen=lambda: next(seen)) is True
-    assert slept[-1] == 1.8 and round(now[0], 1) == 4.8              # 장면 3초 + 승리의 말
-    now[0], slept[:] = 0.0, []
-    assert C.wait_absorb(clock=lambda: now[0], sleep=sleep, seen=lambda: False) is False and slept == [1.0]
+
+def test_emblem_position_follows_the_hud_layout():
+    assert C.emblem_in((1000, 500, 230, 356)) == (1115, 607, 107)     # 작게 보기: 위쪽 가운데
+    x, y, r = C.emblem_in((0, 0, 420, 724))
+    assert (x, y, r) == (210, 178, 106)                               # 펼쳐 보기
+    x, y, r = C.emblem_in((0, 0, 345, 534))                           # 배율 150%
+    assert abs(x - 172.5) < 0.01 and abs(r - 160.5) < 0.01
 
 
 def test_stop_all_reports_whether_ultron_is_really_gone():
@@ -262,3 +272,30 @@ def test_overlay_window_lets_clicks_through_and_is_not_mistaken_for_jarvis(qt):
     assert flags & Qt.WindowTransparentForInput and flags & Qt.WindowDoesNotAcceptFocus and flags & Qt.WindowStaysOnTopHint
     assert view.testAttribute(Qt.WA_TransparentForMouseEvents)
     assert not view.windowTitle().startswith("J.A.R.V.I.S") and not view.windowTitle().startswith("U.L.T.R.O.N")
+
+
+def test_ring_flies_to_the_real_jarvis_emblem_and_follows_it(qt):
+    from PySide6.QtCore import QPointF
+    s = make_scene(qt)
+    c0, r0 = s.emblem_at(6.0)
+    assert c0 == s.core and r0 == s.emblem_r and s.dirty() == s.area      # 자비스가 나타나기 전에는 울트론 자리에
+    s.dock_to(QPointF(300, 200), 107, 7.0)
+    mid, _ = s.emblem_at(7.0 + C.DOCK / 2)
+    end, r = s.emblem_at(7.0 + C.DOCK)
+    assert s.core.x() > mid.x() > 300 and (end.x(), end.y(), r) == (300, 200, 107)
+    s.dock_to(QPointF(340, 260), 107, 9.0)                                # 자비스 HUD 를 끌어 옮겼다 — 따라간다
+    end, _ = s.emblem_at(9.0)
+    assert (end.x(), end.y()) == (340, 260) and s.dock_at == 7.0
+    assert s.dirty().contains(QPointF(340, 260)) and s.dirty().contains(s.core)
+
+
+def test_new_scene_pieces_stay_in_step_with_the_timeline():
+    assert C.ping_rings(0.0) == [] and len(C.ping_rings(1.4)) == 3
+    assert C.lock_scale(C.LOCK[0]) > 2.5 and C.lock_scale(C.LOCK[1]) == 1.0
+    assert C.shock(C.SHOCK[0] - 0.1) == (0.0, 0.0) and C.shock(sum(C.SHOCK) / 2)[1] > 0
+    m = C.Motes((0, 0, 200, 300))
+    pos, alpha = m.state(C.CONVERGE[1], (100, 100), 50)
+    d = np.hypot(pos[:, 0] - 100, pos[:, 1] - 100)
+    assert np.all(d <= 50.5) and alpha.max() == 0                         # 모두 고리에 닿아 스며들었다
+    hexes = C.hex_centers((0, 0, 220, 220))
+    assert len(hexes) > 20 and C.hex_glow(np.array([10.0, 500.0]), 100.0)[1] == 0

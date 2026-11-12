@@ -56,8 +56,9 @@ def test_a_second_absorption_soon_after_is_taken_back_quietly():
 
 def test_jarvis_steps_aside_when_ultron_keeps_being_started():
     st = guard.State()
-    acts = [guard.plan(1000.0 + i * 40, "ultron", st).action for i in range(3)]
-    assert acts == ["counter", "counter", "yield"]                        # 5분 안에 세 번째 흡수 → 물러난다
+    acts = [guard.plan(1000.0 + i * 20, "ultron", st).action for i in range(guard.MAX_COUNTERS + 1)]
+    assert acts == ["counter"] * guard.MAX_COUNTERS + ["yield"]           # 끝없는 되풀이만 막는다 (세 번째에 물러나지 않는다)
+    assert guard.MAX_COUNTERS >= 10
     assert guard.plan(1000.0 + guard.COUNTER_WINDOW + 100, "ultron", st).action == "counter"   # 오래 지나면 다시 맞선다
 
 
@@ -134,8 +135,31 @@ def test_absorbed_by_ultron_counterattacks_and_comes_back_as_jarvis(tmp_path):
 def test_repeat_absorption_is_quiet_and_a_third_one_is_not_fought(tmp_path):
     out, launched, attacks, _ = run_watch(tmp_path, state=guard.State(countered=[4980.0], total=1))
     assert out == "countered" and attacks == [True] and launched[0][-1] == "2"
-    out, launched, attacks, _ = run_watch(tmp_path, state=guard.State(countered=[4900.0, 4980.0], total=2))
+    out, launched, attacks, _ = run_watch(tmp_path, state=guard.State(countered=[4900.0, 4930.0], total=2))
+    assert out == "countered" and attacks == [False] and launched[0][-1] == "3"      # 세 번째도 반격한다
+    storm = guard.State(countered=[4990.0 - i for i in range(guard.MAX_COUNTERS)], total=guard.MAX_COUNTERS)
+    out, launched, attacks, _ = run_watch(tmp_path, state=storm)
     assert out == "yielded" and attacks == [] and launched == []
+
+
+def test_two_guards_never_fight_the_same_absorption_twice(tmp_path):
+    busy = tmp_path / "guard_busy"
+    assert guard.claim(busy, lambda: 5000.0) is True
+    out, launched, attacks, st = run_watch(tmp_path)                    # 다른 감시 프로세스가 이미 반격 중
+    assert out == "busy" and launched == [] and attacks == [] and st.total == 0
+    guard.release(busy)
+    assert not busy.exists()
+    out, launched, _, st = run_watch(tmp_path)
+    assert out == "countered" and st.total == 1 and not busy.exists()    # 끝나면 표시를 치운다
+    busy.write_text("999999 100.0", encoding="utf-8")                   # 끝내지 못하고 죽은 감시가 남긴 오래된 표시
+    assert guard.claim(busy, lambda: 5000.0) is True
+
+
+def test_a_jarvis_restarted_after_a_counterattack_stays_on_guard():
+    st = guard.State(countered=[1000.0])
+    assert guard.recently_countered(st, 1000.0 + 60) and not guard.recently_countered(st, 1000.0 + guard.ARM_WINDOW + 1)
+    assert guard.recently_countered(guard.State(defended=[1000.0]), 1100.0)
+    assert not guard.recently_countered(guard.State(), 1000.0)
 
 
 def test_ultron_that_cannot_be_stopped_is_left_alone_and_jarvis_stays_off(tmp_path):
