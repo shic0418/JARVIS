@@ -74,6 +74,7 @@ class Bridge(QObject):
     weatherJsonChanged = Signal()
     targetJsonChanged = Signal()
     gazeJsonChanged = Signal()
+    procsJsonChanged = Signal()
 
     actionEvent = Signal(str, str, str, str)     # id, label, status(run|ok|error), detail
     confirmRequest = Signal(str, str, str)       # id, title, detail
@@ -101,6 +102,7 @@ class Bridge(QObject):
     weatherJson = _ro("weatherJson", str, weatherJsonChanged)   # 액티브 모드: 날씨
     targetJson = _ro("targetJson", str, targetJsonChanged)      # 액티브 모드: 추적 박스 (지금 창 / 짚은 위치)
     gazeJson = _ro("gazeJson", str, gazeJsonChanged)            # 액티브 모드: 시선 {x, y, src: eye|cursor, conf}
+    procsJson = _ro("procsJson", str, procsJsonChanged)         # 액티브 모드: CPU · 메모리 상위 프로그램 [{name, cpu, mem, count}]
 
     def __init__(self, core: "Jarvis") -> None:
         super().__init__()
@@ -126,6 +128,7 @@ class Bridge(QObject):
         self._weatherJson = "{}"
         self._targetJson = "{}"
         self._gazeJson = "{}"
+        self._procsJson = "[]"
 
     def set(self, name: str, value) -> None:
         if getattr(self, "_" + name) != value:
@@ -990,6 +993,7 @@ class Jarvis(QObject):
         self._point_until = 0.0
         self._target_hwnd = 0
         self.bridge.set("targetJson", "{}")
+        self.bridge.set("procsJson", "[]")
 
     # ---- 시선 추적: 홀로그램 고리가 눈이 가는 곳을 따라간다 ----
     def _start_gaze(self) -> None:
@@ -1048,7 +1052,11 @@ class Jarvis(QObject):
         first = True
         while not stop.is_set():
             try:
-                self._proc_watch.sample()   # 추적 박스에 보여 줄 창별 CPU · 메모리
+                rows = self._proc_watch.sample()   # 추적 박스용 창별 CPU · 메모리 + THREAT 위젯용 상위 프로그램
+                if not first:                      # 첫 측정은 CPU 값이 없어 모두 0
+                    self.sig_feed.emit("procsJson", json.dumps(
+                        [{"name": r["name"], "cpu": r["cpu"], "mem": r["mem"], "count": r["count"]} for r in rows],
+                        ensure_ascii=False))
             except Exception:
                 log.exception("프로세스 목록 실패")
             if stop.wait(0.6 if first else 2.0):
