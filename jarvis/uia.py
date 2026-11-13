@@ -18,6 +18,8 @@ import threading
 import time
 from dataclasses import dataclass
 
+from .winutil import window_title as _title
+
 log = logging.getLogger("jarvis.uia")
 user32 = ctypes.windll.user32
 
@@ -468,13 +470,6 @@ def element_at(x: int, y: int) -> tuple[str, str]:
 # ---------------------------------------------------------------------- 보조
 def _norm(s: str) -> str:
     return re.sub(r"[\s\-_.()·:]+", "", (s or "").lower())
-
-
-def _title(hwnd: int) -> str:
-    n = user32.GetWindowTextLengthW(hwnd)
-    buf = ctypes.create_unicode_buffer(n + 1)
-    user32.GetWindowTextW(hwnd, buf, n + 1)
-    return buf.value
 
 
 def _is_browser(hwnd: int) -> bool:

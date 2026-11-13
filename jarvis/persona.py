@@ -82,8 +82,6 @@ ACTIVE_OFF = [
 ACTIVE_ALREADY = "이미 액티브 모드입니다. 끄시려면 액티브 모드 종료라고 해 주십시오."
 ACTIVE_ALREADY_OFF = "액티브 모드는 이미 꺼져 있습니다."
 
-UNKNOWN_LOCAL = ("죄송합니다, 그 요청은 로컬 모드에서 처리할 수 없습니다. "
-                 "설정에서 Claude 연결을 켜 주시면 도와드리겠습니다.")
 OFFLINE = "지금은 Claude에 연결할 수 없어 기본 명령만 처리할 수 있습니다."
 NO_KEY = "{title}, 아직 Claude API 키가 없어 기본 명령만 가능합니다. 설정에서 키를 넣거나 Pro 계정 연결을 선택해 주십시오."
 

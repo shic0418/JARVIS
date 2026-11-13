@@ -786,7 +786,7 @@ class Jarvis(QObject):
     # ================================================================== 말하기
     def say(self, text: str, follow_up: bool = True) -> None:
         self._follow_up = follow_up
-        sentences, rest = split_sentences(text, final=True)
+        sentences, _ = split_sentences(text, final=True)
         if len(sentences) <= 1:
             self.tts.say(text)
             return

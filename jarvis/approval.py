@@ -37,7 +37,3 @@ def answer(text: str) -> bool | None:
         if tokens and len(tokens) <= 4 and all(_YES_TOKEN.fullmatch(tok) for tok in tokens):
             return True
     return None
-
-
-def is_yes(text: str) -> bool:
-    return answer(text) is True
