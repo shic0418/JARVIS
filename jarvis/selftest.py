@@ -34,7 +34,18 @@ def check(name: str, fn) -> object:
         return None
 
 
+def _safe_console() -> None:
+    """콘솔 · 파이프가 cp949 같은 좁은 인코딩이면 '—' · '·' 같은 글자에서 print 가 죽는다.
+    인코딩은 그대로 두고 못 쓰는 글자만 '?' 로 바꿔 끝까지 돌게 한다 (selftest.txt 는 UTF-8 로 따로 저장)."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except Exception:   # reconfigure 가 없는 대체 스트림 (IDE 등)
+            pass
+
+
 def main() -> int:
+    _safe_console()
     if sys.platform != "win32":
         print("Windows 에서만 실행할 수 있습니다.")
         return 1
