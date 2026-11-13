@@ -338,7 +338,10 @@ class PCTools(ControlTools):
                                                             "line starting with '- ' is a sub-point"},
                                  "left": {"type": "object", "description": "two_column: {heading, bullets}"},
                                  "right": {"type": "object", "description": "two_column: {heading, bullets}"},
-                                 "stats": {"type": "array", "description": "stats: 2-4 of {value: '73%', label}",
+                                 "icon": {"type": "string", "description": "section / closing: Material Icons name for the "
+                                                                           "big icon (default: picked from the text)"},
+                                 "stats": {"type": "array", "description": "stats: 2-4 of {value: '73%', label, icon?} — a unit "
+                                                                           "after the number is drawn smaller",
                                            "items": {"type": "object"}},
                                  "chart": {"type": "object", "description": "chart: the data for a real, editable chart",
                                            "properties": {
@@ -348,10 +351,11 @@ class PCTools(ControlTools):
                                                    "name": {"type": "string"},
                                                    "values": {"type": "array", "items": {"type": "number"}}}}},
                                                "unit": {"type": "string", "description": "e.g. '%', '℃', '명'"}}},
-                                 "events": {"type": "array", "description": "timeline: 3-5 of {when, title, text}",
+                                 "events": {"type": "array", "description": "timeline: 3-5 of {when, title, text, icon?}",
                                             "items": {"type": "object"}},
-                                 "steps": {"type": "array", "description": "process: 3-5 of {title, text}", "items": {"type": "object"}},
-                                 "cards": {"type": "array", "description": "cards: 3-4 of {title, text}", "items": {"type": "object"}},
+                                 "steps": {"type": "array", "description": "process: 3-5 of {title, text, icon?}", "items": {"type": "object"}},
+                                 "cards": {"type": "array", "description": "cards: 3-4 of {title, text, icon?} — icon is a Material "
+                                                                           "Icons name; omitted icons are picked from the text", "items": {"type": "object"}},
                                  "table": {"type": "object", "description": "table: {columns: [...], rows: [[...]]}, at most 5 x 6"},
                                  "statement": {"type": "string", "description": "highlight: the one big sentence"},
                                  "detail": {"type": "string", "description": "highlight: one supporting line"},
@@ -361,6 +365,7 @@ class PCTools(ControlTools):
                                  "required": ["title"]}},
                   "sources": {"type": "array", "items": {"type": "string"}, "description": "references you used yourself: 'title — URL'"},
                   "agenda": {"type": "boolean", "description": "add a 목차 slide (default: when there are 4+ content slides)"},
+                  "icon": {"type": "string", "description": "cover icon (Material Icons name); default: picked from the title"},
                   "filename": {"type": "string", "description": "file name without extension (default: the title)"},
                   "folder": {"type": "string", "description": "'바탕화면', '문서', '다운로드' or a full path (default Documents\\JARVIS)"},
                   "overwrite": {"type": "boolean", "description": "replace the file of the same name (use when revising a file you just made)"},
@@ -371,9 +376,12 @@ class PCTools(ControlTools):
                  "한글 / 한컴 / hwp / 아래아한글. Use for 보고서 / 레포트 / 조사 정리 / 문서로 정리 / 가정통신문 requests. "
                  "Give the sections in order; how much you write yourself (just headings, or the full text) is set by the "
                  "작업 rules in your instructions — sections without text are written by writer agents in parallel. A 참고 자료 "
-                 "list is added from sources and pages are numbered.",
+                 "list is added from sources and pages are numbered. Layout: a cover (subtitle split by ' · ' into "
+                 "subject / name; today's date is added if no year), a 목차 when there are 3+ top-level headings, then the body.",
                  {"title": s,
                   "subtitle": {"type": "string", "description": "e.g. '과목 · 학번 이름 · 날짜'"},
+                  "summary": {"description": "optional 핵심 요약 box near the start: a string, a list of strings, or "
+                                             "{title, text | bullets}"},
                   "audience": {"type": "string", "description": "who reads it, e.g. '고등학교 과제', '팀장 보고'"},
                   "facts": {"type": "array", "items": {"type": "string"},
                             "description": "facts for the writers — only what you researched yourself"},
@@ -384,6 +392,8 @@ class PCTools(ControlTools):
                                  "description": "outline only: what this section must cover"},
                       "paragraphs": {"type": "array", "items": {"type": "string"}},
                       "bullets": {"type": "array", "items": {"type": "string"}},
+                      "callout": {"description": "optional highlighted key-point box for this section: a string, a list "
+                                                 "of strings, or {title, text | bullets}"},
                       "table": {"type": "object", "properties": {
                           "columns": {"type": "array", "items": {"type": "string"}},
                           "rows": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}},
@@ -416,37 +426,71 @@ class PCTools(ControlTools):
                  "Create card news (카드뉴스): square 1080x1080 images — a cover, one card per item and a closing card — saved "
                  "as PNG files plus one PDF in a new folder, then open the folder. Use for 카드뉴스 / 인스타 카드 / SNS 홍보 "
                  "requests instead of operating a design website (much faster and more reliable). Keep each card short: a "
-                 "title and 2-4 short lines.",
+                 "title and 2-4 short lines — one message per card. Vary the card layout: a number → stat, before/after or "
+                 "wrong/right → compare, an order → steps, a saying → quote, a checklist → list, one key idea → point "
+                 "(omitted layouts are chosen from the content). Each card gets an icon picked from its text unless you give one.",
                  {"title": {"type": "string", "description": "cover title (big text)"},
                   "subtitle": {"type": "string", "description": "small tag on the cover, e.g. '환경 캠페인'"},
                   "cards": {"type": "array", "description": "content cards, 3-8 recommended (max 12)",
                             "items": {"type": "object", "properties": {
                                 "title": {"type": "string"},
                                 "bullets": {"type": "array", "items": {"type": "string"}},
-                                "highlight": {"type": "string", "description": "optional one-line key message in a box"}},
+                                "highlight": {"type": "string", "description": "optional one-line key message in a box"},
+                                "layout": {"type": "string", "enum": ["point", "list", "stat", "steps", "compare", "quote"],
+                                           "description": "point = big icon + message, list = numbered boxes, stat = one big "
+                                                          "number, steps = ordered steps, compare = two columns, quote = quotation"},
+                                "icon": {"type": "string", "description": "Material Icons name, e.g. bedtime, local_cafe"},
+                                "number": {"type": "string", "description": "stat: the big number, e.g. '72' or '72%'"},
+                                "unit": {"type": "string", "description": "stat: unit, e.g. '%', '시간'"},
+                                "caption": {"type": "string", "description": "stat: one explaining line"},
+                                "left": {"type": "object", "description": "compare: left column (e.g. wrong habit / before)",
+                                         "properties": {"title": {"type": "string"},
+                                                        "items": {"type": "array", "items": {"type": "string"}}}},
+                                "right": {"type": "object", "description": "compare: right column (e.g. right habit / after)",
+                                          "properties": {"title": {"type": "string"},
+                                                         "items": {"type": "array", "items": {"type": "string"}}}},
+                                "quote": {"type": "string"},
+                                "by": {"type": "string", "description": "quote: who said it / source"}},
                                 "required": ["title"]}},
                   "closing": {"type": "string", "description": "closing card: first line is the big message, later lines small text"},
                   "sources": {"type": "array", "items": {"type": "string"}},
                   "theme": {"type": "string", "enum": ["light", "dark", "navy", "warm", "green", "purple", "teal", "rose",
                                                        "mono", "midnight", "forest"]},
+                  "style": {"type": "string", "enum": ["clean", "bold", "gradient", "pastel"],
+                            "description": "look, combined with theme: clean (default), bold (strong color band, big "
+                                           "numbers), gradient (gradient background), pastel (soft colors)"},
+                  "icon": {"type": "string", "description": "cover icon (Material Icons name); default: picked from the title"},
                   "filename": s, "folder": s, "overwrite": {"type": "boolean"}, "open": {"type": "boolean"}},
                  ["title", "cards"]),
             tool("make_poster",
                  "Create a poster (포스터 · 홍보물 · 안내문 · 캠페인) as a portrait A4 (or A3) image plus a print-ready PDF and "
                  "open it. Use instead of operating a design website. A colored header with the title, an optional slogan "
-                 "box, 2-4 sections of short bullet points and a footer.",
+                 "box, 2-4 sections of short bullet points and a footer. Put the key facts (일시 · 장소 · 대상 · 문의) in "
+                 "info — they become an icon strip under the header.",
                  {"title": s,
                   "subtitle": {"type": "string"},
                   "highlight": {"type": "string", "description": "slogan or key message shown in a box"},
                   "sections": {"type": "array", "description": "2-4 recommended (max 6)",
                                "items": {"type": "object", "properties": {
                                    "heading": {"type": "string"},
-                                   "bullets": {"type": "array", "items": {"type": "string"}}}}},
+                                   "bullets": {"type": "array", "items": {"type": "string"}},
+                                   "icon": {"type": "string", "description": "Material Icons name"}}}},
+                  "info": {"type": "array", "description": "key facts strip, max 4 (default: taken from short "
+                                                          "'일시 / 장소 …' sections)",
+                           "items": {"type": "object", "properties": {
+                               "label": {"type": "string", "description": "e.g. '일시'"},
+                               "text": {"type": "string"},
+                               "icon": {"type": "string"}},
+                               "required": ["text"]}},
                   "footer": {"type": "string", "description": "e.g. organizer · date · place"},
                   "sources": {"type": "array", "items": {"type": "string"}},
                   "theme": {"type": "string", "enum": ["light", "dark", "navy", "warm", "green", "purple", "teal", "rose",
                                                        "mono", "midnight", "forest"]},
                   "size": {"type": "string", "enum": ["a4", "a3"]},
+                  "style": {"type": "string", "enum": ["clean", "bold", "gradient", "pastel"],
+                            "description": "look, combined with theme: clean (default), bold (strong color band, big "
+                                           "numbers), gradient (gradient background), pastel (soft colors)"},
+                  "icon": {"type": "string", "description": "header icon (Material Icons name); default: picked from the title"},
                   "filename": s, "folder": s, "overwrite": {"type": "boolean"}, "open": {"type": "boolean"}},
                  ["title", "sections"]),
         ] + self.control_schemas(tool)
@@ -1475,7 +1519,7 @@ class PCTools(ControlTools):
     def t_make_presentation(self, title: str, slides: list, subtitle: str = "", sources: list | None = None,
                             theme: str = "", agenda: bool | None = None, filename: str = "", folder: str = "",
                             overwrite: bool = False, open: bool = True, style: str = "", audience: str = "",
-                            facts: list | None = None, **_extra) -> str:
+                            facts: list | None = None, icon: str = "", **_extra) -> str:
         from . import office, writers                 # (_extra: 모델이 덧붙인 모르는 칸은 무시한다 — 그 때문에 다시 부르게 하지 않는다)
         slides, found, team = self._team("slides", {"title": title, "subtitle": subtitle, "audience": audience,
                                                     "facts": facts}, slides)
@@ -1484,7 +1528,7 @@ class PCTools(ControlTools):
         self._last_style = look                       # 다음 발표 자료는 다른 디자인으로
         color = office.pick_theme(theme, look, str(title))
         path, info, note = self._make_file(
-            lambda p: office.build_presentation(p, title, slides, subtitle, refs, color, agenda, look),
+            lambda p: office.build_presentation(p, title, slides, subtitle, refs, color, agenda, look, icon=icon or None),
             filename or title, ".pptx", folder, overwrite, open)
         talk = f", 발표 대본 {info['notes']}장" if info["notes"] else ""
         split = f", 글이 넘친 {info['split']}곳은 다음 장으로 나눔" if info["split"] else ""
@@ -1494,15 +1538,16 @@ class PCTools(ControlTools):
 
     def t_make_document(self, title: str, sections: list, subtitle: str = "", sources: list | None = None,
                         filename: str = "", folder: str = "", overwrite: bool = False, open: bool = True,
-                        audience: str = "", facts: list | None = None, format: str = "docx", **_extra) -> str:
+                        audience: str = "", facts: list | None = None, format: str = "docx", summary=None,
+                        icon: str = "", **_extra) -> str:
         from . import hwpx, office, writers
         hangul = str(format or "").strip().lower() in ("hwpx", "hwp", "한글", "한컴")
         sections, found, team = self._team("document", {"title": title, "subtitle": subtitle, "audience": audience,
                                                         "facts": facts}, sections)
         refs = writers.merge_sources(sources, found)
-        build = hwpx.build_hwpx if hangul else office.build_document
         path, info, note = self._make_file(
-            lambda p: build(p, title, sections, subtitle, refs),
+            lambda p: (hwpx.build_hwpx(p, title, sections, subtitle, refs, summary=summary) if hangul
+                       else office.build_document(p, title, sections, subtitle, refs, summary=summary, icon=icon or None)),
             filename or title, ".hwpx" if hangul else ".docx", folder, overwrite, open)
         if hangul and "열 프로그램을 찾지 못해" in note:
             note += " 한컴오피스 한글이나 무료 '한컴오피스 뷰어'가 있으면 열 수 있습니다."
@@ -1523,20 +1568,23 @@ class PCTools(ControlTools):
 
     def t_make_cardnews(self, title: str, cards: list, subtitle: str = "", closing: str = "", sources: list | None = None,
                         theme: str = "light", filename: str = "", folder: str = "", overwrite: bool = False,
-                        open: bool = True, **_extra) -> str:
+                        open: bool = True, style: str = "clean", icon: str = "", **_extra) -> str:
         from . import design
         path, info, note = self._make_file(
-            lambda p: design.build_cardnews(p, title, cards, subtitle, closing, sources, theme),
+            lambda p: design.build_cardnews(p, title, cards, subtitle, closing, sources, theme, style=style, icon=icon),
             filename or f"{title} 카드뉴스", "", folder, overwrite, open)
         return (f"카드뉴스를 만들었습니다 — {info['cards']}장 (표지 · 마무리 포함, 그림 파일과 한 묶음 PDF). "
                 f"저장한 곳: {self._where(path)} 안의 '{path.name}' 폴더.{note} [전체 경로: {path}]")
 
     def t_make_poster(self, title: str, sections: list | None = None, subtitle: str = "", highlight: str = "",
                       footer: str = "", sources: list | None = None, theme: str = "light", size: str = "a4",
-                      filename: str = "", folder: str = "", overwrite: bool = False, open: bool = True, **_extra) -> str:
+                      filename: str = "", folder: str = "", overwrite: bool = False, open: bool = True,
+                      style: str = "clean", icon: str = "", info: list | None = None, **_extra) -> str:
         from . import design
+        facts = info
         path, info, note = self._make_file(
-            lambda p: design.build_poster(p, title, sections or [], subtitle, highlight, footer, sources, theme, size),
+            lambda p: design.build_poster(p, title, sections or [], subtitle, highlight, footer, sources, theme, size,
+                                          style=style, icon=icon, info=facts),
             filename or title, ".png", folder, overwrite, open)
         return (f"포스터를 만들었습니다 — {str(size or 'a4').upper()} 세로, 구역 {info['sections']}개 (그림 파일과 인쇄용 PDF). "
                 f"저장한 곳: {self._where(path)} (파일 이름 {path.name}).{note} [전체 경로: {path}]")

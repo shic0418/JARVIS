@@ -11,9 +11,11 @@ from __future__ import annotations
 import collections
 import datetime
 import hashlib
+import io
 import math
 import re
 
+from . import icons
 from .office import (BODY_SIZES, CHARTS, FONT, H, M, STYLES, W, Theme, _em, _hexmix, _lines, _listish, _text, fit_size,
                      number, palette, parse_bullets, roomy_gap, split_items)
 
@@ -91,6 +93,7 @@ class Deck:
         self.hface = SERIF if self.style == "editorial" else None                  # 제목 글꼴
         # 강조색으로 쓰는 글자 · 숫자 — 바탕 위에서 잘 안 보이는 강조색(노랑 등)이면 제목 색으로
         self.ink = theme.accent if contrast(theme.accent, theme.bg) >= 2.6 else theme.title
+        self._icon: str | None = None                                               # 표지 · 장 구분 · 마무리의 큰 아이콘
         self.nface = SERIF if self.style == "editorial" else MONO if self.style == "tech" else None   # 큰 숫자 글꼴
 
     @property
@@ -99,6 +102,44 @@ class Deck:
         return self.AREA[self.style][2:]
 
     # ================================================================ 기본 도구
+    @staticmethod
+    def readable(fg: str, bg: str, floor: float = 3.0) -> str:
+        """바탕(bg) 위에서 읽히는 글자색: 명암비가 floor 이상이 될 때까지 fg 를 어두운(밝은) 쪽으로 옮긴다."""
+        if contrast(fg, bg) >= floor:
+            return fg
+        end = "000000" if lum(bg) > 0.5 else "FFFFFF"
+        for k in range(1, 11):
+            c = _hexmix(fg, end, k / 10)
+            if contrast(c, bg) >= floor:
+                return c
+        return end
+
+    def on(self, fill: str) -> str:
+        """이 바탕 위에 올릴 흰색 · 검정 중 더 잘 읽히는 것."""
+        return "FFFFFF" if contrast("FFFFFF", fill) >= contrast("111111", fill) else "111111"
+
+    def pic(self, s, name: str | None, cx: float, cy: float, size: float, color: str) -> bool:
+        """아이콘 그림 한 개 (가운데 cx, cy · 한 변 size 인치). 이름이 없거나 아이콘 글꼴이 없으면 아무것도 안 그린다."""
+        if not name:
+            return False
+        data = icons.png(name, color, min(640, max(48, int(size * 160))))
+        if not data:
+            return False
+        from pptx.util import Inches
+        s.shapes.add_picture(io.BytesIO(data), Inches(cx - size / 2), Inches(cy - size / 2), Inches(size), Inches(size))
+        return True
+
+    def big_icon(self, s, cx: float, cy: float, size: float, color: str) -> None:
+        """표지 · 장 구분 · 마무리의 큰 아이콘 (self._icon)."""
+        self.pic(s, self._icon, cx, cy, size, color)
+
+    def chip(self, s, cx: float, cy: float, d: float, fill: str, ink: str) -> None:
+        """동그란 바탕 + 아이콘."""
+        if not self._icon:
+            return
+        self.box(s, cx - d / 2, cy - d / 2, d, d, fill, "oval")
+        self.pic(s, self._icon, cx, cy, d * 0.56, ink)
+
     def rgb(self, hex_: str):
         from pptx.dml.color import RGBColor
         return RGBColor.from_string(hex_)
@@ -257,11 +298,13 @@ class Deck:
                 p.runs[0].text = line
         return tb
 
-    def badge(self, s, x, y, d, label: str, i: int = 0, on_accent_card: bool = False) -> None:
+    def badge(self, s, x, y, d, label: str, i: int = 0, on_accent_card: bool = False, icon: str | None = None) -> None:
         """번호 표시 (스타일에 따라 동그라미 · 네모 · 테두리 · 숫자만)."""
         t, st = self.t, self.style
         size = d * 72 * 0.42
         if st == "editorial":
+            if self.pic(s, icon, x + d / 2, y + d / 2, d * 0.95, self.ink):
+                return
             self.text(s, x - 0.05, y - 0.1, d + 0.5, d + 0.2, label, d * 72 * 0.7, self.ink, bold=True, anchor="middle",
                       face=SERIF)
             return
@@ -270,22 +313,30 @@ class Deck:
         elif st == "tech":
             fill, ink, line = None, self.ink, t.accent
         elif st == "pastel":
-            fill, ink, line = self.strong[i % 5], "FFFFFF", None
+            fill, ink, line = self.strong[i % 5], self.on(self.strong[i % 5]), None
         else:
             fill, ink, line = t.accent, t.on_accent, None
         self.box(s, x, y, d, d, fill, "rect" if st in ("bold", "corporate") else "oval", line=line, line_w=1.5)
+        if self.pic(s, icon, x + d / 2, y + d / 2, d * 0.58, ink):
+            return
         self.text(s, x - 0.1, y, d + 0.2, d, label, size, ink, bold=True, align="center", anchor="middle", face=self.nface)
 
     def card(self, s, x, y, w, h, i: int = 0, gap: float = 0.4, lead: bool = True) -> Ink:
         """스타일에 맞는 카드 바탕을 그리고, 그 위에 쓸 색을 돌려준다. lead=False 면 첫 카드를 따로 강조하지 않는다."""
         t, st = self.t, self.style
         first = i == 0 and lead
+        ink, fill = self._card(s, x, y, w, h, i, gap, lead, first)
+        return Ink(*(self.readable(c, fill) for c in ink))       # 연한 바탕에 연한 글자가 되지 않게 (명암비 3 이상)
+
+    def _card(self, s, x, y, w, h, i, gap, lead, first) -> tuple[Ink, str]:
+        """카드 바탕을 그리고 (그 위에 쓸 색, 바탕색)."""
+        t, st = self.t, self.style
         if st == "bold":
             if first:
                 self.box(s, x, y, w, h, t.accent)
-                return Ink(t.on_accent, t.on_accent, t.on_accent, t.on_accent)
+                return Ink(t.on_accent, t.on_accent, t.on_accent, t.on_accent), t.accent
             self.box(s, x, y, w, h, t.surface)
-            return Ink(t.title, t.text, self.ink, t.accent)
+            return Ink(t.title, t.text, self.ink, t.accent), t.surface
         if st == "side":
             self.box(s, x, y, w, h, t.surface)
             self.box(s, x, y, 0.08, h, t.accent if first or not lead else t.muted)
@@ -294,18 +345,20 @@ class Deck:
         elif st == "editorial":
             if i:
                 self.box(s, x - gap / 2, y, 0.012, h, t.muted)
-            return Ink(t.title, t.text, self.ink, t.accent)
+            return Ink(t.title, t.text, self.ink, t.accent), t.bg
         elif st == "pastel":
-            self.box(s, x, y, w, h, self.pastels[i % 5], "round", 0.1)
+            fill = self.pastels[i % 5]
+            self.box(s, x, y, w, h, fill, "round", 0.1)
             strong = t.accent if self.dark else self.strong[i % 5]
-            return Ink(t.title, t.text, strong, strong)
+            return Ink(t.title, t.text, strong, strong), fill
         elif st == "corporate":
             self.box(s, x, y, w, h, t.bg, line=t.soft, line_w=0.75)
             self.box(s, x, y, w, 0.07, t.accent if first or not lead else t.muted)
+            return Ink(self.ink if first else t.title, t.text, self.ink, t.accent), t.bg
         else:
             self.box(s, x, y, w, h, t.surface, "round", 0.05)
             self.box(s, x, y, w, 0.09, t.accent if first or not lead else t.muted)
-        return Ink(self.ink if first else t.title, t.text, self.ink, t.accent)
+        return Ink(self.ink if first else t.title, t.text, self.ink, t.accent), t.surface
 
     def page(self, title: str, notes: str = ""):
         """본문 장 하나: 스타일의 바탕 · 제목 자리 · 쪽 번호를 그리고 (장, 본문 칸 x, y, w, h) 를 돌려준다."""
@@ -334,7 +387,8 @@ class Deck:
         return s
 
     # ================================================================ 표지
-    def cover(self, title: str, subtitle: str) -> None:
+    def cover(self, title: str, subtitle: str, icon: str | None = None) -> None:
+        self._icon = icons.pick(icon, title, subtitle, kind="cover")
         getattr(self, f"_cover_{self.style}")(title, subtitle)
 
     def _cover_clean(self, title, subtitle):
@@ -343,6 +397,7 @@ class Deck:
         self.box(s, W - 4.6, -1.6, 6.2, 6.2, t.surface, "oval")
         self.box(s, W - 2.3, 3.9, 3.4, 3.4, t.soft, "oval")
         self.box(s, M, 2.35, 0.14, 2.2, t.accent)
+        self.chip(s, W - 2.2, 2.7, 2.0, t.accent, t.on_accent)
         size = size_for(title, ((12, 54), (18, 46), (26, 38), (36, 32)), 28)
         self.text(s, M + 0.45, 2.1, W - 2 * M - 3.2, 1.9, title, size, t.title, bold=True, anchor="bottom", spacing=1.05)
         if subtitle:
@@ -360,6 +415,7 @@ class Deck:
         size = size_for(title, ((8, 72), (12, 62), (18, 52), (26, 42), (38, 34)), 28)
         self.text(s, M, 1.7, W - 2 * M - 1.6, 3.75, title, size, t.on_accent, bold=True, anchor="bottom", spacing=1.02)
         self.box(s, M, 5.75, 1.7, 0.13, t.on_accent)
+        self.big_icon(s, W - 1.9, 2.3, 1.9, t.on_accent)
 
     def _mosaic(self, s, x, y, cols, rows, cell, gap, on_band: bool = False) -> None:
         """둥근 네모 모자이크 — 제목에 따라 칸의 색 · 모양이 달라진다."""
@@ -385,6 +441,7 @@ class Deck:
         s = self.slide()
         self.box(s, 0, 0, 5.7, H, self.band)
         self.box(s, 0.75, 0.9, 0.36, 0.36, t.accent)
+        self.big_icon(s, 4.75, 1.08, 0.8, t.accent)
         size = size_for(title, ((7, 50), (12, 42), (20, 36), (30, 30), (44, 26)), 22)
         self.text(s, 0.75, 1.6, 4.4, 3.7, title, size, self.on_band, bold=True, anchor="bottom", spacing=1.08)
         self.box(s, 0.75, 5.5, 1.0, 0.09, t.accent)
@@ -407,7 +464,11 @@ class Deck:
         for i, r in enumerate((1.25, 2.1, 2.95)):
             self.box(s, cx - r, cy - r, 2 * r, 2 * r, None, "oval", line=t.accent if i == 0 else t.soft,
                      line_w=1.75 if i == 0 else 1.0)
-        self.box(s, cx - 0.16, cy - 0.16, 0.32, 0.32, t.accent, "oval")
+        if self._icon:
+            self.chip(s, cx, cy, 1.5, t.bg, t.accent)
+            self.box(s, cx - 0.75, cy - 0.75, 1.5, 1.5, None, "oval", line=t.accent, line_w=1.5)
+        else:
+            self.box(s, cx - 0.16, cy - 0.16, 0.32, 0.32, t.accent, "oval")
 
     def _cover_tech(self, title, subtitle):
         t = self.t
@@ -454,6 +515,7 @@ class Deck:
         s = self.slide()
         self._sticker(s, self.seed % 5)
         size = size_for(title, ((9, 56), (14, 48), (20, 40), (30, 34)), 28)
+        self.chip(s, W / 2, 1.7, 1.2, t.accent, t.on_accent)
         self.text(s, 2.4, 1.95, W - 4.8, 2.6 if subtitle else 3.6, title, size, t.title, bold=True, align="center",
                   anchor="middle", spacing=1.1)
         if subtitle:
@@ -467,12 +529,14 @@ class Deck:
         self.box(s, 0, 0, 0.32, H - 1.35, t.accent)
         self.box(s, 0, H - 1.35, W, 1.35, self.band)
         self.box(s, 0.95, 0.9, 0.42, 0.42, t.accent)
+        self.big_icon(s, 1.16, 1.11, 0.28, t.on_accent)
         self.text(s, 1.52, 0.9, 6, 0.42, "발표 자료", 13, t.muted, bold=True, anchor="middle", track=100)
         size = size_for(title, ((10, 54), (16, 46), (24, 38), (34, 32)), 26)
         self.text(s, 0.95, 1.7, W - 1.9, 2.6, title, size, t.title, bold=True, anchor="bottom", spacing=1.06)
         self.box(s, 0.95, 4.5, W - 1.9, 0.045, t.accent)
         if subtitle:
             self.text(s, 0.95, 4.7, W - 1.9, 0.9, subtitle, 20, t.text)
+        self.big_icon(s, W - 1.5, H - 0.675, 0.85, self.on_band)
         self.text(s, 0.95, H - 1.35, 6, 1.35, datetime.date.today().strftime("%Y. %m. %d"), 13,
                   _hexmix(self.on_band, self.band, 0.25), bold=True, anchor="middle", track=150)
 
@@ -547,13 +611,15 @@ class Deck:
         self.text(s, 0.7, H - 0.52, 8, 0.3, self.title, 9, t.muted)
 
     # ================================================================ 장 구분
-    def section(self, number: int, title: str, items: list[tuple[str, int]], notes: str) -> None:
+    def section(self, number: int, title: str, items: list[tuple[str, int]], notes: str, icon: str | None = None) -> None:
+        self._icon = icons.pick(icon, title, *[line for line, _ in items[:3]], kind="section")
         getattr(self, f"_section_{self.style}")(number, title, [line for line, _ in items[:3]], notes)
 
     def _section_clean(self, number, title, lines, notes):
         t = self.t
         s = self.slide(notes)
         self.box(s, 0, 0, 4.4, H, t.accent)
+        self.big_icon(s, 2.2, 1.45, 1.1, t.on_accent)
         self.text(s, 0.6, 2.3, 3.4, 1.6, f"{number:02d}", 88, t.on_accent, bold=True, anchor="middle")
         self.text(s, 5.0, 2.4, W - 5.0 - M, 1.5, title, size_for(title, ((14, 40), (22, 34)), 28), t.title, bold=True,
                   anchor="bottom")
@@ -563,6 +629,7 @@ class Deck:
     def _section_bold(self, number, title, lines, notes):
         t = self.t
         s = self.slide(notes, bg=t.accent)
+        self.big_icon(s, W - 2.2, 2.0, 2.0, _hexmix(t.accent, t.on_accent, 0.35))
         self.text(s, M - 0.1, 0.3, 7, 3.4, f"{number:02d}", 190, _hexmix(t.accent, t.on_accent, 0.25), bold=True,
                   anchor="middle")
         self.text(s, M, 3.75, W - 2 * M, 1.7, title, size_for(title, ((12, 54), (18, 46), (28, 38)), 30), t.on_accent,
@@ -574,6 +641,7 @@ class Deck:
     def _section_side(self, number, title, lines, notes):
         t = self.t
         s = self.slide(notes, bg=self.band)
+        self.big_icon(s, 5.4, 1.95, 1.5, t.accent)
         self.text(s, 0.9, 0.85, 5, 2.2, f"{number:02d}", 120, t.accent, bold=True, anchor="middle")
         self.text(s, 0.9, 3.2, 7.6, 1.7, title, size_for(title, ((12, 48), (18, 42), (28, 34)), 28), self.on_band,
                   bold=True, anchor="bottom")
@@ -587,6 +655,7 @@ class Deck:
         s = self.slide(notes)
         self._tech_base(s, big=True)
         self.text(s, M, 1.15, 6, 0.35, f"SECTION  //  {number:02d}", 13, self.ink, bold=True, face=MONO, track=200)
+        self.big_icon(s, W - 2.8, 2.6, 2.0, t.accent)
         self.text(s, M - 0.08, 1.55, 6, 2.0, f"{number:02d}", 110, self.ink, bold=True, anchor="middle", face=MONO)
         self.text(s, M, 3.6, W - 2 * M - 2.0, 1.5, title, size_for(title, ((14, 46), (20, 40), (30, 32)), 28), t.title,
                   bold=True, anchor="bottom")
@@ -613,6 +682,7 @@ class Deck:
         self.box(s, W - 3.2, -1.6, 4.6, 4.6, p[(k + 1) % 5], "oval")
         self.box(s, -1.0, H - 1.9, 2.8, 2.8, p[(k + 3) % 5], "oval")
         self.box(s, 1.3, 1.55, 4.4, 4.4, p[k % 5], "oval")
+        self.big_icon(s, 3.5, 2.5, 0.9, t.accent if self.dark else self.readable(self.strong[k % 5], p[k % 5]))
         self.text(s, 1.3, 1.55, 4.4, 4.4, f"{number:02d}", 110, t.accent if self.dark else self.strong[k % 5], bold=True,
                   align="center", anchor="middle")
         self.text(s, 6.3, 2.3, W - 6.3 - 0.9, 1.7, title, size_for(title, ((10, 44), (16, 38), (24, 30)), 26), t.title,
@@ -625,6 +695,7 @@ class Deck:
         t = self.t
         s = self.slide(notes, bg=self.band)
         self.box(s, 0, 0, 0.32, H, t.accent)
+        self.big_icon(s, W - 2.0, 2.0, 1.6, t.accent)
         self.text(s, 1.0, 1.35, 4, 1.4, f"{number:02d}", 72, t.accent, bold=True, anchor="bottom")
         self.box(s, 1.0, 2.9, 0.8, 0.06, t.accent)
         self.text(s, 1.0, 3.1, W - 2.0, 1.7, title, size_for(title, ((14, 46), (20, 40), (30, 32)), 28), self.on_band,
@@ -633,7 +704,8 @@ class Deck:
             self.text(s, 1.0, 4.95, W - 2.0, 1.5, lines, 18, _hexmix(self.on_band, self.band, 0.3))
 
     # ================================================================ 마무리
-    def closing(self, title: str, items: list[tuple[str, int]], notes: str) -> None:
+    def closing(self, title: str, items: list[tuple[str, int]], notes: str, icon: str | None = None) -> None:
+        self._icon = icons.pick(icon, title or "감사합니다", *[line for line, _ in items[:3]], kind="closing")
         getattr(self, f"_closing_{self.style}")(title or "감사합니다", [line for line, _ in items[:3]], notes)
 
     def _closing_clean(self, title, lines, notes):
@@ -641,6 +713,7 @@ class Deck:
         s = self.slide(notes)
         self.box(s, -1.8, H - 3.2, 5.2, 5.2, t.surface, "oval")
         self.box(s, W - 3.0, -1.4, 4.2, 4.2, t.soft, "oval")
+        self.big_icon(s, W / 2, 1.6, 1.1, t.accent)
         self.text(s, M, 2.5, W - 2 * M, 1.5, title, size_for(title, ((10, 54), (18, 42)), 34), t.title, bold=True,
                   align="center", anchor="middle")
         if lines:
@@ -651,6 +724,7 @@ class Deck:
         s = self.slide(notes, bg=t.accent)
         self.box(s, -2.2, H - 3.6, 6.0, 6.0, _hexmix(t.accent, t.on_accent, 0.14), "oval")
         self.box(s, W - 3.4, -1.6, 4.4, 4.4, _hexmix(t.accent, "000000", 0.16), "oval")
+        self.big_icon(s, W / 2, 1.3, 1.2, t.on_accent)
         self.text(s, M, 2.2, W - 2 * M, 1.9, title, size_for(title, ((8, 66), (14, 52), (22, 40)), 32), t.on_accent,
                   bold=True, align="center", anchor="middle")
         if lines:
@@ -660,6 +734,7 @@ class Deck:
         t = self.t
         s = self.slide(notes)
         self.box(s, W - 5.7, 0, 5.7, H, self.band)
+        self.big_icon(s, W - 4.5, 1.1, 0.9, t.accent)
         self.text(s, W - 5.0, 1.9, 4.3, 2.4, title, size_for(title, ((7, 50), (12, 42), (20, 34)), 28), self.on_band,
                   bold=True, anchor="bottom", spacing=1.08)
         self.box(s, W - 5.0, 4.5, 1.0, 0.09, t.accent)
@@ -692,6 +767,7 @@ class Deck:
         t = self.t
         s = self.slide(notes)
         self._sticker(s, (self.seed + 2) % 5)
+        self.chip(s, W / 2, 1.7, 1.2, t.accent, t.on_accent)
         self.text(s, 2.4, 1.95, W - 4.8, 2.2 if lines else 3.6, title, size_for(title, ((8, 56), (14, 46), (22, 36)), 30),
                   t.title, bold=True, align="center", anchor="middle")
         if lines:
@@ -701,6 +777,7 @@ class Deck:
         t = self.t
         s = self.slide(notes, bg=self.band)
         self.box(s, 0, 0, 0.32, H, t.accent)
+        self.big_icon(s, W / 2, 1.3, 1.1, t.accent)
         self.text(s, 1.0, 2.2, W - 2.0, 1.8, title, size_for(title, ((8, 60), (14, 48), (22, 38)), 30), self.on_band,
                   bold=True, align="center", anchor="middle")
         self.box(s, W / 2 - 0.6, 4.15, 1.2, 0.06, t.accent)
@@ -781,7 +858,7 @@ class Deck:
                 return size, rh
         return None
 
-    def rows(self, s, x, y, w, h, pairs, size: float, rh: float, connect: bool = False) -> None:
+    def rows(self, s, x, y, w, h, pairs, size: float, rh: float, connect: bool = False, names=None) -> None:
         """번호 줄 목록. connect=True 면 번호들을 세로 선으로 잇는다 (단계)."""
         t, n = self.t, len(pairs)
         top = y + (h - rh * n) * 0.35
@@ -792,13 +869,15 @@ class Deck:
             self.box(s, x + 0.1 + d / 2 - 0.015, top + rh / 2, 0.03, rh * (n - 1), t.soft)
         for i, (key, text) in enumerate(pairs):
             ry = top + i * rh
+            icon = names[i] if names else None
             if plain:
-                self.text(s, x, ry, 1.1, rh, f"{i + 1:02d}", min(30, size + 4), self.ink, bold=True, anchor="middle",
-                          face=self.nface)
+                if not self.pic(s, icon, x + 0.45, ry + rh / 2, 0.6, self.ink):
+                    self.text(s, x, ry, 1.1, rh, f"{i + 1:02d}", min(30, size + 4), self.ink, bold=True, anchor="middle",
+                              face=self.nface)
             else:
                 if connect and self.style == "editorial":
                     self.box(s, x + 0.1, ry + (rh - d) / 2, d, d, t.bg, "oval")     # 세로 선을 가린다
-                self.badge(s, x + 0.1, ry + (rh - d) / 2, d, f"{i + 1}", i)
+                self.badge(s, x + 0.1, ry + (rh - d) / 2, d, f"{i + 1}", i, icon=icon)
             if key:
                 small = size * 0.8
                 kh = size * 1.3 / 72
@@ -843,25 +922,56 @@ class Deck:
                 self.bullets(s, cx + 0.3, y + 1.0, cw - 0.6, h - 1.2, items, size, color=ink.body if on_fill else None,
                              gap=spread, mark=ink.mark if on_fill else None)
 
+    _VALUE = re.compile(r"^(?P<v>[-+]?\d[\d,]*(?:\.\d+)?(?:\s*[~\-–]\s*\d[\d,]*(?:\.\d+)?)?)\s*(?P<u>\S.*)?$")
+
+    @classmethod
+    def split_value(cls, value: str) -> tuple[str, str]:
+        """'72%' → ('72', '%'), '3.5시간' → ('3.5', '시간'), '1,200억 톤' → ('1,200', '억 톤'). 숫자로 시작하지 않거나 단위가 길면 (글, '')."""
+        m = cls._VALUE.match(value.strip())
+        if not m or not m["u"] or _em(m["u"]) > 6:
+            return value, ""
+        return m["v"].strip(), m["u"].strip()
+
     def stats(self, title: str, stats: list[dict], notes: str) -> None:
+        from pptx.enum.text import PP_ALIGN
         s, x, y, w, h = self.page(title, notes)
         t = self.t
         stats = [st for st in stats if _text(st.get("value")) or _text(st.get("label"))][:4] or [{"value": "-", "label": ""}]
         n, gap = len(stats), 0.35
         cw = (w - gap * (n - 1)) / n
-        ch = min(h, 3.9)
-        top = y + (h - ch) * 0.35
+        ch = min(h, 5.2)                                       # 본문 칸을 거의 다 채운다
+        top = y + (h - ch) / 2
+        parts = [self.split_value(_text(st.get("value"))) for st in stats]
+        labels = [_text(st.get("label")) for st in stats]
+        names = icons.assign([(st.get("icon"), [labels[i], _text(st.get("value"))]) for i, st in enumerate(stats)],
+                             spare="stats")
+        has_icon = any(names)
+        vsize = next((z for z in (60, 54, 46, 38, 30, 24) if all(
+            (_em(v) + _em(u) * 0.5) * z / 72 * 1.3 <= cw - 0.4 for v, u in parts)), 20)   # 굵은 숫자는 넓다
+        lsize = next((z for z in (20, 17, 14) if all(_lines(lb, z, cw - 0.5) <= (2 if z == 20 else 3) for lb in labels)), 14)
+        vh = vsize * 1.25 / 72
+        lh = max(_lines(lb, lsize, cw - 0.5) for lb in labels) * lsize * 1.3 / 72
+        icon_h = 0.85 if has_icon else 0.0
+        block = icon_h + vh + 0.3 + lh
+        start = top + max(0.2, (ch - block) / 2)
         for i, st in enumerate(stats):
             cx = x + i * (cw + gap)
             ink = self.card(s, cx, top, cw, ch, i, gap)
-            value = _text(st.get("value"))
-            vsize = next((z for z in (60, 54, 46, 38, 30, 24) if _em(value) * z / 72 * 1.3 <= cw - 0.4), 20)   # 굵은 숫자는 넓다
-            self.text(s, cx + 0.15, top + 0.45, cw - 0.3, 1.5, value, vsize, ink.strong, bold=True, align="center",
-                      anchor="middle", face=self.nface)
-            self.box(s, cx + cw / 2 - 0.35, top + 2.05, 0.7, 0.05, ink.body if ink.body != t.text else t.soft)
-            label = _text(st.get("label"))
-            lsize = 20 if _lines(label, 20, cw - 0.5) <= 2 else 17 if _lines(label, 17, cw - 0.5) <= 3 else 14
-            self.text(s, cx + 0.25, top + 2.25, cw - 0.5, 1.5, label, lsize, ink.body, align="center")
+            if has_icon:
+                self.badge(s, cx + cw / 2 - 0.3, start, 0.6, "", i, on_accent_card=self.style == "bold" and i == 0,
+                           icon=names[i])
+            value, unit = parts[i]
+            tb, tf = self._frame(s, cx + 0.15, start + icon_h, cw - 0.3, vh + 0.1, "middle")
+            p = tf.paragraphs[0]
+            p.alignment = PP_ALIGN.CENTER
+            self._font(p.add_run(), vsize, ink.strong, True, self.nface)
+            p.runs[0].text = value
+            if unit:
+                self._font(p.add_run(), vsize * 0.5, ink.strong, True, self.nface)
+                p.runs[1].text = " " + unit if _em(unit) > 1 else unit
+            ly = start + icon_h + vh + 0.1
+            self.box(s, cx + cw / 2 - 0.35, ly, 0.7, 0.05, ink.body if ink.body != t.text else t.soft)
+            self.text(s, cx + 0.25, ly + 0.2, cw - 0.5, lh + 0.1, labels[i], lsize, ink.body, align="center")
 
     def chart(self, title: str, spec: dict, items: list[tuple[str, int]], notes: str) -> bool:
         """진짜 차트 (파워포인트에서 바로 고칠 수 있음). 데이터가 차트로 그릴 수 없으면 False (→ 목록 장으로)."""
@@ -993,7 +1103,7 @@ class Deck:
             self.box(s, cx - d * 0.2, cy - d * 0.2, d * 0.4, d * 0.4, t.bg, "oval")
 
     def timeline(self, title: str, events: list[dict], notes: str) -> None:
-        """연표: 가로 선 위에 시점들, 그 아래에 사건과 설명. 칸이 좁으면 세로로 내려 쓴다."""
+        """연표: 가로 선 위에 시점들, 마디 아래에 사건 카드(제목 · 설명). 칸이 좁으면 세로로 내려 쓴다."""
         s, x, y, w, h = self.page(title, notes)
         t = self.t
         ev = events[:6]
@@ -1022,96 +1132,123 @@ class Deck:
                 if body:
                     self.text(s, lx + 0.45, start + th, w - ww - 0.85, dh + 0.1, body, dsize, soft)
             return
+        names = icons.assign([(e.get("icon"), [a, b]) for e, (a, b) in zip(ev, pairs)], spare="cards")
+        has_icon = any(names)
         wsize = next((z for z in (30, 26, 22, 19, 17) if all(_em(wh) * z / 72 * 1.2 <= cw - 0.15 for wh in whens)), 17)
-        tsize, dsize = self._pair_sizes(pairs, cw - 0.4, h - 1.75 - 0.5, 22)
-        tall = max((_lines(a, tsize, (cw - 0.4) * 0.93) * tsize * 1.22 + _lines(b, dsize, (cw - 0.4) * 0.93) * dsize * 1.3 * bool(b)) / 72
-                   for a, b in pairs)
-        ly = y + 1.1 + max(0.0, (h - 1.1 - 0.55 - tall) * 0.4)        # 시점 · 선 · 설명 묶음을 본문 칸 가운데쯤에
+        ly = y + 1.2                                                    # 가로선 (그 위에 시점, 아래에 사건 카드)
+        ctop = ly + 0.45
+        chh = y + h - ctop                                              # 카드는 본문 칸 아래 끝까지
+        inner = cw - 0.2 - 0.4
+        icon_h = 0.65 if has_icon else 0.0
+        tsize, dsize = self._pair_sizes(pairs, inner, chh - 0.4 - icon_h, 22)
+        tall = max(self._pair_height(p, tsize, dsize, inner) for p in pairs)
         self.box(s, x + cw / 2, ly - 0.02, w - cw, 0.04, t.soft)
         for i, (name, body) in enumerate(pairs):
             cx = x + cw * (i + 0.5)
             self._node(s, cx, ly, i)
-            self.text(s, cx - cw / 2 + 0.05, ly - 1.25, cw - 0.1, 0.95, whens[i], wsize, self.ink, bold=True, align="center",
+            self.text(s, cx - cw / 2 + 0.05, ly - 1.15, cw - 0.1, 0.8, whens[i], wsize, self.ink, bold=True, align="center",
                       anchor="bottom", face=self.nface)
-            th = _lines(name, tsize, (cw - 0.4) * 0.93) * tsize * 1.22 / 72 + 0.1 if name else 0
+            kx = cx - cw / 2 + 0.1
+            ink = self.card(s, kx, ctop, cw - 0.2, chh, i, 0.2, lead=False)
+            start = ctop + max(0.15, (chh - icon_h - tall) / 2)
+            if has_icon:
+                self.pic(s, names[i], cx, start + 0.25, 0.5, ink.strong)
+            th = _lines(name, tsize, inner * 0.93) * tsize * 1.22 / 72 + 0.1 if name else 0
             if name:
-                self.text(s, cx - cw / 2 + 0.15, ly + 0.45, cw - 0.3, th, name, tsize, t.title, bold=True, align="center",
+                self.text(s, kx + 0.2, start + icon_h, cw - 0.6, th, name, tsize, ink.head, bold=True, align="center",
                           face=self.hface)
             if body:
-                self.text(s, cx - cw / 2 + 0.15, ly + 0.45 + th, cw - 0.3, max(0.4, y + h - (ly + 0.45 + th)), body, dsize,
-                          soft, align="center")
+                self.text(s, kx + 0.2, start + icon_h + th, cw - 0.6, max(0.35, ctop + chh - (start + icon_h + th) - 0.1), body,
+                          dsize, ink.body, align="center")
 
     def process(self, title: str, steps: list[dict], notes: str) -> None:
-        """단계: 번호가 붙은 카드들이 화살표로 이어진다. 칸이 좁거나 단계가 많으면 세로로 내려 쓴다."""
+        """단계: 아이콘 · 번호가 붙은 카드들이 화살표로 이어진다 (첫 단계 flag · 끝 단계 task_alt). 칸이 좁거나 많으면 세로로."""
         s, x, y, w, h = self.page(title, notes)
         t = self.t
         st = steps[:6]
         n = len(st)
         pairs = [(_text(p.get("title")), _text(p.get("text"))) for p in st]
+        given = [p.get("icon") for p in st]
+        if n >= 2:
+            given[0] = given[0] or "flag"
+            given[-1] = given[-1] or "task_alt"
+        names = icons.assign([(g, [a, b]) for g, (a, b) in zip(given, pairs)], spare="steps")
         arrow = 0.46 if n > 1 else 0
         cw = (w - arrow * (n - 1)) / n
         if cw < 2.35:
             fit = self._rows_fit(pairs, w, h)
             if fit:
-                self.rows(s, x, y, w, h, pairs, *fit, connect=True)
+                self.rows(s, x, y, w, h, pairs, *fit, connect=True, names=names)
                 return
-        tsize, dsize = self._pair_sizes(pairs, cw - 0.6, min(h, 4.4) - 1.35 - 0.3, 28 if n <= 3 else 24)
+        ch = min(h, 5.2)
+        chip = 0.8
+        head = chip + 0.3
+        tsize, dsize = self._pair_sizes(pairs, cw - 0.6, ch - head - 0.7, 28 if n <= 3 else 24)
         if tsize <= 18:                                        # 가로 카드에는 글이 너무 작아진다 → 세로로 (들어가면)
             fit = self._rows_fit(pairs, w, h)
             if fit and fit[0] > tsize:
-                self.rows(s, x, y, w, h, pairs, *fit, connect=True)
+                self.rows(s, x, y, w, h, pairs, *fit, connect=True, names=names)
                 return
-        ch = min(h, 4.4, max(3.0, 1.35 + max(self._pair_height(p, tsize, dsize, cw - 0.6) for p in pairs) + 0.45))   # 내용에 맞는 높이
-        top = y + (h - ch) * 0.4
+        top = y + (h - ch) / 2
+        tall = max(self._pair_height(p, tsize, dsize, cw - 0.6) for p in pairs)
+        start = top + max(0.3, (ch - head - tall) / 2)
         for i, (name, body) in enumerate(pairs):
             cx = x + i * (cw + arrow)
             ink = self.card(s, cx, top, cw, ch, i, arrow, lead=False)
-            self.badge(s, cx + 0.3, top + 0.4, 0.66, f"{i + 1}", i)
+            self.badge(s, cx + 0.3, start, chip, f"{i + 1}", i, icon=names[i])
+            if names[i]:
+                self.text(s, cx + cw - 1.5, start, 1.2, chip, f"{i + 1:02d}", 16, ink.strong, bold=True, align="right",
+                          anchor="middle", face=self.nface)
             th = _lines(name, tsize, (cw - 0.6) * 0.93) * tsize * 1.22 / 72 + 0.1
-            self.text(s, cx + 0.3, top + 1.35, cw - 0.6, th, name, tsize, t.title, bold=True, face=self.hface)
+            self.text(s, cx + 0.3, start + head, cw - 0.6, th, name, tsize, ink.head, bold=True, face=self.hface)
             if body:
-                self.text(s, cx + 0.3, top + 1.4 + th, cw - 0.6, max(0.4, ch - 1.55 - th), body, dsize, ink.body)
+                self.text(s, cx + 0.3, start + head + th + 0.05, cw - 0.6, max(0.4, top + ch - (start + head + th) - 0.2), body,
+                          dsize, ink.body)
             if i < n - 1:
                 self.box(s, cx + cw + 0.11, top + ch / 2 - 0.2, 0.24, 0.4, t.accent if self.style in ("bold", "tech") else t.soft,
                          "chevron")
 
     def cards(self, title: str, cards: list[dict], notes: str) -> None:
-        """카드 묶음 (2~6개): 번호 · 제목 · 짧은 설명."""
+        """카드 묶음 (2~6개): 아이콘 · 번호 · 제목 · 짧은 설명 — 본문 칸을 채우고 내용은 카드 안에서 세로 가운데."""
         s, x, y, w, h = self.page(title, notes)
-        t = self.t
         cs = cards[:6]
         n = len(cs)
         pairs = [(_text(c.get("title")), _text(c.get("text"))) for c in cs]
+        names = icons.assign([(c.get("icon"), [a, b]) for c, (a, b) in zip(cs, pairs)], spare="cards")
         cols = n if n <= 3 else 2 if n == 4 else 3
         if n == 3 and w < 9:                                   # 좁은 칸(사이드바 스타일)에서는 세로로 쌓는다
             fit = self._rows_fit(pairs, w, h)
             if fit:
-                self.rows(s, x, y, w, h, pairs, *fit)
+                self.rows(s, x, y, w, h, pairs, *fit, names=names)
                 return
         rows = math.ceil(n / cols)
         gap = 0.3
         cw = (w - gap * (cols - 1)) / cols
-        head = 1.3 if rows == 1 else 0.72
+        chip = 0.8 if rows == 1 else 0.56
+        head = chip + (0.3 if rows == 1 else 0.18)
         if rows == 1:
-            tsize, dsize = self._pair_sizes(pairs, cw - 0.6, min(h, 4.4) - head - 0.3, 28 if n <= 3 else 24)
-            ch = min(h, 4.4, max(3.0, head + max(self._pair_height(p, tsize, dsize, cw - 0.6) for p in pairs) + 0.45))
-            top = y + (h - ch) * 0.4
+            ch = min(h, 5.4)
+            top = y + (h - ch) / 2
+            tsize, dsize = self._pair_sizes(pairs, cw - 0.6, ch - head - 0.6, 28 if n <= 3 else 24)
         else:
             ch = (h - gap * (rows - 1)) / rows
             top = y
-            tsize, dsize = self._pair_sizes(pairs, cw - 0.6, ch - head - 0.25, 22)
+            tsize, dsize = self._pair_sizes(pairs, cw - 0.6, ch - head - 0.4, 22)
+        tall = max(self._pair_height(p, tsize, dsize, cw - 0.6) for p in pairs)
         for i, (name, body) in enumerate(pairs):
             r, k = divmod(i, cols)
             cx, cy = x + k * (cw + gap), top + r * (ch + gap)
             ink = self.card(s, cx, cy, cw, ch, i, gap, lead=False)
-            if rows == 1:
-                self.badge(s, cx + 0.3, cy + 0.4, 0.62, f"{i + 1}", i)
-            else:
-                self.text(s, cx + 0.3, cy + 0.22, 1.2, 0.45, f"{i + 1:02d}", 17, ink.strong, bold=True, face=self.nface)
+            start = cy + max(0.2, (ch - head - tall) / 2)
+            self.badge(s, cx + 0.3, start, chip, f"{i + 1}", i, icon=names[i])
+            if names[i]:
+                self.text(s, cx + cw - 1.5, start, 1.2, chip, f"{i + 1:02d}", 15 if rows == 1 else 13, ink.strong, bold=True,
+                          align="right", anchor="middle", face=self.nface)
             th = _lines(name, tsize, (cw - 0.6) * 0.93) * tsize * 1.22 / 72 + 0.1
-            self.text(s, cx + 0.3, cy + head, cw - 0.6, th, name, tsize, t.title, bold=True, face=self.hface)
+            self.text(s, cx + 0.3, start + head, cw - 0.6, th, name, tsize, ink.head, bold=True, face=self.hface)
             if body:
-                self.text(s, cx + 0.3, cy + head + th + 0.05, cw - 0.6, max(0.35, ch - head - th - 0.2), body, dsize, ink.body)
+                self.text(s, cx + 0.3, start + head + th + 0.05, cw - 0.6, max(0.35, cy + ch - (start + head + th) - 0.15), body,
+                          dsize, ink.body)
 
     def _cell(self, cell, text: str, size: float, color: str, fill: str, bold: bool = False, align: str = "left") -> None:
         from pptx.enum.text import MSO_ANCHOR, PP_ALIGN

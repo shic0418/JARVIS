@@ -249,6 +249,7 @@ Claude가 “읽기 → 누르기 → 바뀐 화면 확인”을 반복해 목�
   장 형식 12가지(목록 · 비교 · 숫자 강조 · 차트 · 연표 · 단계 · 카드 · 표 · 한 문장 강조 · 인용 …), 색 테마 11가지.
   파워포인트에서 고칠 수 있는 진짜 차트, 모든 장에 발표 대본(노트). 글이 넘치면 글자를 줄이고 그래도 넘치면 다음 장으로 나눕니다.
 - **보고서(Word)** — “한글로”, “한컴으로”, “hwp 로”라고 하시면 같은 내용을 한컴오피스 한글 파일(**.hwpx**)로 만들어 드립니다. 한컴오피스가 없어도 파일은 만들어집니다. · **엑셀**(시트 여러 개 · 수식 · 차트) · **카드뉴스**(1080×1080 PNG + PDF) · **포스터**(A4/A3 PNG + 인쇄용 PDF).
+- **카드뉴스 · 포스터 디자인**: 카드마다 모양 6가지(핵심 한 문장 · 번호 목록 · 큰 숫자 · 단계 · 두 칸 비교 · 인용)를 내용에 맞춰 고르고, 스타일 4가지(clean · bold · gradient · pastel) × 색 테마 11가지. 카드마다 내용에 맞는 아이콘(겹치지 않게)과 Pretendard 글꼴. 포스터는 일시 · 장소 · 대상 · 문의를 아이콘 정보 띠로 보여 줍니다.
 - 부담되면 `data/config.json` 의 `writers` 를 줄이세요 (0~6, 기본 4. 0 이면 Claude 혼자 조사하고 씁니다). `writer_model` 로 작가 모델을 따로 정할 수 있습니다.
 - 표 · 카드뉴스 · 포스터는 Claude 혼자 만들고, ‘자료조사’ · ‘조사해서’ · ‘찾아서’ · ‘출처’라고 말했을 때만 검색합니다.
 - “미리캔버스 열어 줘” · “캔바 열어 줘” · “RISS 들어가 줘”처럼 과제용 사이트도 바로 엽니다.
@@ -462,6 +463,12 @@ python -m jarvis.selftest
 ```
 
 실행하고 5초 안에 점검할 창(크롬 등)을 눌러 앞에 띄워 두세요. 결과는 `data/selftest.txt` 에, 번호 상자 그림은 `data/selftest_marks.png` 에 저장됩니다.
+
+## 함께 넣은 외부 자료
+
+- `assets/fonts/Pretendard-*.otf` — Pretendard 글꼴, Copyright (c) 2021 Kil Hyung-jin. SIL Open Font License 1.1 (`assets/fonts/OFL-Pretendard.txt`).
+- `assets/icons/MaterialIconsRound-Regular.ttf` · `codepoints.json` — Google Material Icons (Round). Apache License 2.0 (`assets/icons/LICENSE-MaterialIcons.txt`).
+- 두 파일이 없어도 동작합니다 (맑은 고딕 · 아이콘 없이 그립니다).
 
 ## 개발
 

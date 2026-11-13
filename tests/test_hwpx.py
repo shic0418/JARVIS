@@ -18,7 +18,7 @@ SECTIONS = [
 
 def _open(path):
     z = zipfile.ZipFile(path)
-    return z, z.read("Contents/header.xml").decode(), z.read("Contents/section0.xml").decode()
+    return z, z.read("Contents/header.xml").decode(), z.read("Contents/section1.xml").decode()      # 본문 구역 (표지는 section0)
 
 
 def test_hwpx_package_layout_and_content(tmp_path):
@@ -31,7 +31,7 @@ def test_hwpx_package_layout_and_content(tmp_path):
     assert z.read("mimetype") == b"application/hwp+zip"
     for name in ("version.xml", "settings.xml", "Contents/content.hpf", "META-INF/container.xml", "Preview/PrvText.txt"):
         assert name in z.namelist()
-    for part in (header, section, z.read("Contents/content.hpf").decode()):
+    for part in (header, section, z.read("Contents/section0.xml").decode(), z.read("Contents/content.hpf").decode()):
         ET.fromstring(part.encode())                                                    # 올바른 XML
     # 덧붙인 모양 수와 실제 개수가 맞아야 한글이 연다
     for tag, item in (("charProperties", "charPr"), ("paraProperties", "paraPr"), ("borderFills", "borderFill")):
@@ -43,6 +43,36 @@ def test_hwpx_package_layout_and_content(tmp_path):
     assert "<hp:t>참고 자료</hp:t>" in section and "pageNum" in section
     assert "<hp:t>글자만 준 장</hp:t>" in section and "<hp:t>개요만 받은 장</hp:t>" in section
     assert "<opf:title>기후 변화 보고서</opf:title>" in z.read("Contents/content.hpf").decode()
+
+
+def test_hwpx_has_cover_toc_body_sections_and_every_reference_exists(tmp_path):
+    p = tmp_path / "r.hwpx"
+    secs = SECTIONS + [{"heading": "3. 결론", "paragraphs": ["끝."], "callout": "핵심: 강조 상자"}]
+    hwpx.build_hwpx(p, "기후 변화 보고서", secs, "과학 · 홍길동", ["자료"], summary=["첫째 요약", "둘째 요약"])
+    z, header, _ = _open(p)
+    sec0, sec1 = z.read("Contents/section0.xml").decode(), z.read("Contents/section1.xml").decode()
+    for part in (sec0, sec1, z.read("META-INF/container.rdf").decode()):
+        ET.fromstring(part.encode())
+    assert 'secCnt="2"' in header and "section1" in z.read("Contents/content.hpf").decode()
+    assert "<hp:t>REPORT</hp:t>" in sec0 and "pageNum" not in sec0 and 'hideFirstPageNum="1"' in sec0     # 표지: 쪽 번호 없음
+    assert "pageNum" in sec1 and '<hp:startNum pageStartsOn="BOTH" page="1"' in sec1                       # 본문: 1쪽부터
+    assert "<hp:t>목차</hp:t>" in sec1 and "<hp:t>핵심 요약</hp:t>" in sec1 and "<hp:t>강조 상자</hp:t>" not in sec1
+    assert 'pageBreak="1"' in sec1                                                                         # 목차 다음 쪽에서 본문
+    assert "<hp:t>2026" in sec0 or re.search(r"<hp:t>\d{4}\. \d\d\. \d\d</hp:t>", sec0)                  # 부제에 연도가 없으면 오늘 날짜
+    # 쓰인 모든 번호가 header.xml 에 있어야 한다 (없으면 한글이 연다 해도 모양이 깨진다)
+    have = {k: set(re.findall(rf'<hh:{k} id="(\d+)"', header)) for k in ("charPr", "paraPr", "borderFill")}
+    for part in (sec0, sec1):
+        for attr, k in (("charPrIDRef", "charPr"), ("paraPrIDRef", "paraPr")):
+            assert set(re.findall(rf'{attr}="(\d+)"', part)) <= have[k], attr
+    assert set(re.findall(r'borderFillIDRef="(\d+)"', header + sec0 + sec1)) <= have["borderFill"]
+    assert 'connect="1"' in header                                                                         # 요약 · 강조 상자는 이어진 문단이 한 상자로
+
+
+def test_hwpx_without_three_headings_has_no_toc(tmp_path):
+    p = tmp_path / "s.hwpx"
+    hwpx.build_hwpx(p, "짧은 글", [{"heading": "하나", "paragraphs": ["본문"]}], "")
+    _, _, section = _open(p)
+    assert "<hp:t>목차</hp:t>" not in section and 'pageBreak="1"' not in section
 
 
 def test_hwpx_refuses_empty_input(tmp_path):

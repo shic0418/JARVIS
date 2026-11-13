@@ -230,19 +230,21 @@ _LEAD = r"^(?:[-–—•●▪◦·*]|\d+[.)])\s+"
 
 
 def pairs(v) -> list[dict]:
-    """[{title, text}] 로 읽는다 (단계 · 카드): dict 그대로 · '제목: 설명' · '제목 — 설명' · 글자만."""
+    """[{title, text, icon}] 로 읽는다 (단계 · 카드): dict 그대로 · '제목: 설명' · '제목 — 설명' · 글자만. icon: 아이콘 이름(없으면 None)."""
     out = []
     for x in _items(v):
         if isinstance(x, dict):
             title = _text(x.get("title") or x.get("heading") or x.get("name") or x.get("label"))
             text = _text(x.get("text") or x.get("desc") or x.get("description") or x.get("detail"))
+            icon = _text(x.get("icon")) or None
             if not text and x.get("bullets"):
                 text = " · ".join(_text(b) for b in _strings(x.get("bullets")))
         else:
             parts = re.split(_SPLIT, re.sub(_LEAD, "", str(x).strip()), maxsplit=1)
             title, text = (_text(parts[0]), _text(parts[1]) if len(parts) > 1 else "")
+            icon = None
         if title or text:
-            out.append({"title": title or text, "text": text if title else ""})
+            out.append({"title": title or text, "text": text if title else "", **({"icon": icon} if icon else {})})
     return out
 
 
@@ -254,13 +256,15 @@ def events(v) -> list[dict]:
             when = _text(x.get("when") or x.get("date") or x.get("year") or x.get("time"))
             title = _text(x.get("title") or x.get("event") or x.get("name"))
             text = _text(x.get("text") or x.get("desc") or x.get("description") or x.get("detail"))
+            icon = _text(x.get("icon")) or None
         else:
             parts = [_text(p) for p in re.split(_SPLIT, re.sub(_LEAD, "", str(x).strip()), maxsplit=2)]
             when, title, text = (parts + ["", ""])[:3]
+            icon = None
             if not title:
                 when, title = "", when
         if when or title:
-            out.append({"when": when, "title": title, "text": text})
+            out.append({"when": when, "title": title, "text": text, **({"icon": icon} if icon else {})})
     return out
 
 
@@ -368,8 +372,9 @@ def split_items(items: list[tuple[str, int]], width_in: float, height_in: float,
 
 
 def build_presentation(path: Path, title: str, slides: list, subtitle: str = "", sources=None,
-                       theme: str = "light", agenda: bool | None = None, style: str = "clean") -> dict:
-    """발표 자료를 만든다 → {'slides': 장 수, 'notes': 대본을 넣은 장 수, 'split': 넘쳐서 나눈 장 수, 'style', 'theme'}."""
+                       theme: str = "light", agenda: bool | None = None, style: str = "clean", icon: str | None = None) -> dict:
+    """발표 자료를 만든다 → {'slides': 장 수, 'notes': 대본을 넣은 장 수, 'split': 넘쳐서 나눈 장 수, 'style', 'theme'}.
+    icon(표지) · 장의 icon(장 구분 · 마무리) · 카드 · 단계 · 숫자 · 연표 항목의 icon 은 머티리얼 아이콘 이름 (없으면 글에서 골라 준다)."""
     from .deck import Deck
     title = _text(title)
     if not title:
@@ -383,7 +388,7 @@ def build_presentation(path: Path, title: str, slides: list, subtitle: str = "",
     style = (style or "clean").strip().lower()
     style = style if style in STYLES else "clean"
     deck = Deck(THEMES[theme], title, style)
-    deck.cover(title, _text(subtitle))
+    deck.cover(title, _text(subtitle), icon)
     clean = []
     for i, raw in enumerate(slides, 1):
         if not isinstance(raw, dict):
@@ -418,7 +423,7 @@ def build_presentation(path: Path, title: str, slides: list, subtitle: str = "",
         items = parse_bullets(outline)
         if layout == "section":
             part += 1
-            deck.section(part, name, items, notes)
+            deck.section(part, name, items, notes, _text(raw.get("icon")) or None)
         elif layout == "two_column":
             side = [x if isinstance(x, dict) else {"heading": "", "bullets": _strings(x)} for x in (raw.get("left"), raw.get("right"))]
             if not any(side[k].get("bullets") or side[k].get("points") for k in (0, 1)) and items:
@@ -459,14 +464,14 @@ def build_presentation(path: Path, title: str, slides: list, subtitle: str = "",
         elif layout == "quote":
             deck.quote(name, _text(raw.get("quote")) or (items[0][0] if items else name), _text(raw.get("by")), notes)
         elif layout == "closing":
-            deck.closing(name, items, notes)
+            deck.closing(name, items, notes, _text(raw.get("icon")) or None)
         else:
             split += listed(name, items, notes)
     refs = [pretty_ref(_text(r)) for r in _strings(sources)]
     if refs:
         deck.sources(refs)
     deck.prs.core_properties.title = title
-    deck.prs.core_properties.author = "U.L.T.R.O.N"
+    deck.prs.core_properties.author = "J.A.R.V.I.S"
     deck.prs.save(str(path))
     return {"slides": deck.count, "notes": deck.notes, "split": split, "style": style, "theme": theme}
 
@@ -482,25 +487,8 @@ def _docx_font(style_font, element, name: str = FONT) -> None:
         rpr.insert(0, fonts)
     for attr in ("w:ascii", "w:hAnsi", "w:eastAsia", "w:cs"):
         fonts.set(qn(attr), name)
-
-
-def _shade(cell, hex_: str) -> None:
-    from docx.oxml.ns import qn
-    tcpr = cell._tc.get_or_add_tcPr()
-    shd = tcpr.makeelement(qn("w:shd"), {qn("w:val"): "clear", qn("w:color"): "auto", qn("w:fill"): hex_})
-    tcpr.append(shd)
-
-
-def _page_number(paragraph) -> None:
-    from docx.oxml.ns import qn
-    run = paragraph.add_run()
-    for kind, text in (("begin", None), ("instr", "PAGE"), ("end", None)):
-        if kind == "instr":
-            el = run._r.makeelement(qn("w:instrText"), {qn("xml:space"): "preserve"})
-            el.text = text
-        else:
-            el = run._r.makeelement(qn("w:fldChar"), {qn("w:fldCharType"): kind})
-        run._r.append(el)
+    for attr in ("w:asciiTheme", "w:hAnsiTheme", "w:eastAsiaTheme", "w:cstheme"):    # 테마 글꼴이 남아 있으면 위 글꼴을 덮는다
+        fonts.attrib.pop(qn(attr), None)
 
 
 _BOLD = re.compile(r"\*\*([^*]+)\*\*")
@@ -534,85 +522,17 @@ def numeric_text(v) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool) or bool(_NUM_UNIT.match(_text(v)))
 
 
-def build_document(path: Path, title: str, sections: list, subtitle: str = "", sources=None) -> dict:
-    """보고서를 만든다 → {'sections': 장 수, 'tables': 표 수}."""
-    from docx import Document
-    from docx.enum.text import WD_ALIGN_PARAGRAPH
-    from docx.shared import Cm, Pt, RGBColor
+def build_document(path: Path, title: str, sections: list, subtitle: str = "", sources=None, summary=None,
+                   icon: str | None = None) -> dict:
+    """보고서를 만든다 → {'sections': 장 수, 'tables': 표 수}. 표지 · 목차(큰 장 3개 이상) · 본문(머리글 · 쪽 번호)로 짠다.
+    summary: 핵심 요약 상자 (글 · 글 목록 · {title, text|bullets}), 장의 callout: 강조 상자 (같은 꼴), icon: 표지 아이콘 이름."""
     title = _text(title)
     if not title:
         raise ValueError("문서 제목(title)이 필요합니다.")
     if not isinstance(sections, list) or not sections:
         raise ValueError("내용(sections)이 하나 이상 필요합니다.")
-    doc = Document()
-    for sec in doc.sections:
-        sec.top_margin = sec.bottom_margin = Cm(2.5)
-        sec.left_margin = sec.right_margin = Cm(2.4)
-    normal = doc.styles["Normal"]
-    _docx_font(normal.font, normal.element)
-    normal.font.size = Pt(11)
-    normal.paragraph_format.line_spacing = 1.45
-    normal.paragraph_format.space_after = Pt(6)
-    accent = RGBColor(0x1F, 0x3A, 0x8A)
-    for name, size in (("Title", 24), ("Heading 1", 16), ("Heading 2", 13), ("List Bullet", 11), ("List Number", 10)):
-        st = doc.styles[name]
-        _docx_font(st.font, st.element)
-        st.font.size = Pt(size)
-        if name.startswith(("Title", "Heading")):
-            st.font.bold = True
-            st.font.color.rgb = accent if name != "Title" else RGBColor(0x16, 0x21, 0x3A)
-    doc.add_paragraph(title, style="Title")
-    if _text(subtitle):
-        p = doc.add_paragraph(_text(subtitle))
-        p.runs[0].font.color.rgb = RGBColor(0x6B, 0x74, 0x87)
-    tables = 0
-    for i, sec in enumerate(sections, 1):
-        if not isinstance(sec, dict):
-            sec = {"paragraphs": [str(sec)]}
-        heading = _text(sec.get("heading"))
-        level = 2 if str(sec.get("level", 1)).strip() == "2" else 1
-        if heading:
-            doc.add_heading(heading, level=level)
-        for para in _strings(sec.get("paragraphs")):
-            p = doc.add_paragraph(para.strip())
-            p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-        outline = sec.get("points") if not (sec.get("paragraphs") or sec.get("bullets")) else None   # 개요만 받은 장
-        for line, lvl in parse_bullets(sec.get("bullets") or outline):
-            p = doc.add_paragraph(line, style="List Bullet")
-            if lvl:
-                p.paragraph_format.left_indent = Cm(1.6)
-        table = sec.get("table")
-        if isinstance(table, dict) and table.get("columns"):
-            cols = [_text(c) for c in table["columns"]]
-            rows = [r for r in (table.get("rows") or []) if isinstance(r, (list, tuple))]
-            t = doc.add_table(rows=1 + len(rows), cols=len(cols))
-            t.style = "Table Grid"
-            for j, c in enumerate(cols):
-                cell = t.rows[0].cells[j]
-                cell.text = c
-                cell.paragraphs[0].runs[0].font.bold = True
-                _shade(cell, "DCE4F7")
-            for r, row in enumerate(rows, 1):
-                for j in range(len(cols)):
-                    t.rows[r].cells[j].text = _text(row[j]) if j < len(row) else ""
-            if _text(table.get("caption")):
-                cap = doc.add_paragraph(_text(table["caption"]))
-                cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                cap.runs[0].font.size = Pt(9)
-            tables += 1
-    refs = [pretty_ref(_text(r)) for r in _strings(sources)]
-    if refs:
-        doc.add_heading("참고 자료", level=1)
-        for r in refs:
-            doc.add_paragraph(r, style="List Number")
-    for sec in doc.sections:
-        foot = sec.footer.paragraphs[0]
-        foot.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        _page_number(foot)
-    doc.core_properties.title = title
-    doc.core_properties.author = "U.L.T.R.O.N"
-    doc.save(str(path))
-    return {"sections": len(sections), "tables": tables}
+    from .report import build
+    return build(path, title, sections, subtitle, sources, summary, icon)
 
 
 # ---------------------------------------------------------------- 표 (Excel)

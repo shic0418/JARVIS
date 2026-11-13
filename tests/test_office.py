@@ -142,12 +142,73 @@ def test_document_has_title_headings_bullets_table_sources_and_page_numbers(tmp_
     assert ("Title", "환경오염 보고서") in paras and ("Heading 1", "1. 서론") in paras and ("Heading 2", "1-1. 배경") in paras
     assert ("List Bullet", "미세먼지") in paras and ("Heading 1", "참고 자료") in paras
     assert ("List Number", "자료 — https://b.example.kr") in paras
-    cells = [[c.text for c in r.cells] for r in d.tables[0].rows]
+    cells = [[c.text for c in r.cells] for r in d.tables[1].rows]          # tables[0] 은 표지의 REPORT 띠
     assert cells == [["구분", "내용"], ["대기", "미세먼지"], ["수질", ""]]
     with zipfile.ZipFile(path) as z:
         assert "PAGE" in z.read("word/footer1.xml").decode() and 'w:eastAsia="맑은 고딕"' in z.read("word/styles.xml").decode()
     with pytest.raises(ValueError):
         office.build_document(tmp_path / "x.docx", "제목", [])
+
+
+def _report(tmp_path, sections=None, **kw):
+    path = tmp_path / "r.docx"
+    sections = sections or [
+        {"heading": "1. 서론", "paragraphs": ["환경오염은 **중요한** 문제다."], "callout": {"title": "POINT", "text": "강조할 말"}},
+        {"heading": "2. 현황", "bullets": ["핵심: 설명"], "table": {"columns": ["구분", "수치"], "rows": [["가", "1,200"]]}},
+        {"heading": "3. 결론", "paragraphs": ["끝."]}]
+    info = office.build_document(path, "환경 보고서", sections, kw.pop("subtitle", "과학 · 홍길동"), **kw)
+    return path, info, docx.Document(str(path))
+
+
+def test_report_has_cover_toc_own_body_section_and_page_numbers_from_the_body(tmp_path):
+    from docx.oxml.ns import qn
+    path, info, d = _report(tmp_path, summary=["첫째 요약", "둘째 요약"], sources=["자료"])
+    assert info == {"sections": 3, "tables": 1} and len(d.sections) == 2
+    cover, body = d.sections
+    assert body.header.is_linked_to_previous is False and cover.footer.is_linked_to_previous is True      # 표지에는 머리글 · 쪽 번호가 없다
+    assert body.header.paragraphs[0].text == "환경 보고서"
+    assert body._sectPr.find(qn("w:pgNumType")).get(qn("w:start")) == "1"
+    texts = [p.text for p in d.paragraphs]
+    assert "목차" in texts and "핵심 요약" in texts and "REPORT" in [c.text for c in d.tables[0].rows[0].cells]
+    assert any(re.search(r"\d{4}\. \d\d\. \d\d", t) for t in texts)                                  # 부제에 연도가 없어 오늘 날짜가 붙는다
+    with zipfile.ZipFile(path) as z:
+        xml = z.read("word/document.xml").decode()
+        assert 'w:hyperlink w:anchor="_Toc1"' in xml and "w:bookmarkStart" in xml and "w:framePr" in xml
+        assert "<w:tbl>" in xml and 'w:fill="16213A"' in xml                                             # 표 머리글: 짙은 남색
+        assert "PAGE" in z.read("word/footer1.xml").decode()
+    assert d.core_properties.author == "J.A.R.V.I.S"
+
+
+def test_report_xml_children_follow_the_schema_order_and_no_blank_last_page(tmp_path):
+    from docx.oxml.ns import qn
+    from jarvis import report
+    _, _, d = _report(tmp_path, [{"heading": "1. 가", "paragraphs": ["a"]}, {"heading": "2. 나", "paragraphs": ["b"]},
+                                  {"heading": "3. 다", "table": {"columns": ["x"], "rows": [["1"]]}}])
+    for tag, order in (("w:pPr", report._PPR), ("w:rPr", report._RPR), ("w:tblPr", report._TBLPR), ("w:tcPr", report._TCPR),
+                       ("w:trPr", report._TRPR), ("w:sectPr", report._SECTPR)):
+        for el in d.element.iter(qn(tag)):
+            idx = [order.index(c.tag.split("}")[1]) for c in el if c.tag.split("}")[1] in order]
+            assert idx == sorted(idx), (tag, [c.tag.split("}")[1] for c in el])
+    body = d.element.body
+    assert body[-1].tag == qn("w:sectPr") and body[-2].tag == qn("w:p")        # 마지막 구역 설정은 body 끝, 그 앞은 문단(표가 아님)
+
+
+def test_report_without_toc_summary_icons_still_builds(tmp_path, monkeypatch):
+    from jarvis import icons
+    monkeypatch.setattr(icons, "available", lambda: False)
+    monkeypatch.setattr(icons, "png", lambda *a, **k: None)
+    _, info, d = _report(tmp_path, [{"heading": "하나", "paragraphs": ["a"]}], subtitle="2026년 3월 보고")
+    assert info["sections"] == 1 and "목차" not in [p.text for p in d.paragraphs]
+    assert not d.inline_shapes                                                 # 아이콘 그림 없이
+    assert not any(p.text.startswith("2026. ") for p in d.paragraphs)           # 부제에 연도가 있으면 날짜를 또 붙이지 않는다
+
+
+def test_report_cover_has_icon_picture_when_available(tmp_path):
+    from jarvis import icons
+    if not icons.available():
+        pytest.skip("아이콘 글꼴 없음")
+    _, _, d = _report(tmp_path)
+    assert len(d.inline_shapes) == 1
 
 
 def test_spreadsheet_keeps_numbers_formulas_and_clean_sheet_names(tmp_path):

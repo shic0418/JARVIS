@@ -23,6 +23,7 @@ from .config import DATA_DIR
 log = logging.getLogger("jarvis.noise")
 
 RATE = 16000
+DENOISE_HOLD = 17            # 조용함이 0.5초(30ms 블록 17개) 넘게 이어져야 소음 제거 갈래를 쉰다 (StreamVad.feed)
 MODELS_DIR = DATA_DIR / "models"
 _BASE = "https://github.com/k2-fsa/sherpa-onnx/releases/download"
 VAD_FILE = ("silero_vad.onnx", f"{_BASE}/asr-models/silero_vad.onnx",
@@ -91,6 +92,8 @@ class StreamVad:
         self._raw = self._make(model_path, threshold)
         self._clean = None
         self._den = None
+        self._quiet_run = 0            # 연속으로 조용했던 블록 수
+        self._den_idle = True          # ② 갈래가 쉬는 중 (다시 켤 때 상태를 비우고 시작)
         if denoise_path:
             import sherpa_onnx
             cfg = sherpa_onnx.OnlineSpeechDenoiserConfig(
@@ -126,17 +129,33 @@ class StreamVad:
         return speech
 
     def feed(self, block: np.ndarray, quiet: bool = False) -> bool:
-        """quiet: 이 블록은 말소리로 볼 수 없을 만큼 조용하다 — ② 갈래(소음 제거, 블록당 약 2ms)를 건너뛴다.
-        조용한 방에서 대기할 때 소음 제거 모델을 쉬지 않고 돌리던 것을 없앤다 (소음이 있으면 조용하지 않으므로 그대로 돈다)."""
+        """quiet: 이 블록은 말소리로 볼 수 없을 만큼 조용하다.
+
+        ② 갈래(소음 제거, 블록당 약 2ms)는 조용한 상태가 DENOISE_HOLD 블록 넘게 이어질 때만 쉰다.
+        블록마다 켜고 끄면 소음 제거 모델이 띄엄띄엄 끊긴 소리를 이어 붙여 받게 되어 상태가 어긋나고,
+        말 첫머리처럼 조용함과 소리가 번갈아 오는 순간에 오히려 판단이 흔들린다. 그래서
+        · 잠깐 조용한 틈(음절 사이 · 숨 쉬는 틈)에는 계속 돌리고,
+        · 오래 쉬었다가 다시 켤 때는 소음 제거 모델과 그 뒤의 감지 AI 상태를 비우고 새로 시작한다
+          (오래전 소리의 흔적을 끌고 오지 않게)."""
         x = block.astype(np.float32) / 32768.0
         speech = self._step(self._raw, x)
-        if self._den is not None and not quiet:
-            y = np.asarray(self._den.run(x, RATE).samples, dtype=np.float32)
-            speech = self._step(self._clean, y) or speech
-        return speech
+        if self._den is None:
+            return speech
+        self._quiet_run = self._quiet_run + 1 if quiet else 0
+        if self._quiet_run > DENOISE_HOLD:
+            self._den_idle = True
+            return speech
+        if self._den_idle:
+            self._den.reset()
+            self._clean.reset()
+            self._den_idle = False
+        y = np.asarray(self._den.run(x, RATE).samples, dtype=np.float32)
+        return self._step(self._clean, y) or speech
 
     def reset(self) -> None:
         self._raw.reset()
+        self._quiet_run = 0
+        self._den_idle = False
         if self._den is not None:
             self._den.reset()
             self._clean.reset()

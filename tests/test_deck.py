@@ -232,3 +232,125 @@ def test_line_count_follows_word_wrapping():
     assert office._lines("인위적 배출로 농도 증가", 24, 1.85) == 3               # 낱말 단위로 넘어가서 글자 수 어림(2줄)보다 많다
     assert office._lines("가" * 40, 20, 3) == 4                                   # 한 줄보다 긴 낱말은 글자 단위로
     assert office._lines("가나다 라마바", 20, 10) == 1
+
+
+# ---------------------------------------------------------------- 아이콘 · 채움 · 명암
+def _pictures(slide):
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+    return [sh for sh in slide.shapes if sh.shape_type == MSO_SHAPE_TYPE.PICTURE]
+
+
+def _slide_with(prs, text):
+    return next(s for s in prs.slides if text in texts(s))
+
+
+@pytest.mark.parametrize("style", office.STYLES)
+def test_cards_steps_and_stats_get_icons_that_do_not_repeat(tmp_path, style):
+    from jarvis import icons
+    if not icons.available():
+        pytest.skip("아이콘 글꼴 없음")
+    prs, _ = build(tmp_path, style)
+    for marker, n in (("빛 흡수", 4), ("빛의 세기", 3), ("70", 3), ("프리스틀리", 3), ("카드 1", 6)):
+        pics = _pictures(_slide_with(prs, marker))
+        if style == "editorial" or not pics:      # 매거진은 번호가 글자 모양이라 아이콘도 글자 위치에 — 그림이 있으면 개수만 본다
+            continue
+        assert len(pics) >= n - 1, (style, marker, len(pics))
+        blobs = [p.image.sha1 for p in pics]
+        assert len(blobs) == len(set(blobs)), (style, marker)            # 한 장 안에서 같은 아이콘이 겹치지 않는다
+
+
+def test_steps_start_with_flag_and_end_with_task_alt_unless_given(tmp_path, monkeypatch):
+    from jarvis import icons
+    if not icons.available():
+        pytest.skip("아이콘 글꼴 없음")
+    drawn = []
+    real = icons.png.__wrapped__ if hasattr(icons.png, "__wrapped__") else icons.png
+    monkeypatch.setattr(icons, "png", lambda name, *a, **k: (drawn.append(name), real(name, *a, **k))[1])
+    steps = [{"title": "시작", "text": "a"}, {"title": "가운데", "text": "b"}, {"title": "끝", "text": "c"}]
+    build(tmp_path, "clean", [{"layout": "process", "title": "단계", "steps": steps}])
+    steps_icons = drawn[-3:]
+    assert steps_icons[0] == "flag" and steps_icons[-1] == "task_alt" and len(set(steps_icons)) == 3
+    drawn.clear()
+    steps[-1]["icon"] = "star"
+    build(tmp_path, "clean", [{"layout": "process", "title": "단계", "steps": steps}])
+    assert drawn[-3:][-1] == "star" and drawn[-3:][0] == "flag"
+
+
+def test_slides_and_items_accept_an_icon_and_unknown_names_fall_back(tmp_path):
+    from jarvis import icons
+    slides = [{"layout": "section", "title": "1. 시작", "icon": "bedtime"}, {"layout": "cards", "title": "카드",
+              "cards": [{"title": "가", "icon": "rocket_launch"}, {"title": "나", "icon": "없는-아이콘"}]},
+              {"layout": "closing", "title": "끝", "icon": "Local Cafe"}]
+    prs, info = build(tmp_path, "clean", slides)
+    assert info["slides"] >= 4
+    if icons.available():
+        assert _pictures(_slide_with(prs, "시작")) and _pictures(_slide_with(prs, "끝"))
+        assert len(_pictures(_slide_with(prs, "카드"))) == 2
+
+
+def test_everything_works_without_the_icon_font(tmp_path, monkeypatch):
+    from jarvis import icons
+    monkeypatch.setattr(icons, "available", lambda: False)
+    monkeypatch.setattr(icons, "png", lambda *a, **k: None)
+    for style in office.STYLES:
+        prs, info = build(tmp_path, style)
+        assert not any(_pictures(s) for s in prs.slides), style
+        assert info["slides"] == len(list(prs.slides))
+
+
+def test_stats_split_value_and_unit():
+    assert D.Deck.split_value("72%") == ("72", "%")
+    assert D.Deck.split_value("3.5시간") == ("3.5", "시간")
+    assert D.Deck.split_value("1,200억 톤") == ("1,200", "억 톤")
+    assert D.Deck.split_value("1~2%") == ("1~2", "%")
+    assert D.Deck.split_value("약 70%") == ("약 70%", "")                # 숫자로 시작하지 않으면 그대로
+    assert D.Deck.split_value("42") == ("42", "")
+
+
+def test_stat_slide_shows_big_number_with_smaller_unit(tmp_path):
+    prs, _ = build(tmp_path, "clean", [{"layout": "stats", "title": "숫자", "stats": [{"value": "72%", "label": "비율"},
+                                                                                       {"value": "3.5시간", "label": "시간"}]}])
+    s = _slide_with(prs, "비율")
+    sizes = [(r.text, r.font.size.pt) for sh in s.shapes if sh.has_text_frame for p in sh.text_frame.paragraphs for r in p.runs
+             if r.text in ("72", "%", "3.5", "시간")]
+    big = {t: z for t, z in sizes}
+    assert big["72"] > big["%"] and big["3.5"] > big["시간"]
+
+
+def test_cards_fill_the_body_height_and_content_is_vertically_centred(tmp_path):
+    from pptx.util import Inches
+    prs, _ = build(tmp_path, "clean", [{"layout": "cards", "title": "셋", "cards": [{"title": f"제목{i}", "text": "짧다"} for i in range(3)]}])
+    s = _slide_with(prs, "제목0")
+    x, y, w, h = D.Deck.AREA["clean"]
+    tops = [sh.top for sh in s.shapes if sh.shape_type == 1 and sh.height > Inches(2.5) and sh.width > Inches(2.5)]   # 카드 바탕
+    assert tops and max(sh.height for sh in s.shapes if sh.shape_type == 1) >= Inches(h * 0.9)
+    card = max((sh for sh in s.shapes if sh.shape_type == 1), key=lambda sh: sh.height)
+    title = next(sh for sh in s.shapes if sh.has_text_frame and sh.text_frame.text == "제목0")
+    gap_top, gap_bottom = title.top - card.top, card.top + card.height - (title.top + title.height)
+    assert gap_top > Inches(0.6) and gap_bottom > Inches(0.6)           # 위 · 아래에 여유 (한쪽에 몰려 있지 않다)
+
+
+def test_text_on_light_pastel_cards_keeps_readable_contrast(tmp_path):
+    from pptx.dml.color import RGBColor
+    for theme in office.THEMES:
+        prs, _ = build(tmp_path, "pastel", [{"layout": "stats", "title": "숫자", "stats": [{"value": f"{i}0%", "label": "라벨"} for i in range(1, 5)]}], theme)
+        s = _slide_with(prs, "라벨")
+        fills = [sh.fill.fore_color.rgb for sh in s.shapes if sh.shape_type == 1 and sh.fill.type == 1]
+        for sh in s.shapes:
+            if sh.has_text_frame and sh.text_frame.text.strip():
+                for p in sh.text_frame.paragraphs:
+                    for r in p.runs:
+                        if r.font.color and r.font.color.type is not None and r.text.strip() in ("10", "20", "30", "40"):
+                            ink = str(r.font.color.rgb)
+                            assert max(D.contrast(ink, str(f)) for f in fills) >= 3, (theme, ink)
+
+
+def test_readable_moves_a_pale_colour_until_it_reads():
+    assert D.contrast(D.Deck.readable("E2A100", "FFF0C2"), "FFF0C2") >= 3
+    assert D.Deck.readable("16213A", "FFFFFF") == "16213A"             # 이미 읽히면 그대로
+    assert D.contrast(D.Deck.readable("DDDDDD", "15171D"), "15171D") >= 3
+
+
+def test_presentation_author_is_jarvis(tmp_path):
+    prs, _ = build(tmp_path, "clean")
+    assert prs.core_properties.author == "J.A.R.V.I.S"

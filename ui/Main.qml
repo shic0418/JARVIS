@@ -17,6 +17,8 @@ Window {
 
     readonly property string st: jarvis.state
     readonly property bool compact: jarvis.compact
+    // 창이 실제로 보이는가 — 트레이로 숨겼거나 최소화했으면 장식 애니메이션 · 시계를 모두 멈춘다 (보이지 않는 화면을 계속 그리던 발열)
+    readonly property bool shown: visible && visibility !== Window.Minimized
     readonly property color cyan: "#3ee6ff"
     readonly property color amber: "#ffbe4d"
     readonly property color warm: "#ffc65a"
@@ -220,6 +222,7 @@ Window {
                             color: jarvis.hasApiKey ? "#53ffa8" : win.amber
                             SequentialAnimation on opacity {
                                 loops: Animation.Infinite
+                                running: full.visible && win.shown
                                 NumberAnimation { to: 0.35; duration: 900 }
                                 NumberAnimation { to: 1.0; duration: 900 }
                             }
@@ -240,7 +243,7 @@ Window {
                     property string time: ""
                     property string date: ""
                     Timer {
-                        interval: 500; running: true; repeat: true; triggeredOnStart: true
+                        interval: 500; running: full.visible && win.shown; repeat: true; triggeredOnStart: true
                         onTriggered: {
                             const d = new Date()
                             clock.time = win.pad(d.getHours()) + ":" + win.pad(d.getMinutes()) + ":" + win.pad(d.getSeconds())
@@ -287,7 +290,7 @@ Window {
                         }
                         SequentialAnimation on x {
                             loops: Animation.Infinite
-                            running: full.visible
+                            running: full.visible && win.shown
                             NumberAnimation { from: -34; to: ruler.width; duration: 3600; easing.type: Easing.InOutSine }
                             PauseAnimation { duration: 1800 }
                         }
@@ -618,7 +621,7 @@ Window {
                             color: status === "ok" ? "transparent" : sc
                             border.color: sc; border.width: 1.4
                             SequentialAnimation on opacity {
-                                running: status === "run"; loops: Animation.Infinite
+                                running: status === "run" && win.shown; loops: Animation.Infinite
                                 NumberAnimation { to: 0.2; duration: 400 }
                                 NumberAnimation { to: 1; duration: 400 }
                             }
@@ -728,7 +731,7 @@ Window {
                     }
                     SequentialAnimation on y {
                         loops: Animation.Infinite
-                        running: full.visible
+                        running: full.visible && win.shown
                         NumberAnimation { from: -70; to: full.height; duration: 5200; easing.type: Easing.InOutSine }
                         PauseAnimation { duration: 2600 }
                     }
