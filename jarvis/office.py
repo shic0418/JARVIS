@@ -503,6 +503,37 @@ def _page_number(paragraph) -> None:
         run._r.append(el)
 
 
+_BOLD = re.compile(r"\*\*([^*]+)\*\*")
+_KEY = re.compile(r"^([^:：]{1,24})[:：]\s+(.+)$")
+
+
+def rich_parts(text: str, keyword: bool = False) -> list[tuple[str, bool]]:
+    """글 → (조각, 굵게?) 목록. **굵게** 표시를 굵은 글자로, keyword=True 면 '핵심어: 설명' 의 핵심어도 굵게 (발표 자료와 같게)."""
+    text = text.strip()
+    if keyword and "**" not in text:
+        m = _KEY.match(text)
+        if m and not re.search(r"https?$", m.group(1)):
+            return [(m.group(1) + ": ", True), (m.group(2), False)]
+    out, last = [], 0
+    for m in _BOLD.finditer(text):
+        if m.start() > last:
+            out.append((text[last:m.start()], False))
+        out.append((m.group(1), True))
+        last = m.end()
+    if last < len(text):
+        out.append((text[last:], False))
+    return [(t, b) for t, b in out if t] or [("", False)]
+
+
+_NUM_UNIT = re.compile(r"^[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s*(?:%|％|℃|°C|명|원|만 ?원|억 ?원|개|건|회|배|위|점|년|월|일|시간|분|초|"
+                       r"t|kg|g|km|m|cm|mm|ppm|GW|MW|kWh|L|ml)?$")
+
+
+def numeric_text(v) -> bool:
+    """표 칸이 숫자(+단위)인가 — '86.9' · '1,200명' · '73%' 는 예, '3학년 2반' · '2021년 착륙' 은 아니오."""
+    return isinstance(v, (int, float)) and not isinstance(v, bool) or bool(_NUM_UNIT.match(_text(v)))
+
+
 def build_document(path: Path, title: str, sections: list, subtitle: str = "", sources=None) -> dict:
     """보고서를 만든다 → {'sections': 장 수, 'tables': 표 수}."""
     from docx import Document

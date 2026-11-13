@@ -22,13 +22,10 @@ import psutil
 
 from . import sentinel, uia, vision, winutil
 from .config import DATA_DIR, Config, load_memory, save_memory
+from .control import ControlTools, ToolError
 
 log = logging.getLogger("jarvis.tools")
 NO_WINDOW = 0x08000000
-
-
-class ToolError(Exception):
-    pass
 
 
 @dataclass
@@ -114,7 +111,7 @@ def _norm(s: str) -> str:
     return re.sub(r"[\s\-_.()]+", "", s.lower())
 
 
-class PCTools:
+class PCTools(ControlTools):
     def __init__(self, cfg: Config, focus: winutil.FocusTracker, hooks: Hooks) -> None:
         self.cfg = cfg
         self.focus = focus
@@ -370,7 +367,8 @@ class PCTools:
                   "open": {"type": "boolean", "description": "open the file after saving (default true)"}},
                  ["title", "slides"]),
             tool("make_document",
-                 "Create a Word (.docx) report or document and open it. Use for 보고서 / 레포트 / 조사 정리 / 문서로 정리 requests. "
+                 "Create a report or document and open it — Word (.docx) by default, or 한글 (.hwpx) when the user asks for "
+                 "한글 / 한컴 / hwp / 아래아한글. Use for 보고서 / 레포트 / 조사 정리 / 문서로 정리 / 가정통신문 requests. "
                  "Give the sections in order; how much you write yourself (just headings, or the full text) is set by the "
                  "작업 rules in your instructions — sections without text are written by writer agents in parallel. A 참고 자료 "
                  "list is added from sources and pages are numbered.",
@@ -391,6 +389,8 @@ class PCTools:
                           "rows": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}},
                           "caption": {"type": "string"}}}}}},
                   "sources": {"type": "array", "items": {"type": "string"}},
+                  "format": {"type": "string", "enum": ["docx", "hwpx"],
+                             "description": "docx = Word (default), hwpx = 한글 (when the user says 한글 · 한컴 · hwp)"},
                   "filename": s, "folder": s,
                   "overwrite": {"type": "boolean"}, "open": {"type": "boolean"}},
                  ["title", "sections"]),
@@ -449,7 +449,7 @@ class PCTools:
                   "size": {"type": "string", "enum": ["a4", "a3"]},
                   "filename": s, "folder": s, "overwrite": {"type": "boolean"}, "open": {"type": "boolean"}},
                  ["title", "sections"]),
-        ]
+        ] + self.control_schemas(tool)
 
     # ------------------------------------------------------------------ 표시용 라벨
     @staticmethod
@@ -504,6 +504,7 @@ class PCTools:
             "make_cardnews": lambda: f"카드뉴스 만들기 · {str(a.get('title', ''))[:30]}",
             "make_poster": lambda: f"포스터 만들기 · {str(a.get('title', ''))[:30]}",
             "web_search": lambda: f"웹 검색 · {a.get('query', '')}",
+            **ControlTools.control_labels(a),
         }
         try:
             return m[name]()
@@ -528,8 +529,10 @@ class PCTools:
     def t_open_app(self, name: str, min_score: float = 38) -> str:
         key = _norm(name)
         hit = self._find_app(name, min_score)
+        before = {w["hwnd"] for w in winutil.list_windows()}
         if hit:
             subprocess.Popen(["explorer.exe", f"shell:AppsFolder\\{hit[1]}"], creationflags=NO_WINDOW)
+            self._launch = (time.monotonic(), before, name)
             return f"'{hit[0]}' 실행함"
         exe = SYSTEM_EXE.get(key)
         if not exe and min_score > 38:
@@ -537,11 +540,39 @@ class PCTools:
         target = exe or name
         try:
             os.startfile(target)
+            self._launch = (time.monotonic(), before, name)
             return f"'{target}' 실행함"
         except OSError:
             if not self._apps:
                 raise ToolError("앱 목록을 아직 불러오는 중입니다. 잠시 후 다시 시도하세요.")
             raise ToolError(f"'{name}' 앱을 찾지 못했습니다.")
+
+    def _await_launch(self, timeout: float = 6.0) -> None:
+        """방금 open_app 으로 켠 앱의 창이 뜰 때까지 기다렸다가 그 창을 '작업 창'으로 삼는다.
+        앱을 켜자마자 입력 · 클릭하면 아직 창이 없어 예전 창에 들어가 버린다 — 화면을 만지는 도구들이 시작할 때 부른다.
+        (open_app 자체는 기다리지 않는다: "메모장 열어" 는 바로 대답해야 하니까.)"""
+        launch, self._launch = getattr(self, "_launch", None), None
+        if not launch:
+            return
+        t0, before, name = launch
+        if time.monotonic() - t0 > 8:
+            return                                   # 한참 전에 켠 것 — 그새 사용자가 다른 창으로 갔을 수 있다
+        had = bool(self._match_windows(name))        # 이미 열려 있던 앱이면 새 창이 안 뜰 수도 있다 (카톡처럼 창 하나짜리)
+        limit = 2.5 if had else timeout
+        while True:
+            new = [w for w in winutil.list_windows() if w["hwnd"] not in before]
+            if new:
+                self.focus.last_external, self.focus.last_title = new[0]["hwnd"], new[0]["title"]
+                if time.monotonic() - t0 < 1.5:
+                    time.sleep(0.4)                  # 창이 막 떴다 — 안이 그려질 시간
+                return
+            if time.monotonic() - t0 >= limit:
+                break
+            time.sleep(0.2)
+        hits = self._match_windows(name)
+        if hits:
+            winutil.force_foreground(hits[0]["hwnd"])
+            self.focus.last_external, self.focus.last_title = hits[0]["hwnd"], hits[0]["title"]
 
     def _match_windows(self, name: str) -> list[dict]:
         q = _norm(name)
@@ -1456,16 +1487,21 @@ class PCTools:
 
     def t_make_document(self, title: str, sections: list, subtitle: str = "", sources: list | None = None,
                         filename: str = "", folder: str = "", overwrite: bool = False, open: bool = True,
-                        audience: str = "", facts: list | None = None, **_extra) -> str:
-        from . import office, writers
+                        audience: str = "", facts: list | None = None, format: str = "docx", **_extra) -> str:
+        from . import hwpx, office, writers
+        hangul = str(format or "").strip().lower() in ("hwpx", "hwp", "한글", "한컴")
         sections, found, team = self._team("document", {"title": title, "subtitle": subtitle, "audience": audience,
                                                         "facts": facts}, sections)
         refs = writers.merge_sources(sources, found)
+        build = hwpx.build_hwpx if hangul else office.build_document
         path, info, note = self._make_file(
-            lambda p: office.build_document(p, title, sections, subtitle, refs),
-            filename or title, ".docx", folder, overwrite, open)
+            lambda p: build(p, title, sections, subtitle, refs),
+            filename or title, ".hwpx" if hangul else ".docx", folder, overwrite, open)
+        if hangul and "열 프로그램을 찾지 못해" in note:
+            note += " 한컴오피스 한글이나 무료 '한컴오피스 뷰어'가 있으면 열 수 있습니다."
         tables = f", 표 {info['tables']}개" if info["tables"] else ""
-        return (f"문서를 만들었습니다 — 장 {info['sections']}개{tables}.{team} 저장한 곳: {self._where(path)} "
+        kind = "한글 문서" if hangul else "문서"
+        return (f"{kind}를 만들었습니다 — 장 {info['sections']}개{tables}.{team} 저장한 곳: {self._where(path)} "
                 f"(파일 이름 {path.name}).{note} [전체 경로: {path}]")
 
     def t_make_spreadsheet(self, sheets: list, filename: str = "", folder: str = "", overwrite: bool = False,

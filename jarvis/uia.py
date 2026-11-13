@@ -319,22 +319,44 @@ class Screen:
 # ---------------------------------------------------------------------- 마우스
 MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP = 0x0002, 0x0004
 MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP = 0x0008, 0x0010
+MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP = 0x0020, 0x0040
 MOUSEEVENTF_WHEEL = 0x0800
 
 
-def click_at(x: int, y: int, double: bool = False, right: bool = False, hwnd: int = 0) -> None:
-    """물리 픽셀 좌표 클릭. 대상 창을 먼저 앞으로 가져온다."""
+def cursor_pos() -> tuple[int, int] | None:
+    """지금 마우스 위치 (모르면 None)."""
+    try:
+        p = wt.POINT()
+        return (p.x, p.y) if user32.GetCursorPos(ctypes.byref(p)) else None
+    except Exception:
+        return None
+
+
+def set_cursor(pos: tuple[int, int] | None) -> None:
+    if pos:
+        try:
+            user32.SetCursorPos(int(pos[0]), int(pos[1]))
+        except Exception:
+            pass
+
+
+def click_at(x: int, y: int, double: bool = False, right: bool = False, hwnd: int = 0, hold: str = "",
+             middle: bool = False) -> None:
+    """물리 픽셀 좌표 클릭. 대상 창을 먼저 앞으로 가져온다. hold = 누른 채로 있을 키 ('ctrl' · 'shift' · 'alt').
+    middle = 가운데 단추(휠) 클릭 — 브라우저 탭을 그 탭으로 옮겨 가지 않고 닫을 때 쓴다."""
+    from .winutil import force_foreground, held
     if hwnd:
-        from .winutil import force_foreground
         force_foreground(hwnd)
         time.sleep(0.08)
     user32.SetCursorPos(int(x), int(y))
     time.sleep(0.03)
-    down, up = (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP) if right else (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP)
-    for _ in range(2 if double else 1):
-        user32.mouse_event(down, 0, 0, 0, 0)
-        user32.mouse_event(up, 0, 0, 0, 0)
-        time.sleep(0.06)
+    down, up = ((MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP) if middle else
+                (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP) if right else (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP))
+    with held(hold):
+        for _ in range(2 if double else 1):
+            user32.mouse_event(down, 0, 0, 0, 0)
+            user32.mouse_event(up, 0, 0, 0, 0)
+            time.sleep(0.06)
 
 
 def move_to(x: int, y: int) -> None:
