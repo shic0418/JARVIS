@@ -608,6 +608,7 @@ class PCTools(ControlTools):
         return "\n".join(f"- {w['title'][:60]} ({w['exe']})" for w in wins[:30])
 
     def t_window_action(self, action: str) -> str:
+        self._await_launch()                  # 방금 open_app 으로 켠 앱이면 그 창이 뜰 때까지
         combos = {"show_desktop": "win+d", "maximize": "win+up", "minimize": "win+down",
                   "snap_left": "win+left", "snap_right": "win+right", "switch_next": "alt+tab",
                   "close_active": "alt+f4", "task_view": "win+tab", "new_virtual_desktop": "win+ctrl+d"}
@@ -708,6 +709,7 @@ class PCTools(ControlTools):
 
     # --- 키보드 ---
     def t_type_text(self, text: str, press_enter: bool = False, replace: bool = False) -> str:
+        self._await_launch()                  # 방금 open_app 으로 켠 앱이면 그 창이 뜰 때까지
         self.focus.restore()
         old = winutil.get_clipboard_text()
         winutil.set_clipboard_text(text)
@@ -731,6 +733,7 @@ class PCTools(ControlTools):
         return f"{len(text)}자 입력함 (대상 창: {self.focus.last_title[:40]})" + change
 
     def t_press_keys(self, keys: str, times: int = 1) -> str:
+        self._await_launch()                  # 방금 open_app 으로 켠 앱이면 그 창이 뜰 때까지
         self.focus.restore()
         times = max(1, min(int(times or 1), 50))
         before = self._small()
@@ -873,6 +876,7 @@ class PCTools(ControlTools):
         return winutil.monitor_rect(hwnd), "screen"      # 사용자의 작업 창이 있는 모니터 (모르면 주 모니터)
 
     def t_look_at_screen(self, target: str = "screen", marks: bool = False):
+        self._await_launch()                  # 방금 open_app 으로 켠 앱이면 그 창이 뜰 때까지
         hwnd = self._active_hwnd()
         bbox, kind = self._target_bbox(target)
         self._view_target = kind
@@ -914,6 +918,7 @@ class PCTools(ControlTools):
             "이 확대 이미지의 픽셀 좌표입니다. 전체 화면으로 돌아가려면 look_at_screen 을 다시 부르세요."))
 
     def t_read_screen_text(self, app: str | None = None, all: bool = False) -> str:   # noqa: A002
+        self._await_launch()                  # 방금 open_app 으로 켠 앱이면 그 창이 뜰 때까지
         hwnd = self._target_window(app)
         try:
             return self.screen.read_text(hwnd, include_offscreen=bool(all))
@@ -921,6 +926,7 @@ class PCTools(ControlTools):
             raise ToolError(f"창의 글자를 읽지 못했습니다: {e}")
 
     def t_wait_screen(self, max_seconds: int = 5) -> str:
+        self._await_launch()                  # 방금 open_app 으로 켠 앱이면 그 창이 뜰 때까지
         before = self._small()
         if before is None:
             time.sleep(1.0)
@@ -947,6 +953,7 @@ class PCTools(ControlTools):
         return hwnd
 
     def t_read_ui(self, app: str | None = None, query: str | None = None) -> str:
+        self._await_launch()                  # 방금 open_app 으로 켠 앱이면 그 창이 뜰 때까지
         hwnd = self._target_window(app)
         try:
             out = self.screen.read(hwnd, query or "")

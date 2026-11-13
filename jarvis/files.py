@@ -377,11 +377,12 @@ def trash(paths: list[Path]) -> int:
                     ("hNameMappings", ctypes.c_void_p), ("lpszProgressTitle", wt.LPCWSTR)]
 
     FO_DELETE, FOF_SILENT, FOF_NOCONFIRMATION, FOF_ALLOWUNDO, FOF_NOERRORUI = 3, 0x4, 0x10, 0x40, 0x400
+    FOF_WANTNUKEWARNING = 0x4000   # 휴지통에 못 들어가 완전히 지워질 파일(USB · 네트워크 · 너무 큰 파일)이면 Windows 가 먼저 묻는다
     op = SHFILEOPSTRUCTW()
     op.wFunc = FO_DELETE
     names = ctypes.create_unicode_buffer("\0".join(str(s) for s in srcs) + "\0")   # 경로 사이는 NUL, 끝은 NUL 두 개
     op.pFrom = ctypes.cast(names, ctypes.c_void_p)
-    op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI
+    op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_WANTNUKEWARNING
     rc = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
     if rc != 0 or op.fAnyOperationsAborted:
         raise FileError(f"휴지통으로 보내지 못했습니다 (오류 {rc}).")

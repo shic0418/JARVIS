@@ -18,7 +18,7 @@ import threading
 import time
 from dataclasses import dataclass
 
-from .winutil import window_title as _title
+from . import winutil
 
 log = logging.getLogger("jarvis.uia")
 user32 = ctypes.windll.user32
@@ -468,6 +468,10 @@ def element_at(x: int, y: int) -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------------- 보조
+def _title(hwnd: int) -> str:
+    return winutil.window_title(hwnd)      # 부를 때마다 찾는다 (테스트가 winutil.window_title 을 바꿔 끼울 수 있게)
+
+
 def _norm(s: str) -> str:
     return re.sub(r"[\s\-_.()·:]+", "", (s or "").lower())
 

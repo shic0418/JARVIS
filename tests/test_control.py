@@ -495,3 +495,29 @@ def test_page_title_strips_the_browser_name():
     assert page_title("Instagram") is None and page_title("제목 없음 - 메모장") is None
     assert "google" not in _site_words("지메일") and "gmail" in _site_words("지메일")
     assert "youtube" in _site_words("유튜브") and "youtubemusic" in _site_words("유튜브 뮤직")
+
+
+# ---------------------------------------------------------------- 검토 뒤 보강
+def test_fill_ui_asks_before_pressing_a_risky_button(pc):
+    pc.screen.items = [item(1, "버튼", "결제하기", (0, 0, 200, 40))]
+    pc.approve = False
+    with pytest.raises(ToolError):
+        pc.t_fill_ui(number=1, text="x")
+    assert pc.asked and pc.asked[0][0] == "화면 입력" and pc.log == []
+
+
+def test_wifi_off_asks_first(pc):
+    pc._radio = lambda kind, on: "Allowed"
+    pc.approve = False
+    with pytest.raises(ToolError):
+        pc.t_settings("wifi_off")
+    assert pc.asked[0][0] == "와이파이 끄기"
+    pc.asked.clear()
+    pc.t_settings("wifi_on")
+    assert pc.asked == []
+
+
+def test_organize_without_a_folder_does_not_fall_back_to_the_working_folder(pc):
+    with pytest.raises(ToolError, match="폴더가 비었습니다"):
+        pc.t_file_action("organize")
+    assert pc.asked == []

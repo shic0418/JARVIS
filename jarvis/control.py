@@ -496,6 +496,8 @@ class ControlTools:
                 continue
             if _SECRET.search(it.name or "") or _SECRET.search(str(f.get("name") or "")):
                 raise ToolError(f"'{it.name[:30]}' 칸에는 입력하지 않습니다 (비밀번호 · 인증 번호는 사용자가 직접 넣어야 합니다).")
+            if uia.is_risky(it.name):                         # click_ui 와 같이: 결제 · 삭제 · 전송 같은 버튼은 승인부터
+                self._confirm("화면 입력", f"'{it.name}' {it.kind} 을(를) 누르고 입력합니다.\n창: {self.screen.title}")
             left, top, right, bottom = it.rect
             x, y = (left + right) // 2, (top + bottom) // 2
             with self._hud_aside(x, y):
@@ -576,6 +578,8 @@ class ControlTools:
             raise ToolError(f"지원하지 않는 동작입니다: {action}")
         kind, on = m.group(1), m.group(2) == "on"
         ko = "와이파이" if kind == "wifi" else "블루투스"
+        if kind == "wifi" and not on:                       # 끄면 Claude 연결까지 끊긴다
+            self._confirm("와이파이 끄기", "와이파이를 끕니다. 인터넷이 끊기면 자비스는 기본 명령만 처리할 수 있습니다.")
         try:
             res = self._radio("WiFi" if kind == "wifi" else "Bluetooth", on)
         except Exception as e:
@@ -618,6 +622,8 @@ class ControlTools:
             raise ToolError(str(e))
 
     def _path_or_folder(self, folder: str) -> Path:
+        if not str(folder or "").strip():
+            raise ToolError("폴더가 비었습니다. 어느 폴더인지 알려 주십시오.")   # 빈 값이면 앱의 작업 폴더('.')가 잡힌다
         try:
             return self._path(folder)
         except ToolError:
@@ -675,7 +681,7 @@ class ControlTools:
                 names = "\n".join(str(s) for s in srcs[:8]) + (f"\n…외 {len(srcs) - 8}개" if len(srcs) > 8 else "")
                 self._confirm("휴지통으로 보내기", names)
                 n = files.trash(srcs)
-                return f"{n}개를 휴지통으로 보냈습니다 (휴지통에서 되살릴 수 있습니다)."
+                return f"{n}개를 휴지통으로 보냈습니다."
             if action == "zip":
                 out = files.zip_paths(srcs, self._path(dest) if dest else None)
                 return f"압축했습니다: {out} ({files.human(out.stat().st_size)})"
