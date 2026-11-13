@@ -380,7 +380,10 @@ class PCTools(ControlTools):
                  "subject / name; today's date is added if no year), a 목차 when there are 3+ top-level headings, then the body.",
                  {"title": s,
                   "subtitle": {"type": "string", "description": "e.g. '과목 · 학번 이름 · 날짜'"},
-                  "summary": {"description": "optional 핵심 요약 box near the start: a string, a list of strings, or "
+                  "summary": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}},
+                                       {"type": "object", "properties": {"title": {"type": "string"}, "text": {"type": "string"},
+                                                                         "bullets": {"type": "array", "items": {"type": "string"}}}}],
+                             "description": "optional 핵심 요약 box near the start: a string, a list of strings, or "
                                              "{title, text | bullets}"},
                   "audience": {"type": "string", "description": "who reads it, e.g. '고등학교 과제', '팀장 보고'"},
                   "facts": {"type": "array", "items": {"type": "string"},
@@ -392,7 +395,10 @@ class PCTools(ControlTools):
                                  "description": "outline only: what this section must cover"},
                       "paragraphs": {"type": "array", "items": {"type": "string"}},
                       "bullets": {"type": "array", "items": {"type": "string"}},
-                      "callout": {"description": "optional highlighted key-point box for this section: a string, a list "
+                      "callout": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}},
+                                            {"type": "object", "properties": {"title": {"type": "string"}, "text": {"type": "string"},
+                                                                         "bullets": {"type": "array", "items": {"type": "string"}}}}],
+                             "description": "optional highlighted key-point box for this section: a string, a list "
                                                  "of strings, or {title, text | bullets}"},
                       "table": {"type": "object", "properties": {
                           "columns": {"type": "array", "items": {"type": "string"}},
@@ -401,6 +407,8 @@ class PCTools(ControlTools):
                   "sources": {"type": "array", "items": {"type": "string"}},
                   "format": {"type": "string", "enum": ["docx", "hwpx"],
                              "description": "docx = Word (default), hwpx = 한글 (when the user says 한글 · 한컴 · hwp)"},
+                  "icon": {"type": "string", "description": "cover icon for Word reports (Material Icons name; "
+                                                           "not used for hwpx)"},
                   "filename": s, "folder": s,
                   "overwrite": {"type": "boolean"}, "open": {"type": "boolean"}},
                  ["title", "sections"]),
@@ -1581,12 +1589,11 @@ class PCTools(ControlTools):
                       filename: str = "", folder: str = "", overwrite: bool = False, open: bool = True,
                       style: str = "clean", icon: str = "", info: list | None = None, **_extra) -> str:
         from . import design
-        facts = info
-        path, info, note = self._make_file(
+        path, made, note = self._make_file(
             lambda p: design.build_poster(p, title, sections or [], subtitle, highlight, footer, sources, theme, size,
-                                          style=style, icon=icon, info=facts),
+                                          style=style, icon=icon, info=info),
             filename or title, ".png", folder, overwrite, open)
-        return (f"포스터를 만들었습니다 — {str(size or 'a4').upper()} 세로, 구역 {info['sections']}개 (그림 파일과 인쇄용 PDF). "
+        return (f"포스터를 만들었습니다 — {str(size or 'a4').upper()} 세로, 구역 {made['sections']}개 (그림 파일과 인쇄용 PDF). "
                 f"저장한 곳: {self._where(path)} (파일 이름 {path.name}).{note} [전체 경로: {path}]")
 
     def t_end_process(self, name: str) -> str:

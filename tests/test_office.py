@@ -709,3 +709,33 @@ def test_tool_result_gives_a_speakable_place_and_keeps_the_full_path_aside(pc, t
     assert f"[전체 경로: {tmp_path / 'docs' / 'JARVIS' / '광합성.pptx'}]" in msg
     assert "저장한 곳: 바탕화면 " in pc.t_make_presentation(title="x", slides=SLIDES[:1], folder="바탕화면")
     assert "저장한 곳: '어딘가' 폴더" in pc.t_make_presentation(title="x", slides=SLIDES[:1], folder=str(tmp_path / "어딘가"))
+
+
+def test_summary_and_callout_accept_non_list_values(tmp_path):
+    """모델이 summary · callout 에 숫자 같은 값을 넣어도 보고서는 만들어진다 (글 한 줄로)."""
+    from jarvis import hwpx
+    sec = [{"heading": "서론", "paragraphs": ["가"], "callout": 5}]
+    assert office.build_document(tmp_path / "a.docx", "제목", sec, summary=123)["sections"] == 1
+    assert hwpx.build_hwpx(tmp_path / "a.hwpx", "제목", sec, summary=123)["sections"] == 1
+
+
+def test_unknown_cover_icon_falls_back(tmp_path):
+    info = office.build_document(tmp_path / "b.docx", "수면 보고서", [{"heading": "a", "paragraphs": ["b"]}],
+                                 icon="nonexistent_zzz")
+    assert info["sections"] == 1
+
+
+def test_make_document_hwpx_ignores_icon(tmp_path, monkeypatch):
+    from jarvis import hwpx, tools
+    seen = {}
+    def fake(path, title, sections, subtitle="", sources=None, summary=None):
+        seen["summary"] = summary
+        return {"sections": len(sections), "tables": 0}
+    monkeypatch.setattr(hwpx, "build_hwpx", fake)
+    t = tools.PCTools.__new__(tools.PCTools)
+    monkeypatch.setattr(t, "_team", lambda kind, brief, secs: (secs, [], ""), raising=False)
+    monkeypatch.setattr(t, "_make_file", lambda build, *a, **k: (tmp_path / "x.hwpx", build(tmp_path / "x.hwpx"), ""),
+                        raising=False)
+    monkeypatch.setattr(t, "_where", lambda p: "temp", raising=False)
+    out = t.t_make_document("제목", [{"heading": "a"}], format="hwpx", summary="요약", icon="bedtime")
+    assert "한글 문서" in out and seen["summary"] == "요약"

@@ -70,6 +70,8 @@ def _strings(v) -> list[str]:
         return []
     if isinstance(v, str):
         v = [line for line in v.splitlines()]
+    elif not isinstance(v, (list, tuple, set)):
+        v = [v]                       # 숫자 하나 · 객체 하나처럼 목록이 아닌 값도 글 한 줄로 받는다 (크래시 대신)
     return [s for s in (str(x).rstrip() for x in v) if s.strip()]
 
 
