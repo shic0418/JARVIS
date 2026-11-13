@@ -15,7 +15,7 @@ import io
 import re
 
 from . import icons
-from .office import FONT, _docx_font, _em, _strings, _text, numeric_text, parse_bullets, pretty_ref, rich_parts
+from .office import _docx_font, _em, _strings, _text, numeric_text, parse_bullets, pretty_ref, rich_parts
 
 NAVY = "16213A"        # 제목 · 표 머리글 (짙은 남색)
 ACCENT = "1F3A8A"      # 번호 · 막대 (강조색)

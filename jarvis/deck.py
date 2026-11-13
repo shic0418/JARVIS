@@ -16,6 +16,7 @@ import math
 import re
 
 from . import icons
+from .design import _contrast
 from .office import (BODY_SIZES, CHARTS, FONT, H, M, STYLES, W, Theme, _em, _hexmix, _lines, _listish, _text, fit_size,
                      number, palette, parse_bullets, roomy_gap, split_items)
 
@@ -32,14 +33,7 @@ def lum(hex_: str) -> float:
 
 def contrast(a: str, b: str) -> float:
     """두 색의 명암비 (1 ~ 21). 글자로 읽히려면 3 은 넘어야 한다."""
-    def rel(hex_: str) -> float:
-        out = 0.0
-        for i, k in ((0, 0.2126), (2, 0.7152), (4, 0.0722)):
-            c = int(hex_[i:i + 2], 16) / 255
-            out += k * (c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4)
-        return out
-    hi, lo = sorted((rel(a), rel(b)), reverse=True)
-    return (hi + 0.05) / (lo + 0.05)
+    return _contrast(a, b)
 
 
 def size_for(text: str, steps, floor: float) -> float:
