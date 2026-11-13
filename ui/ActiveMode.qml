@@ -2,7 +2,7 @@
 //   테두리: 검은 그늘 대신 헬멧 안쪽 장갑 — 레드 이마판 · 골드 뺨판 · 레드 턱판, 골드 테두리에 HUD 빛이 비쳐 주황으로 빛난다.
 //           장갑 안쪽은 따뜻한 어둠이 깔려 그 위의 위젯은 뒤 화면이 흰 창이어도 또렷하다.
 //   홀로그램: 금색 · 주황 · 흰빛, 굵은 선과 채운 도형. 모든 선과 글자 둘레에 어두운 테를 둘러(헤일로) 흰 화면 위에서도 읽힌다.
-//   시선 고리: 웹캠으로 추정한 시선(없으면 마우스 커서)을 큰 홀로그램 고리가 따라가고, 한곳을 오래 보면 잠근다(LOCK).
+//   커서 고리: 마우스 커서를 홀로그램 추적 고리가 따라가고, 커서를 한곳에 오래 두면 잠근다(LOCK).
 //   켜질 때: 장갑 판이 위아래에서 닫혀 눈높이 틈만 남기고 봉인(덜컹) → 열리며 섬광 · 충격파 · 휜 보정 격자,
 //            위젯들이 곡면을 따라 날아가 자리를 잡고, SYSLOG 에 실제 점검 결과가 한 줄씩 찍힌다(→ ALL SYSTEMS ONLINE).
 //   꺼질 때: 위젯이 바깥쪽부터 꺼지고 → 조준경이 풀리고 → 화면이 가로 한 줄로 접혀 점이 된다
@@ -50,7 +50,7 @@ Window {
     readonly property var timers: JSON.parse(jarvis.timersJson)     // 돌고 있는 타이머 (가까운 순)
     readonly property var weather: JSON.parse(jarvis.weatherJson)
     readonly property var target: JSON.parse(jarvis.targetJson)     // 추적 박스: 지금 창 / 짚은 위치
-    readonly property var gaze: JSON.parse(jarvis.gazeJson)         // 시선: {x, y, src: eye | cursor, conf}
+    readonly property var gaze: JSON.parse(jarvis.gazeJson)         // 마우스 커서: {x, y}
     onStatsChanged: { const h = cpuHist.slice(-29); h.push(stats.cpu || 0); cpuHist = h }
 
     // 화면 크기에 맞춘 단위 (1600×900 기준 1)
@@ -167,7 +167,7 @@ Window {
     property real t: 0
     readonly property bool idle: p >= 1 && seal >= 2 && down <= 0 && (st === "standby" || st === "offline" || st === "boot")
                                  && lock >= 1 && flick >= 1 && jolt <= 0
-    // 시선 고리: 화면 좌표 (부드럽게 따라감) + 한곳을 오래 보면 잠금
+    // 커서 고리: 화면 좌표 (부드럽게 따라감) + 커서를 한곳에 오래 두면 잠금
     readonly property bool gazeOn: gaze.x !== undefined
     property real gx: -1
     property real gy: -1
@@ -271,7 +271,7 @@ Window {
             ["AUDIO INPUT", st === "offline" ? "OFFLINE" : "OK", st === "offline" ? "err" : "ok"],
             ["VOICE CHANNEL", jarvis.wakeEnabled ? "WAKE WORD" : "HOTKEY " + jarvis.hotkeyText, "ok"],
             ["AI LINK", jarvis.hasApiKey ? "ONLINE" : "LOCAL ONLY", jarvis.hasApiKey ? "ok" : "warn"],
-            ["EYE TRACKING", gaze.src === "eye" ? "OPTICAL" : gazeOn ? "CURSOR" : "OFF", gaze.src === "eye" ? "ok" : "info"],
+            ["CURSOR TRACKING", gazeOn ? "ON" : "OFF", "info"],
             ["TELEMETRY", "CPU " + Math.round(s.cpu || 0) + "% · RAM " + Math.round(s.ram || 0) + "%",
              (s.cpu || 0) > 90 || (s.ram || 0) > 90 ? "warn" : "ok"],
             ["POWER", s.bat === undefined || s.bat < 0 ? "AC" : s.bat + "%" + (s.plugged ? " CHG" : ""),
@@ -2057,7 +2057,7 @@ Window {
             }
         }
 
-        // ---- 시선 추적기: 눈이 가는 곳(웹캠 시선, 없으면 마우스 커서)을 따라가는 작은 추적 모듈 ----
+        // ---- 커서 추적기: 마우스 커서를 따라가는 작은 추적 모듈 ----
         // 가운데 스캐너와 같은 선 언어(가는 동심원 · 분절 호 · 방사 눈금 · 표적선)를 쓰되, 크기는 작고 구성은 따로다.
         // 가운데는 비워 실제 마우스 포인터와 그 아래 대상이 가려지지 않게 한다.
         Item {
@@ -2066,7 +2066,6 @@ Window {
             readonly property bool has: ov.gazeOn && ov.p >= 1 && ov.down <= 0 && ov.gx >= 0
             readonly property real dist: Math.sqrt((ov.gx - ov.cx) * (ov.gx - ov.cx) + (ov.gy - ov.cy) * (ov.gy - ov.cy))
             readonly property bool locked: ov.gazeLock
-            readonly property bool eye: ov.gaze.src === "eye"
             readonly property real ux: (ov.gx - ov.cx) / Math.max(1, dist)     // 스캐너 → 추적기 방향
             readonly property real uy: (ov.gy - ov.cy) / Math.max(1, dist)
             readonly property real ping: (ov.t / 2.2) % 1                       // 스캐너 조준점 맥박(ov.pulse)과 같은 주기
@@ -2257,7 +2256,7 @@ Window {
                     spacing: 0
                     SText {
                         anchors.right: gzTag.flip ? parent.right : undefined
-                        text: "GAZE · " + (gz.eye ? "OPTICAL" : "CURSOR")
+                        text: "CURSOR"
                         color: sc.a(sc.light, 0.8); font.pixelSize: 8.5 * ov.u; font.letterSpacing: 2 * ov.u
                     }
                     SText {

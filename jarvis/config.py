@@ -70,8 +70,7 @@ DEFAULTS: dict = {
     "sentinel_requester": "",         # Sentinel 감사 기록에 남는 요청자 이름 (비워두면 Windows 사용자 이름)
     "sentinel_basis": "owner",        # 검사 근거 기본값: owner | written_permission | bug_bounty_scope | internal_lab
     "hud_motion": "auto",             # 액티브 모드 회전 · 스캔 연출: auto = Windows '애니메이션 효과' 설정을 따름 | on | off
-    "eye_tracking": "auto",           # 액티브 모드 시선 고리: auto = 웹캠으로 시선 추적(안 되면 마우스 커서) | cursor | off
-    "eye_camera": 0,                  # 시선 추적에 쓸 카메라 번호
+    "cursor_tracking": "on",          # 액티브 모드 커서 고리: on = 마우스 커서를 따라감 | off
 }
 
 _lock = threading.Lock()
@@ -96,6 +95,11 @@ class Config:
                     for k, old in _OLD_DEFAULTS.items():
                         if loaded.get(k) in old:
                             self._data[k] = DEFAULTS[k]
+                    # 웹캠 시선 추적이 빠졌다: 고리를 꺼 두었던 설정만 새 키로 옮기고 옛 키는 지운다
+                    if "cursor_tracking" not in loaded and str(loaded.get("eye_tracking", "")).lower() == "off":
+                        self._data["cursor_tracking"] = "off"
+                    self._data.pop("eye_tracking", None)
+                    self._data.pop("eye_camera", None)
             except Exception:
                 pass
         self.save()
