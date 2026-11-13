@@ -617,7 +617,8 @@ class Brain:
     def _todo(self, text: str) -> str | None:
         """할 일 추가 · 목록 · 완료 · 삭제. 할 일과 상관없는 말이면 None."""
         try:
-            return todos.handle(normalize(text) or text) or todos.handle(text)
+            norm = normalize(text) or text
+            return todos.handle(norm) or (todos.handle(text) if text != norm else None)
         except Exception:
             log.exception("할 일 처리 실패")
             return None
@@ -656,7 +657,7 @@ class Brain:
         if routines.match(c, self.cfg["routines"] or {}) or BRIEFING.fullmatch(c):
             return True
         try:
-            if todos.handle(c, dry=True) is not None or todos.handle(text, dry=True) is not None:
+            if todos.handle(c, dry=True) is not None or (text != c and todos.handle(text, dry=True) is not None):
                 return True
         except Exception:
             pass

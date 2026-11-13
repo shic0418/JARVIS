@@ -165,6 +165,11 @@ def squash(s: str) -> str:
     return re.sub(r"[\s.,!?~]+", "", s or "").lower()
 
 
+def _open_key(t: Todo) -> tuple:
+    d = t.due_date                  # 날짜 해석은 항목마다 한 번만
+    return d is None, d or dt.date.max, t.created
+
+
 class TodoStore:
     def __init__(self, path: Path = TODO_PATH) -> None:
         self.path = path
@@ -196,8 +201,7 @@ class TodoStore:
     def open_items(self) -> list[Todo]:
         """끝내지 않은 할 일 — 마감이 가까운 것부터, 마감 없는 것은 뒤에."""
         with self._lock:
-            return sorted((t for t in self.items if not t.done),
-                          key=lambda t: (t.due_date is None, t.due_date or dt.date.max, t.created))
+            return sorted((t for t in self.items if not t.done), key=_open_key)
 
     def add(self, text: str, due: dt.date | None = None) -> Todo:
         text = _clean(text)

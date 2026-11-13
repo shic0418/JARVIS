@@ -176,16 +176,16 @@ class Proactive:
         return idle_seconds is None or idle_seconds < BRIEF_ACTIVE_SECONDS
 
     def mark_briefed(self, now: dt.datetime) -> None:
+        today = now.date()
         with self._lock:
-            self.state["briefing"] = now.date().isoformat()
+            self.state["briefing"] = today.isoformat()
             # 브리핑에서 오늘 할 일을 이미 말했으므로 9시 알림은 건너뛴다
-            if self.store_fn is not None:
-                try:
-                    st = self.store_fn()
-                    if st.due_on(now.date()) or st.overdue(now.date()):
-                        self.state["reminded"][f"today:{now.date().isoformat()}"] = now.date().isoformat()
-                except Exception:
-                    pass
+            try:
+                st = self.store_fn()
+                if st.due_on(today) or st.overdue(today):
+                    self.state["reminded"][f"today:{today.isoformat()}"] = today.isoformat()
+            except Exception:
+                pass
             self._save()
 
 
