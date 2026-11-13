@@ -25,18 +25,22 @@ Window {
 
     readonly property bool on: jarvis.activeMode
     readonly property string st: jarvis.state
-    // ---- 색: 금색 홀로그램 + 흰빛, 경고는 빨강, 생각 중은 얼음빛 ----
-    readonly property color gold: "#ffb02e"
-    readonly property color hot: "#fff4dc"
-    readonly property color ember: "#ff7a1c"
-    readonly property color red: "#ff3b30"
-    readonly property color amber: "#ffc04a"
-    readonly property color ice: "#66e3ff"
-    readonly property color green: "#7dffb0"
-    readonly property color ink: "#1a0c00"                            // 금색 판 위 글자
-    readonly property color shade: Qt.rgba(0.06, 0.025, 0.0, 0.95)   // 글자 테두리
-    readonly property color outline: Qt.rgba(0.05, 0.02, 0.0, 0.88)  // 선 밑에 깔리는 어두운 테 (흰 화면 위에서도 선이 보이게)
-    property color accent: st === "thinking" ? ice : st === "offline" ? red : st === "listening" ? amber : gold
+    // ---- 색: 파란 홀로그램 (전기 시안 · 얼음빛 · 흰 푸른빛), 바탕은 짙은 남색. 빨강 · 호박색은 경고에만 ----
+    //   이름(gold · hot …)은 예전 테마에서 쓰던 그대로 두고 값만 바꿨다 — 위젯마다 쓰는 자리가 많아서.
+    readonly property color navy: "#020914"                           // 가장 짙은 바탕
+    readonly property color hudBlue: "#061626"                        // 판 바탕
+    readonly property color gold: "#00c8ff"                           // 주 강조색: 전기 시안
+    readonly property color hot: "#ddf7ff"                            // 흰 푸른빛 (가장 밝은 글자 · 선)
+    readonly property color ember: "#2f8fff"                          // 짙은 전기 파랑
+    readonly property color red: "#ff3b30"                            // 경고 · 위험
+    readonly property color amber: "#ffc04a"                          // 주의
+    readonly property color ice: "#70dfff"                            // 얼음빛
+    readonly property color green: "#7dffb0"                          // 정상
+    readonly property color ink: "#020914"                            // 시안 판 위 글자
+    readonly property color shade: Qt.rgba(0.0, 0.03, 0.07, 0.95)    // 글자 테두리
+    readonly property color outline: Qt.rgba(0.0, 0.025, 0.06, 0.88) // 선 밑에 깔리는 어두운 테 (흰 화면 위에서도 선이 보이게)
+    // 상태는 파란 계열 안에서 밝기로 구분 (생각 중: 흰 푸른빛, 듣는 중: 얼음빛). 마이크가 없을 때만 빨강
+    property color accent: st === "thinking" ? "#a8ecff" : st === "offline" ? red : st === "listening" ? ice : gold
     Behavior on accent { ColorAnimation { duration: 450 } }
     readonly property real level: Math.max(jarvis.micLevel, jarvis.voiceLevel)
     readonly property var stats: JSON.parse(jarvis.statsJson)
@@ -384,7 +388,7 @@ Window {
             z: -1
             x: -4 * ov.u; y: -1 * ov.u
             width: parent.implicitWidth + 8 * ov.u; height: parent.implicitHeight + 2 * ov.u
-            color: Qt.rgba(0.07, 0.03, 0.0, 0.74)
+            color: Qt.rgba(0.008, 0.035, 0.078, 0.74)
         }
     }
     component Decode: HText {
@@ -429,9 +433,9 @@ Window {
                 strokeColor: ov.gd(0.6); strokeWidth: 2 * ov.u; joinStyle: ShapePath.MiterJoin
                 fillGradient: LinearGradient {
                     x1: 0; y1: w.hh; x2: 0; y2: w.height
-                    GradientStop { position: 0.0; color: Qt.rgba(0.20, 0.10, 0.0, 0.62) }
-                    GradientStop { position: 0.25; color: Qt.rgba(0.07, 0.03, 0.0, 0.66) }
-                    GradientStop { position: 1.0; color: Qt.rgba(0.05, 0.02, 0.0, 0.72) }
+                    GradientStop { position: 0.0; color: Qt.rgba(0.0, 0.13, 0.22, 0.62) }
+                    GradientStop { position: 0.25; color: Qt.rgba(0.024, 0.086, 0.15, 0.66) }   // #061626
+                    GradientStop { position: 1.0; color: Qt.rgba(0.008, 0.035, 0.078, 0.72) }  // #020914
                 }
                 PathPolyline { path: w.outline }
             }
@@ -530,15 +534,15 @@ Window {
     }
 
     // =====================================================================
-    // 바탕: 장갑 안쪽의 따뜻한 어둠 — 가운데는 맑고, 위젯이 놓이는 양쪽은 진하다 (흰 창 위에서도 위젯이 읽히게)
+    // 바탕: 장갑 안쪽의 짙은 남색 어둠 — 가운데는 맑고, 위젯이 놓이는 양쪽은 진하다 (흰 창 위에서도 위젯이 읽히게)
     Item {
         id: bg
         anchors.fill: parent
         opacity: ov.seg(0.1, 0.45) * ov.flick * (ov.calm ? 1 - ov.down : 1 - ov.dlin(0.3, 0.55))
         transform: Translate { x: ov.joltX; y: ov.joltY }
-        Rectangle {   // 바이저 색: 아주 옅은 호박빛 (뒤 화면은 그대로 보임)
+        Rectangle {   // 바이저 색: 아주 옅은 남색 (뒤 화면은 그대로 보임)
             anchors.fill: parent
-            color: Qt.rgba(0.06, 0.03, 0.0, 0.12)
+            color: Qt.rgba(0.0, 0.03, 0.07, 0.12)
         }
         // 가장자리로 갈수록 어두워지는 타원
         Item {
@@ -554,8 +558,8 @@ Window {
                         focalX: ov.width / 2; focalY: ov.width / 2; focalRadius: 0
                         GradientStop { position: 0.0; color: "transparent" }
                         GradientStop { position: 0.58; color: "transparent" }
-                        GradientStop { position: 0.78; color: Qt.rgba(0.04, 0.015, 0.0, 0.55) }
-                        GradientStop { position: 1.0; color: Qt.rgba(0.02, 0.008, 0.0, 0.92) }
+                        GradientStop { position: 0.78; color: Qt.rgba(0.004, 0.025, 0.06, 0.55) }
+                        GradientStop { position: 1.0; color: Qt.rgba(0.004, 0.02, 0.05, 0.92) }
                     }
                     PathPolyline { path: [Qt.point(0, 0), Qt.point(ov.width, 0), Qt.point(ov.width, ov.width), Qt.point(0, ov.width), Qt.point(0, 0)] }
                 }
@@ -569,9 +573,9 @@ Window {
                 width: reach; height: parent.height
                 x: index === 0 ? 0 : ov.width - reach
                 gradient: Gradient { orientation: Gradient.Horizontal
-                    GradientStop { position: index === 0 ? 0.0 : 1.0; color: Qt.rgba(0.035, 0.014, 0.0, 0.88) }
-                    GradientStop { position: index === 0 ? 0.62 : 0.38; color: Qt.rgba(0.035, 0.014, 0.0, 0.8) }
-                    GradientStop { position: index === 0 ? 1.0 : 0.0; color: Qt.rgba(0.035, 0.014, 0.0, 0) } }
+                    GradientStop { position: index === 0 ? 0.0 : 1.0; color: Qt.rgba(0.006, 0.03, 0.065, 0.88) }
+                    GradientStop { position: index === 0 ? 0.62 : 0.38; color: Qt.rgba(0.006, 0.03, 0.065, 0.8) }
+                    GradientStop { position: index === 0 ? 1.0 : 0.0; color: Qt.rgba(0.006, 0.03, 0.065, 0) } }
             }
         }
         // 위 방위 테이프 뒤: 가장자리가 부드러운 타원 그늘
@@ -589,9 +593,9 @@ Window {
                         fillGradient: RadialGradient {
                             centerX: modelData[2]; centerY: modelData[2]; centerRadius: modelData[2]
                             focalX: modelData[2]; focalY: modelData[2]; focalRadius: 0
-                            GradientStop { position: 0.0; color: Qt.rgba(0.04, 0.015, 0, modelData[4]) }
-                            GradientStop { position: 0.6; color: Qt.rgba(0.04, 0.015, 0, modelData[4] * 0.7) }
-                            GradientStop { position: 1.0; color: Qt.rgba(0.04, 0.015, 0, 0) }
+                            GradientStop { position: 0.0; color: Qt.rgba(0.006, 0.03, 0.065, modelData[4]) }
+                            GradientStop { position: 0.6; color: Qt.rgba(0.006, 0.03, 0.065, modelData[4] * 0.7) }
+                            GradientStop { position: 1.0; color: Qt.rgba(0.006, 0.03, 0.065, 0) }
                         }
                         PathAngleArc { centerX: modelData[2]; centerY: modelData[2]; radiusX: modelData[2]; radiusY: modelData[2]; startAngle: 0; sweepAngle: 360 }
                     }
@@ -606,7 +610,7 @@ Window {
             onPaint: {
                 const g = getContext("2d")
                 g.reset()
-                g.fillStyle = "rgba(255, 190, 110, 0.07)"
+                g.fillStyle = "rgba(112, 223, 255, 0.07)"
                 for (let y = 0; y < height; y += 3) g.fillRect(0, y, width, 1)
             }
         }
@@ -623,7 +627,7 @@ Window {
     }
 
     // =====================================================================
-    // 헬멧 안쪽 장갑 — 레드 이마판 · 골드 뺨판 · 레드 턱판(가운데 골드), 골드 테두리에 HUD 빛이 비친다.
+    // 헬멧 안쪽 장갑 — 짙은 남색 금속 판(이마 · 뺨 · 턱), 가는 시안 테두리에 HUD 빛이 은은하게 비친다.
     // 눈에서 너무 가까워 초점이 맞지 않는 느낌으로 살짝 흐리게. 움직이지 않으므로 한 번 그린 그림을 계속 쓴다.
     Item {
         id: armor
@@ -637,36 +641,36 @@ Window {
         layer.effect: MultiEffect { blurEnabled: true; blur: 0.18; blurMax: 12; autoPaddingEnabled: false }
         Shape {
             anchors.fill: parent
-            // 이마판 (레드)
+            // 이마판
             ShapePath {
                 strokeColor: "transparent"
                 fillGradient: LinearGradient {
                     x1: 0; y1: 0; x2: 0; y2: ov.height * 0.2
-                    GradientStop { position: 0.0; color: "#190303" }
-                    GradientStop { position: 0.45; color: "#4a0a0a" }
-                    GradientStop { position: 1.0; color: "#8a1616" }
+                    GradientStop { position: 0.0; color: "#01040a" }
+                    GradientStop { position: 0.45; color: "#061626" }
+                    GradientStop { position: 1.0; color: "#0c2c4a" }
                 }
                 PathPolyline { path: [Qt.point(-4, -4), Qt.point(ov.width + 4, -4)].concat(ov.browEdge.slice().reverse()).concat([Qt.point(-4, ov.height * 0.205), Qt.point(-4, -4)]) }
             }
-            // 턱판 (레드)
+            // 턱판
             ShapePath {
                 strokeColor: "transparent"
                 fillGradient: LinearGradient {
                     x1: 0; y1: ov.height * 0.83; x2: 0; y2: ov.height
-                    GradientStop { position: 0.0; color: "#7a1313" }
-                    GradientStop { position: 0.6; color: "#3d0808" }
-                    GradientStop { position: 1.0; color: "#150202" }
+                    GradientStop { position: 0.0; color: "#0b2944" }
+                    GradientStop { position: 0.6; color: "#061626" }
+                    GradientStop { position: 1.0; color: "#01040a" }
                 }
                 PathPolyline { path: ov.chinEdge.concat([Qt.point(ov.width + 4, ov.height * 0.83), Qt.point(ov.width + 4, ov.height + 4),
                                                          Qt.point(-4, ov.height + 4), Qt.point(-4, ov.height * 0.83), ov.chinEdge[0]]) }
             }
-            // 뺨판 (골드) — 왼쪽 · 오른쪽
+            // 뺨판 — 왼쪽 · 오른쪽
             ShapePath {
                 strokeColor: "transparent"
                 fillGradient: LinearGradient {
                     x1: 0; y1: 0; x2: ov.width * 0.022; y2: 0
-                    GradientStop { position: 0.0; color: "#2a1a04" }
-                    GradientStop { position: 1.0; color: "#7a5816" }
+                    GradientStop { position: 0.0; color: "#020914" }
+                    GradientStop { position: 1.0; color: "#0d3150" }
                 }
                 PathPolyline { path: [Qt.point(-4, ov.height * 0.205)].concat(ov.cheekL).concat([Qt.point(-4, ov.height * 0.83), Qt.point(-4, ov.height * 0.205)]) }
             }
@@ -674,24 +678,24 @@ Window {
                 strokeColor: "transparent"
                 fillGradient: LinearGradient {
                     x1: ov.width; y1: 0; x2: ov.width * 0.978; y2: 0
-                    GradientStop { position: 0.0; color: "#2a1a04" }
-                    GradientStop { position: 1.0; color: "#7a5816" }
+                    GradientStop { position: 0.0; color: "#020914" }
+                    GradientStop { position: 1.0; color: "#0d3150" }
                 }
                 PathPolyline { path: [Qt.point(ov.width + 4, ov.height * 0.205)].concat(ov.cheekR).concat([Qt.point(ov.width + 4, ov.height * 0.83), Qt.point(ov.width + 4, ov.height * 0.205)]) }
             }
-            // 턱 가운데 골드 판
+            // 턱 가운데 판
             ShapePath {
-                strokeColor: "#2a1a04"; strokeWidth: 2 * ov.u
+                strokeColor: "#020914"; strokeWidth: 2 * ov.u
                 fillGradient: LinearGradient {
                     x1: 0; y1: ov.height * 0.955; x2: 0; y2: ov.height
-                    GradientStop { position: 0.0; color: "#9a7222" }
-                    GradientStop { position: 1.0; color: "#3a2806" }
+                    GradientStop { position: 0.0; color: "#164a73" }
+                    GradientStop { position: 1.0; color: "#061626" }
                 }
                 PathPolyline { path: [ov.fp(0.4, 1.01), ov.fp(0.44, 0.972), ov.fp(0.5, 0.964), ov.fp(0.56, 0.972), ov.fp(0.6, 1.01), ov.fp(0.4, 1.01)] }
             }
             // 이마 가운데 능선 + 판 이음새 (어두운 홈 + 밝은 모서리)
             ShapePath {
-                strokeColor: "#120202"; strokeWidth: 4 * ov.u; fillColor: "transparent"
+                strokeColor: "#010409"; strokeWidth: 4 * ov.u; fillColor: "transparent"
                 PathMove { x: ov.width * 0.5; y: 0 }
                 PathLine { x: ov.width * 0.5; y: ov.height * 0.07 }
                 PathMove { x: ov.width * 0.12; y: 0 }
@@ -716,7 +720,7 @@ Window {
                 PathLine { x: ov.width * 0.982; y: ov.height * 0.62 }
             }
             ShapePath {
-                strokeColor: Qt.rgba(1, 0.55, 0.4, 0.28); strokeWidth: 1.5 * ov.u; fillColor: "transparent"
+                strokeColor: Qt.rgba(0.44, 0.87, 1, 0.22); strokeWidth: 1.5 * ov.u; fillColor: "transparent"
                 PathMove { x: ov.width * 0.5 + 3 * ov.u; y: 0 }
                 PathLine { x: ov.width * 0.5 + 3 * ov.u; y: ov.height * 0.066 }
                 PathMove { x: ov.width * 0.12 + 3 * ov.u; y: 0 }
@@ -730,7 +734,7 @@ Window {
             }
             // 이마 양쪽 통풍 홈
             ShapePath {
-                strokeColor: "#0c0101"; strokeWidth: 3.5 * ov.u; fillColor: "transparent"; capStyle: ShapePath.RoundCap
+                strokeColor: "#010309"; strokeWidth: 3.5 * ov.u; fillColor: "transparent"; capStyle: ShapePath.RoundCap
                 PathMove { x: ov.width * 0.205; y: ov.height * 0.018 }
                 PathLine { x: ov.width * 0.225; y: ov.height * 0.046 }
                 PathMove { x: ov.width * 0.222; y: ov.height * 0.016 }
@@ -744,23 +748,23 @@ Window {
                 PathMove { x: ov.width * 0.761; y: ov.height * 0.014 }
                 PathLine { x: ov.width * 0.741; y: ov.height * 0.04 }
             }
-            // 안쪽 가장자리 골드 테: 어두운 바깥 → 골드 → 밝은 모서리 (세 겹으로 깎은 느낌)
+            // 안쪽 가장자리 테: 어두운 바깥 → 시안 → 밝은 모서리 (세 겹으로 깎은 느낌)
             ShapePath {
-                strokeColor: "#4a3008"; strokeWidth: 11 * ov.u; fillColor: "transparent"; joinStyle: ShapePath.RoundJoin
+                strokeColor: "#04182b"; strokeWidth: 11 * ov.u; fillColor: "transparent"; joinStyle: ShapePath.RoundJoin
                 PathPolyline { path: ov.browEdge }
                 PathPolyline { path: ov.chinEdge }
                 PathPolyline { path: ov.cheekL }
                 PathPolyline { path: ov.cheekR }
             }
             ShapePath {
-                strokeColor: "#c9962f"; strokeWidth: 6 * ov.u; fillColor: "transparent"; joinStyle: ShapePath.RoundJoin
+                strokeColor: "#0b6aa3"; strokeWidth: 6 * ov.u; fillColor: "transparent"; joinStyle: ShapePath.RoundJoin
                 PathPolyline { path: ov.browEdge }
                 PathPolyline { path: ov.chinEdge }
                 PathPolyline { path: ov.cheekL }
                 PathPolyline { path: ov.cheekR }
             }
             ShapePath {
-                strokeColor: "#ffe3a0"; strokeWidth: 1.8 * ov.u; fillColor: "transparent"; joinStyle: ShapePath.RoundJoin
+                strokeColor: "#70dfff"; strokeWidth: 1.8 * ov.u; fillColor: "transparent"; joinStyle: ShapePath.RoundJoin
                 PathPolyline { path: ov.browEdge }
                 PathPolyline { path: ov.chinEdge }
                 PathPolyline { path: ov.cheekL }
@@ -768,12 +772,12 @@ Window {
             }
             // HUD 빛이 테두리에 비친 번짐
             ShapePath {
-                strokeColor: Qt.rgba(1, 0.6, 0.15, 0.16); strokeWidth: 30 * ov.u; fillColor: "transparent"; joinStyle: ShapePath.RoundJoin
+                strokeColor: Qt.rgba(0, 0.7, 1, 0.12); strokeWidth: 30 * ov.u; fillColor: "transparent"; joinStyle: ShapePath.RoundJoin
                 PathPolyline { path: ov.browEdge }
                 PathPolyline { path: ov.chinEdge }
             }
         }
-        // 이마 가운데 표시등 (주황)
+        // 이마 가운데 표시등
         Row {
             x: ov.cx - width / 2; y: ov.height * 0.018
             spacing: 6 * ov.u
@@ -781,7 +785,7 @@ Window {
                 model: 5
                 Rectangle {
                     width: (index === 2 ? 18 : 8) * ov.u; height: 4 * ov.u; radius: 1
-                    color: index === 2 ? "#ffd27a" : "#ff8a2a"
+                    color: index === 2 ? "#ddf7ff" : "#00c8ff"
                     opacity: index === 2 ? 1 : 0.75
                 }
             }
@@ -808,7 +812,7 @@ Window {
         layer.enabled: ov.visible
         layer.effect: MultiEffect {
             shadowEnabled: true
-            shadowColor: Qt.rgba(0.04, 0.015, 0.0, 1)
+            shadowColor: Qt.rgba(0.0, 0.02, 0.05, 1)
             shadowBlur: 0.4                  // 선마다 어두운 테를 깔고, 그 둘레를 한 번 더 부드럽게 어둡게
             blurMax: 12
             shadowOpacity: 1.0
@@ -847,7 +851,7 @@ Window {
                     width: 2 + 2.5 * parent.jit; height: len
                     opacity: Math.sin(parent.t * Math.PI) * 0.9
                     gradient: Gradient {
-                        GradientStop { position: 0.0; color: "#fff8e8" }
+                        GradientStop { position: 0.0; color: "#e6f9ff" }
                         GradientStop { position: 1.0; color: ov.gd(0) }
                     }
                 }
@@ -965,7 +969,7 @@ Window {
                 width: tgCol.width + 16 * ov.u; height: tgCol.height + 10 * ov.u
                 // 양쪽 위젯 열 위에 걸치면 흐리게 (위젯 글자와 겹쳐 읽기 어려움)
                 opacity: gx < ov.colX(-1, 0, 0) + ov.colW + 20 * ov.u || gx + width > ov.width - ov.colX(-1, 0, 0) - ov.colW - 20 * ov.u ? 0.45 : 1
-                Rectangle { anchors.fill: parent; color: Qt.rgba(0.06, 0.025, 0, 0.78) }
+                Rectangle { anchors.fill: parent; color: Qt.rgba(0.008, 0.035, 0.078, 0.78) }
                 Rectangle { width: 4 * ov.u; height: parent.height; color: tg.col }
                 Column {
                     id: tgCol
@@ -1710,7 +1714,7 @@ Window {
             readonly property int errs: ["ai", "aud", "cpu", "mem", "dsk", "pwr"].filter(k => lvl[k] === 2).length
             readonly property int score: Math.max(0, 100 - 8 * warns - 22 * errs)
             function col(n, a) {
-                return n === 2 ? ov.rc(a) : n === 1 ? Qt.rgba(1, 0.75, 0.29, a) : n === 3 ? ov.hc(a) : ov.gd(a)
+                return n === 2 ? ov.rc(a) : n === 1 ? Qt.rgba(ov.amber.r, ov.amber.g, ov.amber.b, a) : n === 3 ? ov.hc(a) : ov.gd(a)
             }
             readonly property real fs: 1.04 * ov.u               // 도식 축척 (76 × 150 단위)
             readonly property real fx: (iw - 76 * fs) / 2
@@ -2053,130 +2057,180 @@ Window {
             }
         }
 
-        // ---- 시선 고리: 눈이 가는 곳을 따라가는 홀로그램 (웹캠 시선, 없으면 마우스 커서) ----
+        // ---- 시선 추적기: 눈이 가는 곳(웹캠 시선, 없으면 마우스 커서)을 따라가는 작은 추적 모듈 ----
+        // 가운데 스캐너와 같은 선 언어(가는 동심원 · 분절 호 · 방사 눈금 · 표적선)를 쓰되, 크기는 작고 구성은 따로다.
+        // 가운데는 비워 실제 마우스 포인터와 그 아래 대상이 가려지지 않게 한다.
         Item {
             id: gz
-            readonly property real r: 68 * ov.u
+            readonly property real r: 44 * ov.u
             readonly property bool has: ov.gazeOn && ov.p >= 1 && ov.down <= 0 && ov.gx >= 0
             readonly property real dist: Math.sqrt((ov.gx - ov.cx) * (ov.gx - ov.cx) + (ov.gy - ov.cy) * (ov.gy - ov.cy))
             readonly property bool locked: ov.gazeLock
             readonly property bool eye: ov.gaze.src === "eye"
+            readonly property real ux: (ov.gx - ov.cx) / Math.max(1, dist)     // 스캐너 → 추적기 방향
+            readonly property real uy: (ov.gy - ov.cy) / Math.max(1, dist)
+            readonly property real ping: (ov.t / 2.2) % 1                       // 스캐너 조준점 맥박(ov.pulse)과 같은 주기
             property real shown: has ? 1 : 0
             Behavior on shown { NumberAnimation { duration: 350 } }
             visible: shown > 0.01
-            // 조준경과 겹치면 옅게 (가운데를 볼 때 화면이 어지럽지 않게)
+            // 스캐너와 겹치면 옅게 (가운데를 볼 때 화면이 어지럽지 않게)
             opacity: shown * Math.max(0.25, Math.min(1, (dist - reticle.rr * 0.5) / (reticle.rr * 0.8)))
             anchors.fill: parent
-            // 조준경에서 시선까지 이어지는 점선
+
+            // 연동 표시: 아주 옅은 가는 점선 + 맥박마다 스캐너에서 추적기로 건너가는 작은 빛 하나
             Shape {
                 anchors.fill: parent
-                visible: gz.dist > reticle.rr + gz.r
+                visible: gz.dist > reticle.rr + gz.r + 8 * ov.u
+                readonly property real x0: ov.cx + gz.ux * reticle.rr * 1.05
+                readonly property real y0: ov.cy + gz.uy * reticle.rr * 1.05
+                readonly property real x1: ov.gx - gz.ux * gz.r * 1.05
+                readonly property real y1: ov.gy - gz.uy * gz.r * 1.05
+                id: link
                 ShapePath {
-                    strokeColor: ov.outline; strokeWidth: (2 * ov.u) + 3 * ov.u; fillColor: "transparent"
-                    PathMove { x: ov.cx + (ov.gx - ov.cx) / Math.max(1, gz.dist) * reticle.rr; y: ov.cy + (ov.gy - ov.cy) / Math.max(1, gz.dist) * reticle.rr }
-                    PathLine { x: ov.gx - (ov.gx - ov.cx) / Math.max(1, gz.dist) * gz.r; y: ov.gy - (ov.gy - ov.cy) / Math.max(1, gz.dist) * gz.r }
-                }
-                ShapePath {
-                    strokeColor: ov.gd(0.55); strokeWidth: 2 * ov.u; fillColor: "transparent"
-                    strokeStyle: ShapePath.DashLine; dashPattern: [3, 4]
-                    PathMove { x: ov.cx + (ov.gx - ov.cx) / Math.max(1, gz.dist) * reticle.rr; y: ov.cy + (ov.gy - ov.cy) / Math.max(1, gz.dist) * reticle.rr }
-                    PathLine { x: ov.gx - (ov.gx - ov.cx) / Math.max(1, gz.dist) * gz.r; y: ov.gy - (ov.gy - ov.cy) / Math.max(1, gz.dist) * gz.r }
+                    strokeColor: sc.a(sc.mid, 0.22); strokeWidth: sc.lw(1); fillColor: "transparent"
+                    strokeStyle: ShapePath.DashLine; dashPattern: [2, 5]
+                    PathMove { x: link.x0; y: link.y0 }
+                    PathLine { x: link.x1; y: link.y1 }
                 }
             }
+            Rectangle {
+                readonly property real k: Math.min(1, gz.ping / 0.45)          // 맥박 앞부분 동안만 건너감
+                visible: gz.dist > reticle.rr + gz.r + 8 * ov.u && gz.ping < 0.45
+                width: 4 * ov.u; height: width; radius: width / 2
+                x: link.x0 + (link.x1 - link.x0) * k - width / 2
+                y: link.y0 + (link.y1 - link.y0) * k - height / 2
+                color: sc.ice
+                opacity: Math.sin(k * Math.PI) * 0.85
+            }
+
             Item {
                 id: ring
                 x: ov.gx - gz.r; y: ov.gy - gz.r
                 width: gz.r * 2; height: width
-                scale: gz.locked ? 0.82 : 1
+                scale: gz.locked ? 0.86 : 1
                 Behavior on scale { NumberAnimation { duration: 260; easing.type: Easing.OutBack } }
-                // 번짐 + 바깥 분절 고리 (돎)
+
+                // 어두운 반투명 안쪽 면 (가운데 구멍은 비움 → 포인터 아래가 그대로 보임)
+                Shape {
+                    anchors.fill: parent
+                    preferredRendererType: Shape.CurveRenderer
+                    ShapePath {
+                        strokeColor: Qt.rgba(0.008, 0.035, 0.078, 0.3); strokeWidth: gz.r * 0.5; fillColor: "transparent"
+                        PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.55; radiusY: gz.r * 0.55; startAngle: 0; sweepAngle: 360 }
+                    }
+                }
+                // 맥박 고리: 스캐너 맥박과 같은 주기로 바깥으로 한 번 퍼짐 (연동 표시)
+                Shape {
+                    anchors.fill: parent
+                    preferredRendererType: Shape.CurveRenderer
+                    opacity: (1 - gz.ping) * 0.5 * (gz.ping > 0.02 ? 1 : 0)
+                    ShapePath {
+                        strokeColor: sc.light; strokeWidth: sc.lw(1); fillColor: "transparent"
+                        PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * (0.95 + 0.3 * gz.ping); radiusY: gz.r * (0.95 + 0.3 * gz.ping); startAngle: 0; sweepAngle: 360 }
+                    }
+                }
+                // 바깥: 옅은 빛 + 가는 실선 + 네 토막 밝은 호 (돎)
                 Shape {
                     anchors.fill: parent
                     rotation: ov.spin * 1.6
                     preferredRendererType: Shape.CurveRenderer
                     ShapePath {
-                        strokeColor: ov.gd(0.18); strokeWidth: 18 * ov.u; fillColor: "transparent"
-                        PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.88; radiusY: gz.r * 0.88; startAngle: 0; sweepAngle: 360 }
+                        strokeColor: sc.a(sc.mid, 0.09); strokeWidth: 7 * ov.u; fillColor: "transparent"
+                        PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.92; radiusY: gz.r * 0.92; startAngle: 0; sweepAngle: 360 }
                     }
                     ShapePath {
-                        strokeColor: ov.outline; strokeWidth: (7 * ov.u) + 3 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
-                        PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.88; radiusY: gz.r * 0.88; startAngle: 0; sweepAngle: 46 }
-                        PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.88; radiusY: gz.r * 0.88; startAngle: 62; sweepAngle: 46 }
-                        PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.88; radiusY: gz.r * 0.88; startAngle: 124; sweepAngle: 46 }
-                        PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.88; radiusY: gz.r * 0.88; startAngle: 186; sweepAngle: 46 }
-                        PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.88; radiusY: gz.r * 0.88; startAngle: 248; sweepAngle: 46 }
-                        PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.88; radiusY: gz.r * 0.88; startAngle: 310; sweepAngle: 32 }
+                        strokeColor: sc.a(sc.light, 0.55); strokeWidth: sc.lw(1); fillColor: "transparent"
+                        PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.92; radiusY: gz.r * 0.92; startAngle: 0; sweepAngle: 360 }
                     }
                     ShapePath {
-                        strokeColor: gz.locked ? ov.hot : ov.gold; strokeWidth: 7 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
-                        PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.88; radiusY: gz.r * 0.88; startAngle: 0; sweepAngle: 46 }
-                        PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.88; radiusY: gz.r * 0.88; startAngle: 62; sweepAngle: 46 }
-                        PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.88; radiusY: gz.r * 0.88; startAngle: 124; sweepAngle: 46 }
-                        PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.88; radiusY: gz.r * 0.88; startAngle: 186; sweepAngle: 46 }
-                        PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.88; radiusY: gz.r * 0.88; startAngle: 248; sweepAngle: 46 }
-                        PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.88; radiusY: gz.r * 0.88; startAngle: 310; sweepAngle: 32 }
+                        strokeColor: sc.ink; strokeWidth: 4 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                        PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.92; radiusY: gz.r * 0.92; startAngle: -32; sweepAngle: 22 }
+                        PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.92; radiusY: gz.r * 0.92; startAngle: 58; sweepAngle: 22 }
+                        PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.92; radiusY: gz.r * 0.92; startAngle: 148; sweepAngle: 22 }
+                        PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.92; radiusY: gz.r * 0.92; startAngle: 238; sweepAngle: 22 }
+                    }
+                    ShapePath {
+                        strokeColor: gz.locked ? sc.ice : sc.mid; strokeWidth: 2.2 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                        PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.92; radiusY: gz.r * 0.92; startAngle: -32; sweepAngle: 22 }
+                        PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.92; radiusY: gz.r * 0.92; startAngle: 58; sweepAngle: 22 }
+                        PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.92; radiusY: gz.r * 0.92; startAngle: 148; sweepAngle: 22 }
+                        PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.92; radiusY: gz.r * 0.92; startAngle: 238; sweepAngle: 22 }
                     }
                 }
-                // 안쪽 점선 고리 (반대로 돎) + 굵은 호
+                // 방사 눈금: 15° 간격, 정방위는 길고 밝게 (천천히 반대로 돎)
+                Shape {
+                    anchors.fill: parent
+                    rotation: -ov.spin * 0.5
+                    ShapePath {
+                        strokeColor: sc.a(sc.mid, 0.6); strokeWidth: sc.lw(1); fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                        PathMultiline { paths: sc.radial(gz.r, 24, gz.r * 0.74, gz.r * 0.8, i => i % 6 !== 0, 1) }
+                    }
+                    ShapePath {
+                        strokeColor: sc.light; strokeWidth: sc.lw(1.3); fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                        PathMultiline { paths: sc.radial(gz.r, 24, gz.r * 0.70, gz.r * 0.84, i => i % 6 === 0, 1) }
+                    }
+                }
+                // 안쪽: 가는 실선 + 반대로 도는 밝은 호
                 Shape {
                     anchors.fill: parent
                     rotation: -ov.spin * 3
                     preferredRendererType: Shape.CurveRenderer
                     ShapePath {
-                        strokeColor: ov.outline; strokeWidth: (3 * ov.u) + 3 * ov.u; fillColor: "transparent"
-                        PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.64; radiusY: gz.r * 0.64; startAngle: 0; sweepAngle: 360 }
+                        strokeColor: sc.a(sc.deep, 0.9); strokeWidth: sc.lw(1); fillColor: "transparent"
+                        PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.6; radiusY: gz.r * 0.6; startAngle: 0; sweepAngle: 360 }
                     }
                     ShapePath {
-                        strokeColor: ov.amber; strokeWidth: 3 * ov.u; fillColor: "transparent"
-                        strokeStyle: ShapePath.DashLine; dashPattern: [2, 2]
-                        PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.64; radiusY: gz.r * 0.64; startAngle: 0; sweepAngle: 360 }
-                    }
-                    ShapePath {
-                        strokeColor: ov.outline; strokeWidth: (6 * ov.u) + 3 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
-                        PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.64; radiusY: gz.r * 0.64; startAngle: 200; sweepAngle: 70 }
-                    }
-                    ShapePath {
-                        strokeColor: ov.ember; strokeWidth: 6 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
-                        PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.64; radiusY: gz.r * 0.64; startAngle: 200; sweepAngle: 70 }
+                        strokeColor: sc.light; strokeWidth: sc.lw(1.6); fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                        PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.6; radiusY: gz.r * 0.6; startAngle: 200; sweepAngle: 56 }
                     }
                 }
-                // 십자 (가운데는 비움) + 가운데 점
-                Repeater {
-                    model: 4
-                    Item {
-                        x: gz.r; y: gz.r
-                        rotation: index * 90
-                        Rectangle { x: -3.75 * ov.u; y: -gz.r * 0.5 - 2 * ov.u; width: 7.5 * ov.u; height: gz.r * 0.22 + 4 * ov.u; color: ov.outline }
-                        Rectangle { x: -1.75 * ov.u; y: -gz.r * 0.5; width: 3.5 * ov.u; height: gz.r * 0.22; color: ov.hot }
+                // 표적선: 가운데를 비운 짧은 네 선 + 바늘 끝 점
+                Shape {
+                    anchors.fill: parent
+                    readonly property real a0: gz.r * 0.2
+                    readonly property real a1: gz.r * 0.44
+                    id: tick
+                    readonly property var lines: [
+                        [Qt.point(gz.r - a1, gz.r), Qt.point(gz.r - a0, gz.r)], [Qt.point(gz.r + a0, gz.r), Qt.point(gz.r + a1, gz.r)],
+                        [Qt.point(gz.r, gz.r - a1), Qt.point(gz.r, gz.r - a0)], [Qt.point(gz.r, gz.r + a0), Qt.point(gz.r, gz.r + a1)]]
+                    ShapePath {
+                        strokeColor: sc.ink; strokeWidth: 3.2 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                        PathMultiline { paths: tick.lines }
+                    }
+                    ShapePath {
+                        strokeColor: sc.ice; strokeWidth: sc.lw(1.3); fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                        PathMultiline { paths: tick.lines }
                     }
                 }
                 Rectangle {
-                    width: 8 * ov.u; height: width; radius: width / 2
+                    width: 2.6 * ov.u; height: width; radius: width / 2
                     x: gz.r - width / 2; y: gz.r - height / 2
-                    color: gz.locked ? ov.red : ov.hot
+                    color: sc.ice
+                    opacity: 0.6 + 0.4 * ov.pulse
                 }
-                // 잠금: 고리 둘레에 네모 꺾쇠가 조여 든다
+                // 잠금: 네모 꺾쇠가 바깥에서 조여 든다
                 Repeater {
                     model: 4
                     Shape {
                         id: lk
                         readonly property bool onRight: index % 2 === 1
                         readonly property bool onBottom: index >= 2
-                        readonly property real len: 18 * ov.u
-                        readonly property real o: gz.locked ? -6 * ov.u : -26 * ov.u
+                        readonly property real len: 10 * ov.u
+                        property real o: gz.locked ? -4 * ov.u : -18 * ov.u
+                        Behavior on o { NumberAnimation { duration: 260; easing.type: Easing.OutCubic } }
                         visible: gz.locked
                         x: onRight ? gz.r * 2 - len - o : o
                         y: onBottom ? gz.r * 2 - len - o : o
                         width: len; height: len
                         ShapePath {
-                            strokeColor: ov.outline; strokeWidth: (4 * ov.u) + 3 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                            strokeColor: sc.ink; strokeWidth: 3.4 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
                             joinStyle: ShapePath.MiterJoin
                             PathMove { x: lk.onRight ? 0 : lk.len; y: lk.onBottom ? lk.len : 0 }
                             PathLine { x: lk.onRight ? lk.len : 0; y: lk.onBottom ? lk.len : 0 }
                             PathLine { x: lk.onRight ? lk.len : 0; y: lk.onBottom ? 0 : lk.len }
                         }
                         ShapePath {
-                            strokeColor: ov.hot; strokeWidth: 4 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                            strokeColor: sc.ice; strokeWidth: sc.lw(1.6); fillColor: "transparent"; capStyle: ShapePath.FlatCap
                             joinStyle: ShapePath.MiterJoin
                             PathMove { x: lk.onRight ? 0 : lk.len; y: lk.onBottom ? lk.len : 0 }
                             PathLine { x: lk.onRight ? lk.len : 0; y: lk.onBottom ? lk.len : 0 }
@@ -2185,26 +2239,37 @@ Window {
                     }
                 }
             }
-            // 이름표: 고리 오른쪽 (화면 오른쪽 끝이면 왼쪽)
-            Column {
-                readonly property bool flip: ov.gx + gz.r + 170 * ov.u > ov.width
-                x: flip ? ov.gx - gz.r - 14 * ov.u - width : ov.gx + gz.r + 14 * ov.u
+            // 이름표: 추적기 오른쪽 (화면 오른쪽 끝이면 왼쪽). 가는 세로선 하나로 추적기와 이어 붙인다
+            Item {
+                id: gzTag
+                readonly property bool flip: ov.gx + gz.r + 130 * ov.u > ov.width
+                width: gzCol.width + 8 * ov.u; height: gzCol.height
+                x: flip ? ov.gx - gz.r - 10 * ov.u - width : ov.gx + gz.r + 10 * ov.u
                 y: ov.gy - height / 2
-                spacing: 1
-                HText { plate: true;
-                    anchors.right: parent.flip ? parent.right : undefined
-                    text: "GAZE  ·  " + (gz.eye ? "OPTICAL" : "CURSOR")
-                    color: ov.gold; font.pixelSize: 10 * ov.u; font.letterSpacing: 2 * ov.u; font.weight: Font.Bold
+                Rectangle {
+                    x: gzTag.flip ? gzTag.width - width : 0
+                    width: sc.lw(1.4); height: parent.height
+                    color: gz.locked ? sc.ice : sc.mid
                 }
-                HText { plate: true;
-                    anchors.right: parent.flip ? parent.right : undefined
-                    text: gz.locked ? "LOCK" : "TRACKING"
-                    color: gz.locked ? ov.hot : ov.gd(0.95); font.pixelSize: 16 * ov.u; font.letterSpacing: 3 * ov.u; font.weight: Font.Bold
-                }
-                HText { plate: true;
-                    anchors.right: parent.flip ? parent.right : undefined
-                    text: "X " + ov.pad4(ov.gx) + "   Y " + ov.pad4(ov.gy)
-                    color: ov.gd(0.9); font.pixelSize: 10 * ov.u; font.letterSpacing: 1 * ov.u
+                Column {
+                    id: gzCol
+                    x: gzTag.flip ? 0 : 8 * ov.u
+                    spacing: 0
+                    SText {
+                        anchors.right: gzTag.flip ? parent.right : undefined
+                        text: "GAZE · " + (gz.eye ? "OPTICAL" : "CURSOR")
+                        color: sc.a(sc.light, 0.8); font.pixelSize: 8.5 * ov.u; font.letterSpacing: 2 * ov.u
+                    }
+                    SText {
+                        anchors.right: gzTag.flip ? parent.right : undefined
+                        text: gz.locked ? "LOCK" : "TRACKING"
+                        color: sc.ice; font.pixelSize: 12 * ov.u; font.letterSpacing: 3 * ov.u
+                    }
+                    SText {
+                        anchors.right: gzTag.flip ? parent.right : undefined
+                        text: "X " + ov.pad4(ov.gx) + "  Y " + ov.pad4(ov.gy)
+                        color: sc.a(sc.light, 0.75); font.pixelSize: 8.5 * ov.u; font.letterSpacing: 1 * ov.u; font.weight: Font.Normal
+                    }
                 }
             }
         }
@@ -2215,7 +2280,7 @@ Window {
         anchors.fill: parent
         readonly property real t: ov.lin(0.0, 0.16)
         visible: t > 0 && t < 1 && ov.down <= 0
-        color: "#fff2d6"
+        color: "#d8f4ff"
         opacity: Math.sin(t * Math.PI) * 0.25
     }
     Item {
@@ -2245,7 +2310,7 @@ Window {
             x: ov.cx - width / 2; y: ov.cy - height / 2
             gradient: Gradient {
                 GradientStop { position: 0.0; color: ov.gd(0) }
-                GradientStop { position: 0.5; color: Qt.rgba(1, 0.97, 0.9, 0.6) }
+                GradientStop { position: 0.5; color: Qt.rgba(0.88, 0.97, 1, 0.6) }
                 GradientStop { position: 1.0; color: ov.gd(0) }
             }
         }
@@ -2273,7 +2338,7 @@ Window {
             opacity: ov.dlin(0.54, 0.6) * (1 - ov.dlin(0.62, 0.74))
             gradient: Gradient {
                 GradientStop { position: 0.0; color: ov.gd(0) }
-                GradientStop { position: 0.5; color: Qt.rgba(1, 0.98, 0.92, 0.95) }
+                GradientStop { position: 0.5; color: Qt.rgba(0.9, 0.98, 1, 0.95) }
                 GradientStop { position: 1.0; color: ov.gd(0) }
             }
         }
@@ -2302,28 +2367,28 @@ Window {
         transform: Translate { x: ov.joltX; y: ov.joltY }
         Shape {
             anchors.fill: parent
-            ShapePath {   // 윗판 (레드)
+            ShapePath {   // 윗판
                 strokeColor: "transparent"
                 fillGradient: LinearGradient {
                     x1: 0; y1: 0; x2: 0; y2: Math.max(1, plates.hTop)
-                    GradientStop { position: 0.0; color: "#160303" }
-                    GradientStop { position: 0.6; color: "#4a0a0a" }
-                    GradientStop { position: 1.0; color: "#8e1818" }
+                    GradientStop { position: 0.0; color: "#01040a" }
+                    GradientStop { position: 0.6; color: "#061626" }
+                    GradientStop { position: 1.0; color: "#0e3152" }
                 }
                 PathPolyline { path: [Qt.point(-4, -4), Qt.point(ov.width + 4, -4)].concat(plates.topEdge).concat([Qt.point(-4, -4)]) }
             }
-            ShapePath {   // 아랫판 (레드)
+            ShapePath {   // 아랫판
                 strokeColor: "transparent"
                 fillGradient: LinearGradient {
                     x1: 0; y1: ov.height - plates.hBot; x2: 0; y2: ov.height
-                    GradientStop { position: 0.0; color: "#8e1818" }
-                    GradientStop { position: 0.4; color: "#4a0a0a" }
-                    GradientStop { position: 1.0; color: "#160303" }
+                    GradientStop { position: 0.0; color: "#0e3152" }
+                    GradientStop { position: 0.4; color: "#061626" }
+                    GradientStop { position: 1.0; color: "#01040a" }
                 }
                 PathPolyline { path: plates.botEdge.concat([Qt.point(ov.width + 4, ov.height + 4), Qt.point(-4, ov.height + 4), plates.botEdge[0]]) }
             }
             ShapePath {   // 판 이음새 (어두운 홈)
-                strokeColor: "#120202"; strokeWidth: 4 * ov.u; fillColor: "transparent"
+                strokeColor: "#010409"; strokeWidth: 4 * ov.u; fillColor: "transparent"
                 PathMove { x: ov.cx - ov.width * 0.2; y: 0 }
                 PathLine { x: ov.cx - ov.width * 0.2; y: plates.hTop - 16 * ov.u }
                 PathMove { x: ov.cx + ov.width * 0.2; y: 0 }
@@ -2339,18 +2404,18 @@ Window {
                 PathMove { x: 0; y: ov.height - plates.hBot * 0.55 }
                 PathLine { x: ov.width; y: ov.height - plates.hBot * 0.55 }
             }
-            ShapePath {   // 판 끝: 골드 테 (어두운 바깥 · 골드 · 밝은 모서리)
-                strokeColor: "#4a3008"; strokeWidth: 12 * ov.u; fillColor: "transparent"; joinStyle: ShapePath.MiterJoin
+            ShapePath {   // 판 끝: 시안 테 (어두운 바깥 · 시안 · 밝은 모서리)
+                strokeColor: "#04182b"; strokeWidth: 12 * ov.u; fillColor: "transparent"; joinStyle: ShapePath.MiterJoin
                 PathPolyline { path: plates.topEdge }
                 PathPolyline { path: plates.botEdge }
             }
             ShapePath {
-                strokeColor: "#c9962f"; strokeWidth: 7 * ov.u; fillColor: "transparent"; joinStyle: ShapePath.MiterJoin
+                strokeColor: "#0b6aa3"; strokeWidth: 7 * ov.u; fillColor: "transparent"; joinStyle: ShapePath.MiterJoin
                 PathPolyline { path: plates.topEdge }
                 PathPolyline { path: plates.botEdge }
             }
             ShapePath {
-                strokeColor: "#ffe3a0"; strokeWidth: 2 * ov.u; fillColor: "transparent"; joinStyle: ShapePath.MiterJoin
+                strokeColor: "#70dfff"; strokeWidth: 2 * ov.u; fillColor: "transparent"; joinStyle: ShapePath.MiterJoin
                 PathPolyline { path: plates.topEdge }
                 PathPolyline { path: plates.botEdge }
             }
@@ -2373,7 +2438,7 @@ Window {
             visible: plates.cover > 0.5
             opacity: (plates.cover - 0.5) * 2
             text: ov.down > 0 ? "J.A.R.V.I.S  ·  STANDING BY" : ov.seal < 1 ? "FACEPLATE  ·  SEALING" : "FACEPLATE  ·  SEALED"
-            color: ov.down > 0 || ov.seal >= 1 ? "#ffe3a0" : ov.gd(0.85)
+            color: ov.down > 0 || ov.seal >= 1 ? ov.hot : ov.gd(0.85)
             font.pixelSize: 13 * ov.u; font.letterSpacing: 5 * ov.u; font.weight: Font.Bold
         }
     }
@@ -2399,8 +2464,8 @@ Window {
             Shape {
                 anchors.fill: parent
                 ShapePath {
-                    strokeColor: ov.gold; strokeWidth: 2.5
-                    fillColor: Qt.rgba(0.08, 0.035, 0.0, chatBar.active ? 0.94 : 0.82)
+                    strokeColor: ov.gold; strokeWidth: 1.6
+                    fillColor: Qt.rgba(0.008, 0.035, 0.078, chatBar.active ? 0.94 : 0.82)
                     joinStyle: ShapePath.MiterJoin
                     PathPolyline { path: [Qt.point(12, 1), Qt.point(chatBar.width - 1, 1), Qt.point(chatBar.width - 1, chatBar.height - 12),
                                           Qt.point(chatBar.width - 12, chatBar.height - 1), Qt.point(1, chatBar.height - 1), Qt.point(1, 12), Qt.point(12, 1)] }
@@ -2423,7 +2488,7 @@ Window {
                 font.pixelSize: Math.max(14, 14 * ov.u)
                 leftPadding: 8; rightPadding: 0; topPadding: 0; bottomPadding: 0
                 placeholderText: chatBar.active ? "명령 입력…" : "여기를 눌러 글로 명령…"
-                placeholderTextColor: Qt.rgba(1, 0.85, 0.6, 0.55)
+                placeholderTextColor: Qt.rgba(0.6, 0.88, 1, 0.55)
                 selectionColor: ov.gd(0.5)
                 background: Item {}
                 // 처리 중이라 받지 못한 명령은 지우지 않고 남겨 둔다
