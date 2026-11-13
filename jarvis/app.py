@@ -1053,7 +1053,7 @@ class Jarvis(QObject):
         while not stop.is_set():
             try:
                 rows = self._proc_watch.sample()   # 추적 박스용 창별 CPU · 메모리 + THREAT 위젯용 상위 프로그램
-                if not first:                      # 첫 측정은 CPU 값이 없어 모두 0
+                if not first and not stop.is_set():   # 첫 측정은 CPU 값이 없어 모두 0 / 끈 뒤에는 보내지 않음
                     self.sig_feed.emit("procsJson", json.dumps(
                         [{"name": r["name"], "cpu": r["cpu"], "mem": r["mem"], "count": r["count"]} for r in rows],
                         ensure_ascii=False))
@@ -1077,6 +1077,8 @@ class Jarvis(QObject):
 
     @Slot(str, str)
     def _on_feed(self, name: str, value: str) -> None:
+        if name == "procsJson" and not self.bridge._activeMode:   # 끄기 직전에 보낸 목록이 늦게 도착해도 무시
+            return
         self.bridge.set(name, value)
 
     def _overlay_dpr(self) -> float:

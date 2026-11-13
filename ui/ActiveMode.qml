@@ -533,7 +533,7 @@ Window {
         anchors.fill: parent
         opacity: ov.seg(0.1, 0.45) * ov.flick * (ov.calm ? 1 - ov.down : 1 - ov.dlin(0.3, 0.55))
         transform: Translate { x: ov.joltX; y: ov.joltY }
-        Rectangle {   // 바이저 색: 아주 옅은 호박빛 (뒤 화면은 그대로 보임)
+        Rectangle {   // 바이저 색: 아주 옅은 어두운 청색 (뒤 화면은 그대로 보임)
             anchors.fill: parent
             color: Qt.rgba(0.0, 0.03, 0.06, 0.12)
         }
@@ -1432,7 +1432,7 @@ Window {
             readonly property var lead: rows.length ? rows[0] : null
             tag: !lead ? "SCANNING" : lead.cpu >= 80 ? "CRITICAL" : lead.cpu >= 50 ? "ELEVATED" : "NOMINAL"
             function lvlOf(r) { return r.cpu >= 80 ? 2 : r.cpu >= 50 ? 1 : 0 }
-            function col(n, a) { return n === 2 ? ov.rc(a) : n === 1 ? Qt.rgba(1, 0.7, 0.29, a) : ov.gd(a) }
+            function col(n, a) { return n === 2 ? ov.rc(a) : n === 1 ? Qt.rgba(ov.amber.r, ov.amber.g, ov.amber.b, a) : ov.gd(a) }
             readonly property real reveal: ov.seg(0.55, 0.95)
             // 레이더: 상위 프로그램이 점으로 (CPU 를 많이 쓸수록 가운데 가까이), 바늘이 돈다
             Item {
@@ -1447,12 +1447,12 @@ Window {
                         PathAngleArc { centerX: radar.r; centerY: radar.r; radiusX: radar.r - 1; radiusY: radar.r - 1; startAngle: 0; sweepAngle: 360 * wThreat.reveal }
                     }
                     ShapePath {
-                        strokeColor: ov.gd(0.32); strokeWidth: 1; fillColor: "transparent"
+                        strokeColor: ov.gd(0.5); strokeWidth: 1.2 * ov.u; fillColor: "transparent"
                         PathAngleArc { centerX: radar.r; centerY: radar.r; radiusX: radar.r * 0.66; radiusY: radar.r * 0.66; startAngle: 0; sweepAngle: 360 }
                         PathAngleArc { centerX: radar.r; centerY: radar.r; radiusX: radar.r * 0.33; radiusY: radar.r * 0.33; startAngle: 0; sweepAngle: 360 }
                     }
                     ShapePath {
-                        strokeColor: ov.gd(0.32); strokeWidth: 1; fillColor: "transparent"
+                        strokeColor: ov.gd(0.5); strokeWidth: 1.2 * ov.u; fillColor: "transparent"
                         PathMove { x: 2; y: radar.r }
                         PathLine { x: radar.width - 2; y: radar.r }
                         PathMove { x: radar.r; y: 2 }
@@ -1885,7 +1885,7 @@ Window {
                         PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.64; radiusY: gz.r * 0.64; startAngle: 0; sweepAngle: 360 }
                     }
                     ShapePath {
-                        strokeColor: ov.amber; strokeWidth: 2 * ov.u; fillColor: "transparent"
+                        strokeColor: ov.hot; strokeWidth: 2 * ov.u; fillColor: "transparent"
                         strokeStyle: ShapePath.DashLine; dashPattern: [2, 2]
                         PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.64; radiusY: gz.r * 0.64; startAngle: 0; sweepAngle: 360 }
                     }
@@ -1894,7 +1894,7 @@ Window {
                         PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.64; radiusY: gz.r * 0.64; startAngle: 200; sweepAngle: 70 }
                     }
                     ShapePath {
-                        strokeColor: ov.ember; strokeWidth: 4.5 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                        strokeColor: ov.ice; strokeWidth: 4.5 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
                         PathAngleArc { centerX: gz.r; centerY: gz.r; radiusX: gz.r * 0.64; radiusY: gz.r * 0.64; startAngle: 200; sweepAngle: 70 }
                     }
                 }
