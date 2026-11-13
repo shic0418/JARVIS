@@ -51,6 +51,7 @@ Window {
     readonly property var weather: JSON.parse(jarvis.weatherJson)
     readonly property var target: JSON.parse(jarvis.targetJson)     // 추적 박스: 지금 창 / 짚은 위치
     readonly property var gaze: JSON.parse(jarvis.gazeJson)         // 마우스 커서: {x, y}
+    readonly property var procs: JSON.parse(jarvis.procsJson)       // 무거운 프로그램 상위 5개 [{name, cpu, mem, count}]
     onStatsChanged: { const h = cpuHist.slice(-29); h.push(stats.cpu || 0); cpuHist = h }
 
     // 화면 크기에 맞춘 단위 (1600×900 기준 1)
@@ -1680,150 +1681,87 @@ Window {
             }
         }
 
-        // ---- VITALS: 사람 모양 도식, 부위마다 실제 하위 시스템 상태 ----
+        // ---- PROCESS WATCH: CPU · 메모리를 많이 쓰는 프로그램 상위 5개 (2초마다) ----
         Wid {
-            id: integ
+            id: wProc
             side: -1; d: 0.42
             y: wTime.y + wTime.height + ov.gapY; height: 236 * ov.u
-            title: "VITALS"
-            tag: integ.errs ? integ.errs + " FAULT" : integ.warns ? integ.warns + " CAUTION" : "NOMINAL"
-            readonly property var s: ov.stats
-            readonly property real cpu: s.cpu || 0
-            readonly property real ram: s.ram || 0
-            readonly property real dsk: s.disk || 0
-            readonly property real bat: s.bat === undefined ? -1 : s.bat
-            // 0 정상 · 1 주의 · 2 이상 · 3 동작 중
-            readonly property var lvl: ({
-                ai: !jarvis.hasApiKey ? 1 : ov.st === "thinking" ? 3 : 0,
-                aud: ov.st === "offline" ? 2 : ov.st === "listening" ? 3 : 0,
-                vox: ov.st === "speaking" ? 3 : 0,
-                cpu: cpu > 90 ? 2 : cpu > 75 ? 1 : 0,
-                mem: ram > 90 ? 2 : ram > 80 ? 1 : 0,
-                dsk: dsk > 95 ? 2 : dsk > 88 ? 1 : 0,
-                net: (s.down || 0) > 512 * 1024 ? 3 : 0,
-                pwr: bat < 0 || s.plugged ? 0 : bat < 15 ? 2 : bat < 30 ? 1 : 0
-            })
-            readonly property var val: ({
-                ai: !jarvis.hasApiKey ? "LOCAL" : ov.st === "thinking" ? "BUSY" : "ONLINE",
-                aud: ov.st === "offline" ? "OFFLINE" : ov.st === "listening" ? "LIVE" : "OK",
-                vox: ov.st === "speaking" ? "TX" : "IDLE",
-                cpu: Math.round(cpu) + "%", mem: Math.round(ram) + "%", dsk: Math.round(dsk) + "%",
-                net: ov.rate(s.down), pwr: bat < 0 ? "AC" : bat + "%"
-            })
-            readonly property int warns: ["ai", "aud", "cpu", "mem", "dsk", "pwr"].filter(k => lvl[k] === 1).length
-            readonly property int errs: ["ai", "aud", "cpu", "mem", "dsk", "pwr"].filter(k => lvl[k] === 2).length
-            readonly property int score: Math.max(0, 100 - 8 * warns - 22 * errs)
-            function col(n, a) {
-                return n === 2 ? ov.rc(a) : n === 1 ? Qt.rgba(ov.amber.r, ov.amber.g, ov.amber.b, a) : n === 3 ? ov.hc(a) : ov.gd(a)
-            }
-            readonly property real fs: 1.04 * ov.u               // 도식 축척 (76 × 150 단위)
-            readonly property real fx: (iw - 76 * fs) / 2
-            readonly property real fy: 0
+            title: "PROCESS WATCH"
+            // CPU 는 작업 관리자처럼 전체(모든 코어) 대비 % — 코어가 많으면 한 프로그램이 20% 만 써도 무겁다
+            readonly property int worst: ov.procs.reduce((m, r) => Math.max(m, lvlOf(r)), 0)
+            readonly property real cpuMax: ov.procs.reduce((m, r) => Math.max(m, r.cpu), 0)
+            readonly property real barMax: Math.max(10, cpuMax)   // 막대는 목록 안 최댓값 기준 (최소 10%)
+            tag: !ov.procs.length ? "SCANNING" : worst === 2 ? "HIGH LOAD" : worst === 1 ? "ELEVATED" : "TOP " + ov.procs.length
             readonly property real reveal: ov.seg(0.55, 0.95)
-            // 부위: [키, 다각형]
-            Repeater {
-                model: [
-                    ["ai",  [[28, 4], [48, 4], [52, 14], [50, 26], [38, 30], [26, 26], [24, 14]]],
-                    ["cpu", [[22, 34], [54, 34], [58, 46], [54, 70], [38, 74], [22, 70], [18, 46]]],
-                    ["mem", [[26, 77], [50, 77], [52, 90], [38, 97], [24, 90]]],
-                    ["aud", [[17, 36], [8, 40], [3, 68], [1, 95], [8, 97], [11, 70], [16, 50]]],
-                    ["vox", [[59, 36], [68, 40], [73, 68], [75, 95], [68, 97], [65, 70], [60, 50]]],
-                    ["dsk", [[24, 99], [37, 102], [35, 124], [34, 147], [23, 147], [24, 124], [21, 103]]],
-                    ["net", [[52, 99], [39, 102], [41, 124], [42, 147], [53, 147], [52, 124], [55, 103]]]
-                ]
-                Shape {
-                    readonly property int n: integ.lvl[modelData[0]]
-                    visible: integ.reveal > 0 && index < 7 * integ.reveal + 0.5
-                    x: integ.fx; y: integ.fy
-                    width: 76 * integ.fs; height: 150 * integ.fs
-                    preferredRendererType: Shape.CurveRenderer
-                    ShapePath {
-                        strokeColor: integ.col(n, 1); strokeWidth: 2.2 * ov.u
-                        fillColor: integ.col(n, n === 0 ? 0.22 : n === 3 ? 0.45 + 0.3 * ov.pulse : 0.55)
-                        joinStyle: ShapePath.MiterJoin
-                        PathPolyline { path: modelData[1].concat([modelData[1][0]]).map(q => Qt.point(q[0] * integ.fs, q[1] * integ.fs)) }
-                    }
-                }
+            readonly property real rowH: 34 * ov.u
+            // 0 정상 · 1 주의 · 2 위험 (CPU %, 메모리 MB 중 더 나쁜 쪽)
+            function lvlOf(r) { return r.cpu > 40 || r.mem > 4096 ? 2 : r.cpu > 20 || r.mem > 2048 ? 1 : 0 }
+            function colOf(n) { return n === 2 ? ov.red : n === 1 ? ov.amber : ov.hot }
+            HText {
+                visible: ov.procs.length === 0
+                y: 70 * ov.u; width: wProc.iw; horizontalAlignment: Text.AlignHCenter
+                text: "SAMPLING PROCESSES" + ".".repeat(1 + Math.floor(ov.scan * 3) % 3)
+                color: ov.gd(0.8); font.pixelSize: 11 * ov.u; font.letterSpacing: 2 * ov.u; font.weight: Font.Bold
             }
-            // 가슴의 동력원: 전원 상태 · 목소리에 맞춰 빛남
-            Rectangle {
-                readonly property real r: (7 + 3 * ov.lvl) * integ.fs
-                x: integ.fx + 38 * integ.fs - r; y: integ.fy + 48 * integ.fs - r
-                width: r * 2; height: width; radius: r
-                visible: integ.reveal > 0.3
-                color: integ.lvl.pwr === 0 ? Qt.rgba(0.75, 0.95, 1, 0.55 + 0.4 * ov.pulse) : integ.col(integ.lvl.pwr, 0.7)
-                border.color: integ.lvl.pwr === 0 ? "#e8fbff" : integ.col(integ.lvl.pwr, 1); border.width: 2.5 * ov.u
-            }
-            // 위에서 아래로 훑는 검사선
-            Rectangle {
-                visible: ov.p >= 1
-                x: integ.fx - 8 * ov.u; width: 76 * integ.fs + 16 * ov.u; height: 2.5 * ov.u
-                y: integ.fy + 150 * integ.fs * ov.scan
-                color: ov.hot; opacity: 0.8
-            }
-            // 이름표 + 지시선: [키, 이름, 왼쪽?, 줄 y, 닿는 점 x, y] (도식 단위)
-            Repeater {
-                model: [["ai", "AI CORE", true, 2, 25, 14], ["cpu", "CPU", true, 38, 19, 50], ["aud", "AUDIO IN", true, 74, 4, 70],
-                        ["dsk", "STORAGE", true, 112, 23, 128], ["pwr", "POWER", false, 2, 44, 48], ["vox", "VOICE OUT", false, 38, 72, 66],
-                        ["mem", "MEMORY", false, 74, 51, 86], ["net", "NETWORK", false, 112, 53, 128]]
-                Item {
-                    readonly property bool lf: modelData[2]
-                    readonly property int n: integ.lvl[modelData[0]]
-                    readonly property real ly: integ.fy + (modelData[3] + 8) * integ.fs
-                    visible: integ.reveal > 0.2 + (index % 4) * 0.18
-                    Shape {
-                        ShapePath {
-                            strokeColor: integ.col(n, 0.8); strokeWidth: 1.6 * ov.u; fillColor: "transparent"
-                            PathPolyline { path: [
-                                Qt.point(lf ? integ.fx - 12 * ov.u : integ.fx + 76 * integ.fs + 12 * ov.u, ly),
-                                Qt.point(lf ? integ.fx - 6 * ov.u : integ.fx + 76 * integ.fs + 6 * ov.u, ly),
-                                Qt.point(integ.fx + modelData[4] * integ.fs, integ.fy + modelData[5] * integ.fs)
-                            ] }
+            Column {
+                width: wProc.iw
+                Repeater {
+                    model: ov.procs
+                    Item {
+                        id: pr
+                        width: parent.width; height: wProc.rowH
+                        visible: wProc.reveal > index * 0.16
+                        readonly property int n: wProc.lvlOf(modelData)
+                        readonly property color lc: wProc.colOf(n)
+                        HText {   // 순위
+                            y: 2 * ov.u
+                            text: "0" + (index + 1); color: ov.gd(0.7)
+                            font.pixelSize: 10 * ov.u; font.weight: Font.Bold
                         }
-                    }
-                    Rectangle {
-                        width: 5 * ov.u; height: width; radius: width / 2; color: integ.col(n, 1)
-                        x: integ.fx + modelData[4] * integ.fs - width / 2; y: integ.fy + modelData[5] * integ.fs - width / 2
-                    }
-                    Column {
-                        x: lf ? integ.fx - 14 * ov.u - width : integ.fx + 76 * integ.fs + 14 * ov.u
-                        y: integ.fy + modelData[3] * integ.fs
-                        HText {
-                            anchors.right: lf ? parent.right : undefined
-                            text: modelData[1]; color: ov.gd(0.9)
-                            font.pixelSize: 9 * ov.u; font.letterSpacing: 1 * ov.u; font.weight: Font.Bold
+                        HText {   // 이름 (같은 이름 여러 개면 ×개수)
+                            x: 24 * ov.u; y: 0
+                            width: Math.max(0, pr.width - x - memT.implicitWidth - 10 * ov.u); elide: Text.ElideRight
+                            text: modelData.name + (modelData.count > 1 ? "  ×" + modelData.count : "")
+                            color: pr.n ? pr.lc : ov.hot
+                            font.pixelSize: 12 * ov.u; font.weight: Font.Bold
                         }
-                        HText {
-                            anchors.right: lf ? parent.right : undefined
-                            text: integ.val[modelData[0]]
-                            color: n === 0 ? ov.hot : integ.col(n, 1)
-                            font.pixelSize: 14 * ov.u; font.weight: Font.Bold
+                        HText {   // 메모리
+                            id: memT
+                            anchors.right: parent.right; y: 0
+                            text: modelData.mem >= 1024 ? (modelData.mem / 1024).toFixed(1) + " GB" : modelData.mem + " MB"
+                            color: modelData.mem > 2048 ? pr.lc : ov.gd(0.9)
+                            font.pixelSize: 11 * ov.u; font.weight: Font.DemiBold
                         }
-                    }
-                }
-            }
-            // 아래: 무결성 점수 막대
-            Item {
-                y: integ.height - integ.hh - 8 * ov.u - 26 * ov.u
-                width: integ.iw; height: 12 * ov.u
-                HText {
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: "INTEGRITY " + Math.round(integ.score * integ.reveal) + "%"
-                    color: integ.errs ? ov.red : ov.hot
-                    font.pixelSize: 10 * ov.u; font.letterSpacing: 1.5 * ov.u; font.weight: Font.Bold
-                }
-                Row {
-                    anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-                    spacing: 2 * ov.u
-                    Repeater {
-                        model: 20
+                        // CPU 막대 + 값
                         Rectangle {
-                            width: 4 * ov.u; height: 10 * ov.u
-                            color: index < Math.round(integ.score * integ.reveal / 5)
-                                   ? (integ.errs ? ov.red : integ.warns ? ov.amber : ov.gold) : ov.gd(0.18)
+                            x: 24 * ov.u; y: 19 * ov.u
+                            width: pr.width - x - 46 * ov.u; height: 7 * ov.u
+                            color: ov.gd(0.16)
+                            Rectangle {
+                                height: parent.height
+                                width: parent.width * Math.min(1, modelData.cpu / wProc.barMax) * wProc.reveal
+                                color: pr.n ? pr.lc : ov.gold
+                                Behavior on width { NumberAnimation { duration: ov.calm ? 0 : 600; easing.type: Easing.OutCubic } }
+                            }
+                        }
+                        HText {
+                            anchors.right: parent.right; y: 15 * ov.u
+                            text: modelData.cpu.toFixed(modelData.cpu < 10 ? 1 : 0) + "%"
+                            color: modelData.cpu > 20 ? pr.lc : ov.hot
+                            font.pixelSize: 11 * ov.u; font.weight: Font.Bold
                         }
                     }
                 }
+            }
+            // 아래: 상위 5개 합계
+            HText {
+                visible: ov.procs.length > 0
+                y: wProc.height - wProc.hh - 8 * ov.u - 24 * ov.u
+                width: wProc.iw; elide: Text.ElideRight
+                readonly property real cpuSum: ov.procs.reduce((t, r) => t + r.cpu, 0)
+                readonly property real memSum: ov.procs.reduce((t, r) => t + r.mem, 0)
+                text: "TOP-5 LOAD  CPU " + Math.round(cpuSum) + "%  ·  MEM " + (memSum / 1024).toFixed(1) + " GB"
+                color: ov.gd(0.85); font.pixelSize: 10 * ov.u; font.letterSpacing: 1.5 * ov.u; font.weight: Font.Bold
             }
         }
 
@@ -1831,7 +1769,7 @@ Window {
         Wid {
             id: wLog
             side: -1; d: 0.5
-            y: integ.y + integ.height + ov.gapY; height: 196 * ov.u
+            y: wProc.y + wProc.height + ov.gapY; height: 196 * ov.u
             title: "SYSLOG"
             tag: ov.down > 0 ? "SHUTDOWN" : ov.booted ? "LIVE" : "SUIT-UP " + Math.round(100 * ov.bootStep / ov.bootCount) + "%"
             Column {
