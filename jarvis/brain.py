@@ -479,7 +479,8 @@ class Brain:
                 except Exception:
                     log.exception("브리핑 기록 실패")
             return "local", reply
-        done = self._todo(text)
+        # 클래스룸이 먼저: '클래스룸 과제 할 일에 넣어 줘' 를 할 일 추가로 받지 않게
+        done = self._classroom(text) or self._todo(text) or self._agenda(text)
         if done:
             return "local", done
         self.local.chat = self.chat_mode
@@ -623,8 +624,24 @@ class Brain:
             log.exception("할 일 처리 실패")
             return None
 
+    def _classroom(self, text: str) -> str | None:
+        """'클래스룸 정리해 줘' · '클래스룸 과제 할 일에 넣어 줘' (classroom.py). 상관없는 말이면 None."""
+        try:
+            return self.tools.classroom.handle(normalize(text) or text)
+        except Exception:
+            log.exception("클래스룸 처리 실패")
+            return None
+
+    def _agenda(self, text: str) -> str | None:
+        """'오늘 일정 뭐 있어' · '안 읽은 메일 있어' (agenda.py). 상관없는 말이면 None."""
+        try:
+            return self.tools.agenda.handle(normalize(text) or text)
+        except Exception:
+            log.exception("일정 · 메일 처리 실패")
+            return None
+
     def briefing(self, greet: bool = False) -> str:
-        """오늘 브리핑: 날짜 · 날씨 · 할 일. 날씨를 못 가져오면 날씨만 빼고 말한다."""
+        """오늘 브리핑: 날짜 · 날씨 · 일정 · 메일 · 할 일. 못 가져온 것은 그 부분만 빼고 말한다."""
         weather = None
         try:
             weather = LocalRouter._weather_speech(self.tools.t_get_weather())
@@ -634,7 +651,14 @@ class Brain:
             st = todos.store()
         except Exception:
             st = None
-        return proactive.briefing_text(dt.datetime.now(), self.cfg["user_title"] or "주인님", weather, st, greet=greet)
+        now = dt.datetime.now()
+        try:
+            lines = self.tools.agenda.briefing_lines(now)
+        except Exception:
+            log.exception("브리핑 일정 · 메일 건너뜀")
+            lines = []
+        return proactive.briefing_text(now, self.cfg["user_title"] or "주인님", weather, st, greet=greet,
+                                       agenda_lines=lines)
 
     @staticmethod
     def _todo_lines() -> list[str]:
@@ -658,6 +682,11 @@ class Brain:
             return True
         try:
             if todos.handle(c, dry=True) is not None or (text != c and todos.handle(text, dry=True) is not None):
+                return True
+        except Exception:
+            pass
+        try:
+            if self.tools.agenda.handle(c, dry=True) is not None or self.tools.classroom.handle(c, dry=True) is not None:
                 return True
         except Exception:
             pass

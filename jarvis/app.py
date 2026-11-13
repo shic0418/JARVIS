@@ -27,7 +27,7 @@ from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickWindow  # noqa: F401  (루트 객체를 QQuickWindow 로 받기 위해 필요)
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
-from . import approval, hearing, hud_feed, persona, proactive, winutil
+from . import agenda, approval, hearing, hud_feed, persona, proactive, winutil
 from .brain import _SOURCES, Brain, situation_text
 from .config import DATA_DIR, ROOT, UI_DIR, Config
 from .hotkey import GlobalHotkey
@@ -390,7 +390,7 @@ class Jarvis(QObject):
         self._disk = 0.0
         psutil.cpu_percent(None)
         # ---- 먼저 말 걸기: 배터리 · 할 일 마감 · 아침 브리핑 (proactive.py) ----
-        self.proactive = proactive.Proactive(self.cfg)
+        self.proactive = proactive.Proactive(self.cfg, agenda=self.tools.agenda)
         self._briefing = False
         self._pro_timer = QTimer(self)
         self._pro_timer.setInterval(60_000)
@@ -1527,6 +1527,21 @@ class Jarvis(QObject):
             values["anthropic_api_key"] = ""
         if not values.get("sentinel_api_key"):
             values.pop("sentinel_api_key", None)    # 빈 칸이면 기존 Sentinel 키 유지
+        # 일정 · 메일: 빈 칸이면 기존 값 유지, '해제' 라고 적으면 연결을 끊는다. 저장할 때 Windows 암호화로 감싼다
+        for key, label in (("calendar_ical_url", "캘린더"), ("mail_app_password", "메일")):
+            raw = str(values.pop(key, "") or "").strip()
+            if not raw:
+                continue
+            if raw in ("해제", "삭제", "끊기"):
+                values[key] = ""
+            elif key == "calendar_ical_url" and not raw.lower().startswith(("https://", "webcal://")):
+                self.bridge.toast.emit("warn", "캘린더 주소는 https:// 로 시작하는 비공개 iCal 주소여야 합니다")
+            else:
+                try:
+                    values[key] = agenda.protect(raw)
+                except Exception:
+                    log.exception("%s 연결 정보 암호화 실패", label)
+                    self.bridge.toast.emit("warn", f"{label} 연결 정보를 안전하게 저장하지 못해 넣지 않았습니다")
         for key, lo, hi in (("mic_sensitivity", 0.3, 3.0), ("speaker_threshold", 0.2, 0.7)):
             if key in values:
                 try:
@@ -1537,6 +1552,7 @@ class Jarvis(QObject):
             values["owner_only"] = False
             self.bridge.toast.emit("warn", "주인 전용 모드는 목소리를 먼저 등록해야 켜집니다")
         self.cfg.update(values)
+        self.tools.agenda.reset()
         if self.cfg["speaker_lock"] or self.cfg["owner_only"]:
             self.voiceid.start_loading()
         self.gate.reset()

@@ -77,6 +77,10 @@ Item {
         proSw.checked = cfg.proactive !== false
         briefSw.checked = cfg.daily_briefing !== false
         remindSw.checked = cfg.todo_reminders !== false
+        eventSw.checked = cfg.event_reminders !== false
+        icalField.text = ""
+        mailUserField.text = cfg.mail_user || ""
+        mailPwField.text = ""
         delBtn.armed = false
         open = true
     }
@@ -108,8 +112,12 @@ Item {
             speaker_ask_borderline: askSw.checked,
             proactive: proSw.checked,
             daily_briefing: briefSw.checked,
-            todo_reminders: remindSw.checked
+            todo_reminders: remindSw.checked,
+            event_reminders: eventSw.checked,
+            mail_user: mailUserField.text.trim()
         }
+        if (icalField.text.trim() !== "") out.calendar_ical_url = icalField.text.trim()
+        if (mailPwField.text.trim() !== "") out.mail_app_password = mailPwField.text.trim()
         if (keyField.text.trim() !== "") out.anthropic_api_key = keyField.text.trim()
         jarvis.saveSettings(JSON.stringify(out))
         open = false
@@ -341,7 +349,27 @@ Item {
                 Toggle { id: proSw; text: "먼저 말 걸기 (배터리 부족 · 할 일 마감 알림)" }
                 Toggle { id: briefSw; enabled: proSw.checked; opacity: enabled ? 1 : 0.45; text: "아침 첫 사용 때 브리핑 (날짜 · 날씨 · 오늘 할 일)" }
                 Toggle { id: remindSw; enabled: proSw.checked; opacity: enabled ? 1 : 0.45; text: "할 일 마감 알림 (당일 오전 9시 · 전날 저녁 7시)" }
+                Toggle { id: eventSw; enabled: proSw.checked; opacity: enabled ? 1 : 0.45; text: "일정 시작 전 알림 (기본 10분 전 · 캘린더 연결 시)" }
                 Hint { text: "밤 11시~아침 7시에는 소리 내어 말하지 않고 화면 알림만 띄웁니다 (data/config.json 의 quiet_hours)." }
+                Label2 { text: "CALENDAR · MAIL (읽기 전용)" }
+                Field {
+                    id: icalField
+                    echoMode: TextInput.Password
+                    placeholderText: sp.cfg.has_calendar ? "캘린더 연결됨 — 바꾸려면 새 주소, 끊으려면 ‘해제’ 입력"
+                                                         : "구글 캘린더 비공개 iCal 주소 (https://…/basic.ics)"
+                }
+                Field { id: mailUserField; placeholderText: "메일 주소 (예: name@gmail.com · 학교 계정이면 학교 메일 주소)" }
+                Field {
+                    id: mailPwField
+                    echoMode: TextInput.Password
+                    placeholderText: sp.cfg.has_mail ? "앱 비밀번호 등록됨 — 바꾸려면 입력, 끊으려면 ‘해제’ 입력"
+                                                     : "메일 앱 비밀번호 (구글 계정 → 보안 → 2단계 인증 → 앱 비밀번호)"
+                }
+                Hint {
+                    text: "iCal 주소: 구글 캘린더 → 설정 → 내 캘린더 → 캘린더 통합 → ‘비공개 주소(iCal 형식)’. "
+                        + "주소와 비밀번호는 Windows 암호화로 이 PC 에만 저장되고, 일정은 읽기만, 메일은 안 읽은 메일의 보낸 사람 · 제목만 봅니다. "
+                        + "앱 비밀번호를 만들 수 없는 학교 계정은 메일 주소만 적어 두세요 — “클래스룸 정리해 줘” 가 크롬의 그 계정 지메일에서 클래스룸 알림을 읽습니다."
+                }
                 Text {
                     Layout.fillWidth: true
                     Layout.topMargin: 6

@@ -63,6 +63,13 @@ DEFAULTS: dict = {
     "todo_reminders": True,           # 오늘 마감은 오전 9시 뒤에, 내일 마감은 저녁 7시 뒤에 알림
     "quiet_hours": "23-7",            # 이 시간에는 먼저 말하지 않음 (화면 알림만). 비우면 없음
     "battery_warn": 20,               # 충전기 없이 이 % 아래로 떨어지면 알림
+    # --- 일정 · 메일 (agenda.py) — 읽기 전용. 주소 · 비밀번호는 Windows 암호화(DPAPI)로 감싸 저장 ---
+    "calendar_ical_url": "",          # 구글 캘린더 설정의 '비공개 주소(iCal 형식)'. 설정 화면에서 넣으면 암호화해 저장
+    "mail_user": "",                  # 메일 주소 (예: name@gmail.com)
+    "mail_app_password": "",          # 메일 앱 비밀번호 (구글 계정 → 보안 → 앱 비밀번호). 설정 화면에서 넣으면 암호화해 저장
+    "mail_host": "",                  # IMAP 서버. 비우면 메일 주소로 정함 (gmail · naver · daum · kakao)
+    "event_reminders": True,          # 일정 시작 전에 먼저 알림
+    "event_remind_minutes": 10,       # 일정 몇 분 전에 알릴지 (1~120)
     "auto_approve": False,            # True면 위험 명령(PowerShell, 종료 등)을 확인 없이 실행
     "hotkey": "ctrl+alt+j",
     # --- 화면 ---
@@ -140,6 +147,9 @@ class Config:
         d["has_api_key"] = bool(key)
         d["api_key_hint"] = (key[:7] + "…" + key[-4:]) if len(key) > 12 else ""
         d["sentinel_api_key"] = ""
+        d["has_calendar"] = bool(str(self._data.get("calendar_ical_url") or "").strip())
+        d["has_mail"] = bool(str(self._data.get("mail_app_password") or "").strip())
+        d["calendar_ical_url"] = d["mail_app_password"] = ""
         d["has_sentinel_key"] = bool((self._data.get("sentinel_api_key") or os.environ.get("SENTINEL_API_KEY") or "").strip())
         return d
 
