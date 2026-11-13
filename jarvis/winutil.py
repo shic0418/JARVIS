@@ -363,6 +363,23 @@ def broadcast_setting(name: str) -> None:
         pass
 
 
+class _LastInput(ctypes.Structure):
+    _fields_ = [("cbSize", wt.UINT), ("dwTime", wt.DWORD)]
+
+
+def idle_seconds() -> float | None:
+    """마지막 키보드 · 마우스 입력 뒤 지난 초 (자리를 비웠는지 볼 때). 알 수 없으면 None."""
+    try:
+        li = _LastInput()
+        li.cbSize = ctypes.sizeof(_LastInput)
+        if not user32.GetLastInputInfo(ctypes.byref(li)):
+            return None
+        now = ctypes.windll.kernel32.GetTickCount() & 0xFFFFFFFF
+        return ((now - li.dwTime) & 0xFFFFFFFF) / 1000.0
+    except Exception:
+        return None
+
+
 def clipboard_seq() -> int:
     """클립보드 내용이 바뀔 때마다 올라가는 번호 (복사가 실제로 일어났는지 볼 때 쓴다)."""
     try:

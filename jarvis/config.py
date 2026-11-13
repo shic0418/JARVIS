@@ -54,9 +54,15 @@ DEFAULTS: dict = {
     "speaker_lock": True,             # 세션 잠금: '자비스'라고 부른 사람의 목소리만 이어서 인식
     "owner_only": False,              # 등록된 주인 목소리에만 반응 (목소리 등록 후 켜짐)
     "speaker_threshold": 0.40,        # 목소리 판별 기준 0.25~0.60 (높을수록 엄격)
+    "speaker_ask_borderline": True,   # 기준을 겨우 넘은 호출어 없는 말은 실행하지 않고 "부르셨습니까?" 하고 되묻기
     # --- 동작 ---
     "user_title": "주인님",
     "home_city": "Seoul",
+    "proactive": True,                # 먼저 말 걸기: 배터리 부족 · 할 일 마감 알림 (proactive.py)
+    "daily_briefing": True,           # 그날 처음 쓸 때(오전) 날짜 · 날씨 · 오늘 할 일 브리핑
+    "todo_reminders": True,           # 오늘 마감은 오전 9시 뒤에, 내일 마감은 저녁 7시 뒤에 알림
+    "quiet_hours": "23-7",            # 이 시간에는 먼저 말하지 않음 (화면 알림만). 비우면 없음
+    "battery_warn": 20,               # 충전기 없이 이 % 아래로 떨어지면 알림
     "auto_approve": False,            # True면 위험 명령(PowerShell, 종료 등)을 확인 없이 실행
     "hotkey": "ctrl+alt+j",
     # --- 화면 ---

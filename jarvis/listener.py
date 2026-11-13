@@ -81,6 +81,24 @@ STT_MAX_GAIN = 10.0        # 최대 +20dB (잡음만 과하게 키우지 않도�
 GOOGLE_RETRY_SEC = 30      # Google 연결 실패 후 이 시간 동안은 오프라인 인식만 사용
 IGNORED_LOG_SEC = 60       # 호출어 없이 지나간 주변 소리는 한 줄씩 적지 않고 이 간격으로 묶어서 적는다
 MIN_SPAN_SECONDS = 1.0     # 주인 목소리 구간이 이보다 짧게 잡히면 자르지 않고 통째로 인식
+# 못 알아들었을 때 원인 짐작 (HUD 안내 문구용). 기록 1,929건: 인식 성공 · 실패의 크기 분포는 거의 같아서
+# 크기만으로는 원인을 가릴 수 없다 — 분명한 경우만 원인을 말하고 나머지는 평범하게 "다시 말씀해 주십시오"
+MISS_LONG_SECONDS = 9.0    # 이보다 긴 발화는 끝까지 받아 적지 못하는 일이 잦다
+MISS_NOISY_RATIO = 1.4     # 말소리 크기가 배경의 이 배수에 못 미치면 소음에 묻힌 것
+MISS_QUIET_LEVEL = 300     # 배경이 조용한데 말소리 크기가 이보다 작으면 목소리가 작은 것
+
+
+def miss_reason(seconds: float, level: float, bg: float, babble: bool, online: bool = True) -> str:
+    """못 알아들은 발화의 원인 짐작: offline | long | noisy | quiet | "" (모름)."""
+    if not online:
+        return "offline"
+    if seconds >= MISS_LONG_SECONDS:
+        return "long"
+    if babble or (bg > 0 and level < bg * MISS_NOISY_RATIO):
+        return "noisy"
+    if level < MISS_QUIET_LEVEL:
+        return "quiet"
+    return ""
 
 
 class _Filtered:
@@ -188,6 +206,8 @@ class Listener:
         self.has_wake: Callable[[str], bool] = lambda t: True   # 텍스트에 호출어가 있는가
         self.wake_prefix = "자비스"
         self.last_engine = ""         # 마지막 발화를 인식한 엔진 (HUD 표시·로그용)
+        self.last_miss = ""           # 마지막으로 못 알아들은 발화의 원인 짐작 (miss_reason) — app 이 안내 문구로 쓴다
+        self._online = True           # 마지막 인식 때 Google 에 연결되었는가 (오프라인 인식이 없을 때만 의미)
         # Google 이 준 인식 후보들 중 하나를 고른다 (기본: 첫 번째). app 이 '알아들을 수 있는 명령'을 고르게 바꾼다
         self.pick: Callable[[list[str]], str] = lambda alts: alts[0]
         # (선택) 오프라인 인식 결과를 그대로 쓰게 될 때, 호출어 뒤쪽만 다시 받아 적어 볼지 정한다 (_second_look)
@@ -416,6 +436,7 @@ class Listener:
                                             ai_voiced >= MIN_SPEECH_BLOCKS // 2, self._utt_info,
                                             np.array(near, dtype=np.float32) if self._utt_info[2] else None))
                     else:
+                        self.last_miss = ""
                         self.on_utterance(None, None)
                     speech = []
 
@@ -512,6 +533,19 @@ class Listener:
             self.last_engine = "local"
             return self._second_look(pcm, lt)          # Google 이 못 받아 적었거나 인터넷이 끊김 → 오프라인 결과를 쓴다
         gt, online = self._google(rec, sr, pcm, ai_heard)
+        self._online = online or local_ok
+        if online and gt is None and engine == "auto" and local_ok and self.understands is not None:
+            # Google 이 받아 적지 못했다 → 오프라인 인식으로 한 번 더. 바로 처리할 수 있는 명령일 때만 쓴다
+            # (오프라인 인식은 엉뚱한 글을 적기도 해서, 아무 글이나 쓰면 수다·검색으로 잘못 넘어간다)
+            lt = self._local(pcm, ai_heard)
+            try:
+                ok = bool(lt) and self.understands(lt)
+            except Exception:
+                ok = False
+            if ok:
+                log.info("Google 이 못 받아 적은 말을 오프라인 인식으로 알아들음")
+                self.last_engine = "local"
+                return lt
         if online or not local_ok or engine == "google":
             self.last_engine = "google"
             return gt
@@ -583,6 +617,7 @@ class Listener:
                 except Exception as e:
                     log.warning("목소리 사전 확인 실패: %s", e)
             text = None
+            self._online = True
             try:
                 text = self._transcribe(rec, sr, stt_pcm, ai_heard)
             except Exception as e:
@@ -596,11 +631,12 @@ class Listener:
                     log.warning("화자 임베딩 실패: %s", e)
             # 진단용 기록 — 말의 내용은 남기지 않는다 (주변 대화가 로그에 쌓이지 않게)
             wake = bool(text) and self.has_wake(text)
+            self.last_miss = "" if text else miss_reason(len(stt_pcm) / RATE, info[0], info[1], info[2], self._online)
             if standby and not wake:
                 self._note_ignored("인식 안 됨" if not text and not self.last_note else "호출어 없음")
             else:
                 self._flush_ignored()
                 log.info("발화 %.1f초 · 크기 %.0f / 배경 %.0f%s · %s · %s", len(pcm) / RATE, info[0], info[1],
                          " · 주변 대화 상태" if info[2] else "", self.last_engine or "-",
-                         (self.last_note or "인식 실패") if not text else ("호출어 있음" if wake else f"호출어 없음({len(text)}자)"))
+                         (self.last_note or ("인식 실패" + (f"({self.last_miss})" if self.last_miss else ""))) if not text else ("호출어 있음" if wake else f"호출어 없음({len(text)}자)"))
             self.on_utterance(text.strip() if text else None, voice)

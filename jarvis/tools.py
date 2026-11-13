@@ -20,7 +20,7 @@ from typing import Callable
 
 import psutil
 
-from . import sentinel, uia, vision, winutil
+from . import sentinel, todos, uia, vision, winutil
 from .config import DATA_DIR, Config, load_memory, save_memory
 from .control import ControlTools, ToolError
 
@@ -299,6 +299,16 @@ class PCTools(ControlTools):
                  ["url"]),
             tool("sentinel_report", "Open the full HTML report of the most recent Sentinel scan from this session in the browser."),
             tool("sentinel_status", "Check whether the local Sentinel Web Security Analyzer server is running and the API key works."),
+            tool("todo_add", "Add a to-do item with an optional deadline (할 일 · 과제 · 마감). Use when the user says they "
+                 "have to do something by some day, or asks to add / note a to-do. The app reminds them the day before and "
+                 "on the day.", {"text": {"type": "string", "description": "the task in short Korean, without the date"},
+                                 "due": {"type": "string", "description": "deadline as YYYY-MM-DD (resolve 금요일 · 내일 · "
+                                                                         "다음 주 월요일 from today's date); omit if none"}},
+                 ["text"]),
+            tool("todo_list", "List the user's open to-do items with deadlines.",
+                 {"scope": {"type": "string", "enum": ["all", "today", "tomorrow", "week", "next_week"]}}),
+            tool("todo_done", "Mark a to-do item as done (or delete it with remove=true). Match by its name.",
+                 {"query": s, "remove": {"type": "boolean"}}, ["query"]),
             tool("remember", "Save a fact about the user to long-term memory (e.g. preferences, names). Use when the user asks you to remember something.",
                  {"fact": s}, ["fact"]),
             tool("make_presentation",
@@ -545,6 +555,9 @@ class PCTools(ControlTools):
             "read_clipboard": lambda: "클립보드 읽기",
             "write_clipboard": lambda: "클립보드 쓰기",
             "remember": lambda: f"기억 저장 · {a.get('fact', '')[:30]}",
+            "todo_add": lambda: f"할 일 추가 · {str(a.get('text', ''))[:30]}",
+            "todo_list": lambda: "할 일 목록",
+            "todo_done": lambda: f"할 일 {'삭제' if a.get('remove') else '완료'} · {str(a.get('query', ''))[:30]}",
             "watch_app": lambda: f"작업 감시 · {a.get('name')}",
             "web_fetch": lambda: f"웹 페이지 읽기 · {str(a.get('url', ''))[:40]}",
             "sentinel_scan": lambda: f"Sentinel 검사 · {str(a.get('url', ''))[:40]}",
@@ -1695,6 +1708,37 @@ class PCTools(ControlTools):
             return f"Sentinel 연결 정상입니다. 서버는 {self.sentinel.base()}."
         except sentinel.SentinelError as e:
             raise ToolError(str(e))
+
+    # --- 할 일 (todos.py) ---
+    def t_todo_add(self, text: str, due: str = "") -> str:
+        d = None
+        if due:
+            try:
+                d = dt.date.fromisoformat(str(due)[:10])
+            except ValueError:
+                try:
+                    d, _ = todos.parse_due(str(due))
+                except todos.BadDate as e:
+                    raise ToolError(str(e))
+                if d is None:
+                    raise ToolError(f"마감 날짜 '{due}'를 알 수 없습니다. YYYY-MM-DD 로 주세요.")
+        try:
+            t = todos.store().add(text, d)
+        except ValueError as e:
+            raise ToolError(str(e))
+        return f"할 일 저장: {t.text} · 마감 {todos.due_words(t.due_date)}" + (f" ({t.due})" if t.due else "")
+
+    def t_todo_list(self, scope: str = "all") -> str:
+        ok = ("all", "today", "tomorrow", "week", "next_week")
+        return todos.speak_list(todos.store(), scope if scope in ok else "all")
+
+    def t_todo_done(self, query: str, remove: bool = False) -> str:
+        st = todos.store()
+        t = st.remove(query) if remove else st.complete(query)
+        if t is None:
+            names = ", ".join(x.text for x in st.open_items()[:10]) or "없음"
+            raise ToolError(f"'{query}'에 맞는 할 일이 하나로 정해지지 않습니다. 남은 할 일: {names}")
+        return f"'{t.text}' " + ("삭제함" if remove else "완료 표시함")
 
     def t_remember(self, fact: str) -> str:
         mem = load_memory()

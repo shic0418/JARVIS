@@ -18,7 +18,7 @@ import uuid
 from pathlib import Path
 from typing import Callable
 
-from . import persona, routines, writers
+from . import persona, proactive, routines, todos, writers
 from .claude_session import ClaudeSession
 from .config import DATA_DIR, Config, load_memory
 from .local_ai import LocalAI
@@ -170,6 +170,10 @@ CHAT_TEMPLATE = """당신은 J.A.R.V.I.S.(자비스), {title}의 PC에 사는 AI
 
 # 발음이 뭉개져 '대모', '태화 모드', '데화 모드'로 적히는 경우 (기록: '대모 켜 줘', '태화 모드 켜 줘' → Claude 가 다크 모드로 오해)
 _MODE = r"(?:자유\s*)?(?:대화\s*모드|[대태데때][화와하]?\s*모[드두]?)"
+# 브리핑 (날짜 · 날씨 · 할 일) — 토큰 0 으로 바로 답한다
+BRIEFING = re.compile(r"(?:(?:오늘|아침|하루|지금)\s*)?(?:브리핑|일일\s*브리핑)"
+                      r"(?:\s*(?:해|해줘|해\s*줘|부탁해|부탁|들려|들려줘|시작|해\s*봐|줘))?"
+                      r"|(?:오늘\s*)?하루\s*요약")
 CHAT_ON = re.compile(
     r"(?:자유\s*)?대화\s*모드(?:\s*(?:로|으로))?(?:\s*(?:켜|시작|시작해|전환|전환해|들어가|해|가자|on))?"
     r"|" + _MODE + r"(?:\s*(?:로|으로))?\s*(?:켜|시작|시작해|전환|전환해|들어가|가자|on)"
@@ -351,6 +355,7 @@ class Brain:
         self.chat_mode = False
         self.on_mode: Callable[[bool], None] = lambda on: None   # app 이 설정
         self.on_hud: Callable[[str], None] = lambda action: None  # app 이 설정 (small | big | hide | active_on | active_off)
+        self.on_briefed: Callable[[], None] | None = None   # app 이 설정: 직접 들은 브리핑을 기록 (자동 브리핑 중복 방지)
         self.active_hud = False                                   # 액티브 모드(전체 화면 HUD) 켜짐 — app 이 맞춰 둠
         # 음성 인식 후보 고르기용: 실제로 실행하지 않고 '알아들을 수 있는 명령인가'만 본다
         self._dry = LocalRouter(self._dry_execute, lambda: "주인님")
@@ -405,7 +410,7 @@ class Brain:
         return _SEARCH_SOLO, _PLAN_SOLO
 
     def _build_system(self, chat: bool = False) -> str:
-        mem = load_memory()
+        mem = load_memory() + self._todo_lines()
         title = self.cfg["user_title"] or "주인님"
         search_rule, plan_rule = self._work_rules()
         return (CHAT_TEMPLATE if chat else SYSTEM_TEMPLATE).format(
@@ -466,6 +471,17 @@ class Brain:
             done = self._routine(text)
             if done:
                 return "local", done
+        if BRIEFING.fullmatch(normalize(text) or ""):
+            reply = self.briefing()
+            if self.on_briefed is not None:
+                try:
+                    self.on_briefed()
+                except Exception:
+                    log.exception("브리핑 기록 실패")
+            return "local", reply
+        done = self._todo(text)
+        if done:
+            return "local", done
         self.local.chat = self.chat_mode
         if (mode == "local" or self.cfg["local_first"]) and (self.chat_mode or not self._awaiting_answer()):
             reply = self.local.try_handle(text, fallback=(mode != "local"))
@@ -597,6 +613,35 @@ class Brain:
         tail = f" {failed}가지는 하지 못했습니다." if failed else ""
         return f"{name} 루틴을 실행합니다. " + " ".join(said) + tail
 
+    # ------------------------------------------------------------------ 할 일 · 마감 (todos.py)
+    def _todo(self, text: str) -> str | None:
+        """할 일 추가 · 목록 · 완료 · 삭제. 할 일과 상관없는 말이면 None."""
+        try:
+            return todos.handle(normalize(text) or text) or todos.handle(text)
+        except Exception:
+            log.exception("할 일 처리 실패")
+            return None
+
+    def briefing(self, greet: bool = False) -> str:
+        """오늘 브리핑: 날짜 · 날씨 · 할 일. 날씨를 못 가져오면 날씨만 빼고 말한다."""
+        weather = None
+        try:
+            weather = LocalRouter._weather_speech(self.tools.t_get_weather())
+        except Exception as e:
+            log.info("브리핑 날씨 건너뜀: %s", e)
+        try:
+            st = todos.store()
+        except Exception:
+            st = None
+        return proactive.briefing_text(dt.datetime.now(), self.cfg["user_title"] or "주인님", weather, st, greet=greet)
+
+    @staticmethod
+    def _todo_lines() -> list[str]:
+        try:
+            return todos.memory_lines()
+        except Exception:
+            return []
+
     def recognizes(self, text: str) -> bool:
         """이 말을 자비스가 바로 처리할 수 있는 명령으로 알아듣는가 (실행하지 않음)."""
         c = normalize(text)
@@ -608,8 +653,13 @@ class Brain:
                 HUD_SMALL.fullmatch(c) or HUD_BIG.fullmatch(c) or HUD_HIDE.fullmatch(c)
                 or ACTIVE_ON.fullmatch(c) or ACTIVE_OFF.fullmatch(c) or MODE_OFF.fullmatch(c))):
             return True
-        if routines.match(c, self.cfg["routines"] or {}):
+        if routines.match(c, self.cfg["routines"] or {}) or BRIEFING.fullmatch(c):
             return True
+        try:
+            if todos.handle(c, dry=True) is not None or todos.handle(text, dry=True) is not None:
+                return True
+        except Exception:
+            pass
         try:
             return self._dry.try_handle(text, fallback=True) is not None
         except Exception:

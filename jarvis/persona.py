@@ -55,6 +55,22 @@ GREET_NO_KEY = "설정에서 Claude API 키를 등록해 주십시오."
 CANCELLED = ["취소했습니다.", "중단했습니다.", "알겠습니다. 멈추겠습니다."]
 MISHEARD = "죄송합니다. 잘 듣지 못했습니다. 다시 말씀해 주십시오"
 CLIPPED = "말씀이 끊겨 들렸습니다. 다시 말씀해 주십시오"
+MISHEARD_WHY = {   # 못 알아들은 원인을 짐작할 수 있을 때 (listener.miss_reason)
+    "long": "말씀이 길어 놓쳤습니다. 짧게 나눠 말씀해 주십시오",
+    "noisy": "주변 소리에 묻혀 놓쳤습니다. 마이크 가까이에서 말씀해 주십시오",
+    "quiet": "목소리가 작게 들렸습니다. 조금 크게 말씀해 주십시오",
+    "offline": "음성 인식 서버에 연결할 수 없습니다. 인터넷을 확인하시거나 글로 입력해 주십시오",
+}
+BRIEF_GREET = {   # 아침 브리핑 첫마디 (proactive.briefing_text)
+    "morning": ["좋은 아침입니다, {title}. 오늘의 브리핑입니다.", "{title}, 아침 브리핑을 드리겠습니다."],
+    "afternoon": ["{title}, 오늘의 브리핑입니다."],
+    "evening": ["{title}, 오늘의 브리핑입니다."],
+    "night": ["{title}, 브리핑입니다."],
+}
+MISHEARD_GIVE_UP = "계속 잘 들리지 않습니다. 아래 입력창에 글로 적어 주셔도 됩니다"
+ASK_BORDERLINE = ["부르셨습니까, {title}?", "{title}, 제게 하신 말씀입니까?"]   # 목소리가 애매한 호출어 없는 말
+ASK_DROPPED = "알겠습니다. 못 들은 것으로 하겠습니다."
+ASK_LONGER = "목소리를 확인하려면 “네, 실행해 줘”처럼 조금 길게 대답해 주십시오"
 CONFIRM = ["{action}. {title}, 승인하시겠습니까?", "{title}, {action} 작업은 승인이 필요합니다. 진행하시겠습니까?"]  # action = 승인 카드 제목
 TIMER_DONE = ["{title}, {label} 시간입니다.", "{title}, 말씀하신 {label} 시간이 되었습니다."]
 NOTIFY = "{title}, {msg}"

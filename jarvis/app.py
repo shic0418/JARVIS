@@ -1,6 +1,7 @@
 """오케스트레이터: 음성 → 두뇌 → 행동 → 음성 흐름과 HUD/트레이/단축키를 연결한다."""
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 import math
@@ -26,7 +27,7 @@ from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickWindow  # noqa: F401  (루트 객체를 QQuickWindow 로 받기 위해 필요)
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
-from . import approval, hearing, hud_feed, persona, winutil
+from . import approval, hearing, hud_feed, persona, proactive, winutil
 from .brain import _SOURCES, Brain, situation_text
 from .config import DATA_DIR, ROOT, UI_DIR, Config
 from .hotkey import GlobalHotkey
@@ -220,6 +221,7 @@ class Jarvis(QObject):
     sig_feed = Signal(str, str)        # 백그라운드 → 액티브 모드 화면 정보 (속성 이름, JSON)
     sig_timer_cancel = Signal()
     sig_point = Signal(int, int, int, int, str)   # 화면 위치 짚기 (실제 픽셀 x, y, w, h, 라벨)
+    sig_proactive = Signal(str, bool)  # 먼저 말 걸기 (할 말, 소리 내어 말할지)
 
     def __init__(self, app: QApplication, args) -> None:
         super().__init__()
@@ -241,6 +243,9 @@ class Jarvis(QObject):
         self._cancel = threading.Event()
         self._confirms: dict[str, list] = {}
         self._pending_confirm: str | None = None
+        self._pending_ask: str | None = None      # 목소리가 애매해 "부르셨습니까?" 하고 되물은 말 (대답을 기다림)
+        self._last_verdict = None
+        self._misses = 0                          # 이어서 못 알아들은 횟수 (알아들으면 0)
         self._enroll: Enrollment | None = None
         self._enroll_when_ready = False
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="brain")
@@ -271,7 +276,7 @@ class Jarvis(QObject):
                           (self.sig_stream, self._on_stream), (self.sig_mode, self._on_mode),
                           (self.sig_notify, self._on_notify), (self.sig_hud, self._on_hud),
                           (self.sig_feed, self._on_feed), (self.sig_timer_cancel, self._cancel_timers),
-                          (self.sig_point, self._on_point)):
+                          (self.sig_point, self._on_point), (self.sig_proactive, self._on_proactive)):
             sig.connect(slot)
 
         # ---- 음성 출력 ----
@@ -301,6 +306,7 @@ class Jarvis(QObject):
         self.tools.writer = self.brain.write_team        # 발표 자료 · 보고서: 작가 여러 명이 나눠서 동시에 쓴다
         self.brain.on_mode = lambda on: self.sig_mode.emit(bool(on))
         self.brain.on_hud = lambda action: self.sig_hud.emit(str(action))
+        self.brain.on_briefed = lambda: self.proactive.mark_briefed(datetime.datetime.now())
         self._refresh_link()
         # 로컬 AI 모델을 미리 메모리에 올려 둠 (없으면 조용히 건너뜀)
         threading.Thread(target=self.brain.local_ai.warmup, daemon=True, name="local-ai-warmup").start()
@@ -383,6 +389,13 @@ class Jarvis(QObject):
         self._bat = None
         self._disk = 0.0
         psutil.cpu_percent(None)
+        # ---- 먼저 말 걸기: 배터리 · 할 일 마감 · 아침 브리핑 (proactive.py) ----
+        self.proactive = proactive.Proactive(self.cfg)
+        self._briefing = False
+        self._pro_timer = QTimer(self)
+        self._pro_timer.setInterval(60_000)
+        self._pro_timer.timeout.connect(self._proactive_tick)
+        self._pro_timer.start()
         # 방어 프로토콜 (defense.py): 반격으로 되살아난 자비스의 감시 프로세스가 울트론의 흡수를 막으면 알림을 남긴다 — 읽고 보고한다
         if getattr(args, "revived", None) == "counter":
             self._defense_timer = QTimer(self)
@@ -447,6 +460,9 @@ class Jarvis(QObject):
         msg = persona.greeting(self.cfg["user_title"] or "주인님", self.cfg["brain"] or "pro", bool(self.bridge._hasApiKey))
         self.bridge.set("replyText", msg)
         self.say(msg, follow_up=False)
+        # 그날 처음 켠 아침이면 인사에 이어 브리핑 (인사를 방금 했으니 첫마디는 뺀다)
+        if self.proactive.briefing_due(datetime.datetime.now()):
+            self._start_briefing(greet=False)
 
     def _defense_report(self) -> None:
         from . import defense, guard
@@ -475,6 +491,8 @@ class Jarvis(QObject):
             self._set_state("thinking")
             return
         self.gate.reset()   # 대기 상태로 돌아가면 세션 종료 → 다음에 부르는 사람이 새 주인
+        self._pending_ask = None
+        self._misses = 0
         if not self.mic_ok:
             self._set_state("offline", "마이크 꺼짐 · 텍스트로 명령하세요")
         elif self.bridge._wakeEnabled:
@@ -573,11 +591,14 @@ class Jarvis(QObject):
             if verdict is not None and self._voice_ok(voice):
                 self.answer_confirm(self._pending_confirm, verdict)
             return
+        if self._pending_ask is not None and text and not self.speaker.playing and not self.busy:
+            if self._answer_ask(text, voice):
+                return
         if not text:
             if was_active and not self.busy and not self.speaker.playing:
-                self.active_until = time.monotonic() + 5
-                self._set_state("listening", persona.MISHEARD)
+                self._on_miss(voice)
             return
+        self._misses = 0
         if self.speaker.playing:
             return
         if self.busy:
@@ -608,14 +629,74 @@ class Jarvis(QObject):
                     self.active_until = time.monotonic() + 6
                 self._set_state("listening", persona.CLIPPED)
                 return
+            v = self._last_verdict
+            if v is not None and v.borderline and self.cfg["speaker_ask_borderline"] is not False:
+                self._ask_borderline(text)
+                return
             self.run_command(text)
+
+    def _on_miss(self, voice) -> None:
+        """듣는 중에 말소리는 났는데 받아 적지 못했다.
+        · 확실히 다른 사람 목소리면 못 들은 척한다 (주변 대화 때문에 "다시 말씀해 주십시오"가 끝없이 이어지던 문제)
+        · 원인을 짐작할 수 있으면 그에 맞게 안내한다 (너무 김 · 시끄러움 · 목소리 작음 · 인터넷 끊김)
+        · 세 번 연달아 못 알아들으면 더 붙잡지 않고 글 입력을 권한 뒤 듣기 시간을 늘리지 않는다"""
+        if voice is not None and not self.gate.maybe_allowed(voice):
+            self._undo_extend()
+            return
+        self._misses += 1
+        why = getattr(self.listener, "last_miss", "")
+        log.info("못 알아들음 %d번째%s", self._misses, f" ({why})" if why else "")
+        if self._misses >= 3:
+            self._misses = 0
+            self._undo_extend()
+            self._set_state("listening", persona.MISHEARD_GIVE_UP)
+            self.bridge.toast.emit("info", persona.MISHEARD_GIVE_UP)
+            return
+        self.active_until = time.monotonic() + 5
+        self._set_state("listening", persona.MISHEARD_WHY.get(why, persona.MISHEARD))
+
+    def _ask_borderline(self, text: str) -> None:
+        """호출어 없이 들린 말인데 목소리가 기준을 겨우 넘었다 → 바로 실행하지 않고 되묻는다.
+        주변 사람의 말이나 혼잣말에 대답하던 문제를 막는다. 말한 내용은 기록하지 않는다."""
+        log.info("목소리가 애매해 실행 전에 되물음 (%d자)", len(text))
+        self._pending_ask = text
+        self.bridge.set("userText", text)
+        msg = persona.pick(persona.ASK_BORDERLINE, title=self.cfg["user_title"] or "주인님")
+        self.bridge.set("replyText", msg)
+        self.say(msg, follow_up=True)
+
+    def _answer_ask(self, text: str, voice) -> bool:
+        """되물은 뒤 들린 말. 네/아니오 대답이면 처리하고 True, 다른 말이면 되물음을 접고 False (평소처럼 처리)."""
+        pending, self._pending_ask = self._pending_ask, None
+        verdict = approval.answer(self._strip_wake(text) or text)
+        if verdict is None:
+            return False
+        if verdict:
+            v = self.gate.check(voice)
+            if v.reason == "short":
+                # "응" 한 마디는 누구 목소리인지 가릴 수 없다 — 옆 사람의 "응"으로 실행되지 않게 조금 길게 다시 대답받는다
+                self._pending_ask = pending
+                self.active_until = time.monotonic() + 6
+                self._set_state("listening", persona.ASK_LONGER)
+                return True
+            if v.ok:
+                log.info("되물음에 '예' → 실행")
+                self.run_command(pending)
+            else:
+                log.info("되물음에 '예' 했지만 다른 목소리 (유사도 %.2f) → 무시", v.score or 0.0)
+                self._to_idle()
+            return True
+        self.bridge.set("replyText", persona.ASK_DROPPED)
+        self.say(persona.ASK_DROPPED, follow_up=False)
+        return True
 
     def _voice_ok(self, voice, wake: bool = False, wake_only: bool = False) -> bool:
         """명령을 실행하기 직전에 목소리 확인 (주인 전용 / 세션 잠금)."""
         v = self.gate.check(voice, wake=wake, wake_only=wake_only)
+        self._last_verdict = v
         if v.score is not None:   # 발화 내용은 남기지 않고 점수만 기록 (기준값 조정용)
             log.info("화자 확인(%s): 유사도 %.2f / 기준 %.2f → %s", v.mode, v.score, v.threshold,
-                     "통과" if v.ok else "거부")
+                     ("통과(경계)" if v.borderline else "통과") if v.ok else "거부")
         if v.ok:
             return True
         self._undo_extend()
@@ -1181,6 +1262,62 @@ class Jarvis(QObject):
         msg = persona.pick(persona.TIMER_DONE, title=title, label=label)
         self.bridge.set("replyText", msg)
         self.say(msg, follow_up=False)
+
+    # ================================================================== 먼저 말 걸기
+    def _proactive_tick(self) -> None:
+        now = datetime.datetime.now()
+        idle = winutil.idle_seconds()
+        try:
+            events = self.proactive.check(now, self._bat, idle)
+        except Exception:
+            log.exception("먼저 말 걸기 확인 실패")
+            events = []
+        for ev in events:
+            log.info("먼저 말 걸기 · %s", ev.kind)
+            self._on_proactive(ev.text, ev.speak)
+        if self.proactive.briefing_due(now, idle):
+            self._start_briefing(greet=True)
+
+    def _start_briefing(self, greet: bool) -> None:
+        """브리핑 문장은 날씨를 받아 와야 해서 따로 만든다 — 다 되면 시그널로 말한다."""
+        if self._briefing:
+            return
+        self._briefing = True
+        self.proactive.mark_briefed(datetime.datetime.now())
+
+        def work():
+            try:
+                text = self.brain.briefing(greet=greet)
+            except Exception:
+                log.exception("브리핑 만들기 실패")
+                text = ""
+            finally:
+                self._briefing = False
+            if text:
+                log.info("아침 브리핑")
+                self.sig_proactive.emit(text, True)
+        threading.Thread(target=work, daemon=True, name="briefing").start()
+
+    @Slot(str, bool)
+    def _on_proactive(self, text: str, speak: bool, tries: int = 0) -> None:
+        """먼저 하는 말. 대답 · 처리 · 승인 · 등록 중이거나 주인이 말하는 중이면 끝날 때까지 기다린다.
+        10분을 기다려도 틈이 없으면(긴 대화 · 긴 작업) 말하지 않고 화면 알림만 남긴다."""
+        talking = self.bridge._state == "listening" and self._active()
+        if (self.busy or self.speaker.playing or self._pending_confirm or self._enroll
+                or self._pending_ask is not None or talking):
+            if tries < 200:
+                QTimer.singleShot(3000, lambda t=text, s=speak, n=tries + 1: self._on_proactive(t, s, n))
+                return
+            speak = False
+        self.bridge.toast.emit("info", text if len(text) <= 80 else text[:78] + "…")
+        self.bridge.actionEvent.emit(uuid.uuid4().hex[:8], f"알림 · {text[:40]}", "ok", "")
+        if not speak:
+            return
+        self.chime.play()
+        if not self.win.isVisible():
+            self.toggle_visible(True)
+        self.bridge.set("replyText", text)
+        self.say(text, follow_up=True)
 
     # ================================================================== 주기 작업
     def _on_tick(self) -> None:

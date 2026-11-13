@@ -73,6 +73,10 @@ Item {
         lockSw.checked = cfg.speaker_lock !== false
         ownerSw.checked = !!cfg.owner_only && jarvis.voiceEnrolled
         strict.value = cfg.speaker_threshold || 0.40
+        askSw.checked = cfg.speaker_ask_borderline !== false
+        proSw.checked = cfg.proactive !== false
+        briefSw.checked = cfg.daily_briefing !== false
+        remindSw.checked = cfg.todo_reminders !== false
         delBtn.armed = false
         open = true
     }
@@ -100,7 +104,11 @@ Item {
             stt_engine: sttEngines[sttBox.currentIndex].v,
             speaker_lock: lockSw.checked,
             owner_only: ownerSw.checked,
-            speaker_threshold: Math.round(strict.value * 100) / 100
+            speaker_threshold: Math.round(strict.value * 100) / 100,
+            speaker_ask_borderline: askSw.checked,
+            proactive: proSw.checked,
+            daily_briefing: briefSw.checked,
+            todo_reminders: remindSw.checked
         }
         if (keyField.text.trim() !== "") out.anthropic_api_key = keyField.text.trim()
         jarvis.saveSettings(JSON.stringify(out))
@@ -322,6 +330,7 @@ Item {
                 Toggle { id: lockSw; text: "부른 사람의 목소리만 이어서 인식 (세션 잠금)" }
                 Label2 { text: "판별 엄격도  ·  " + strict.value.toFixed(2) + (strict.value < 0.34 ? "  (느슨함)" : strict.value > 0.48 ? "  (엄격함)" : "") }
                 HSlider { id: strict; from: 0.25; to: 0.60; stepSize: 0.01 }
+                Toggle { id: askSw; text: "목소리가 애매하면 실행 전에 “부르셨습니까?” 되묻기" }
                 Hint {
                     text: "본인 명령이 자주 무시되면 낮추고, 다른 사람 말에 반응하면 높이세요. "
                         + "목소리 정보는 data/voice_profile.json 에만 저장되고 외부로 보내지 않습니다."
@@ -329,6 +338,10 @@ Item {
 
                 Toggle { id: searchSw; text: "Claude 웹 검색 사용 (최신 정보)" }
                 Toggle { id: approveSw; text: "위험 명령 자동 승인 (권장하지 않음)" }
+                Toggle { id: proSw; text: "먼저 말 걸기 (배터리 부족 · 할 일 마감 알림)" }
+                Toggle { id: briefSw; enabled: proSw.checked; opacity: enabled ? 1 : 0.45; text: "아침 첫 사용 때 브리핑 (날짜 · 날씨 · 오늘 할 일)" }
+                Toggle { id: remindSw; enabled: proSw.checked; opacity: enabled ? 1 : 0.45; text: "할 일 마감 알림 (당일 오전 9시 · 전날 저녁 7시)" }
+                Hint { text: "밤 11시~아침 7시에는 소리 내어 말하지 않고 화면 알림만 띄웁니다 (data/config.json 의 quiet_hours)." }
                 Text {
                     Layout.fillWidth: true
                     Layout.topMargin: 6
