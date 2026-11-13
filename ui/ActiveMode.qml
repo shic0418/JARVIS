@@ -399,6 +399,11 @@ Window {
         color: ov.gd(0.9)
         font.pixelSize: 10 * ov.u; font.letterSpacing: 2 * ov.u; font.weight: Font.Bold
     }
+    // 가운데 스캐너 글자: 차가운 어두운 테두리 (판 없음)
+    component SText: Text {
+        style: Text.Outline; styleColor: sc.ink
+        font.family: "Bahnschrift"; font.weight: Font.DemiBold
+    }
     // 홀로그램 위젯: 깎은 모서리 판 + 금색 머리 탭 + 바깥쪽 굵은 눈금 막대. 내용은 inner (안쪽 여백 12u) 에 들어간다.
     component Wid: Fly {
         id: w
@@ -985,220 +990,410 @@ Window {
             }
         }
 
-        // ---- 가운데 조준경: 굵은 금색 고리 ----
+        // ==================================================================== 가운데 스캐너 (조준경)
+        // 금색 없이 파란색의 연함 · 진함만 쓴다. 굵은 띠 · 큰 번짐 대신 가는 선과 단계별 밝기로 깊이를 낸다.
+        //   바깥 베젤 r0.97  네 토막 호 + 정방위 홈 + 바깥 미세 호 (고정 · 기계적)
+        //   눈금 링  r0.86~0.925  3° 간격 120개 (30° · 15° · 3° 세 단계) — 천천히 반대로 돎
+        //   분절 호  r0.80  가는 호 세 토막 + 밝은 마디 — 천천히 돎, 그 궤도를 작은 스캔 표지가 훑음
+        //   음성 링  r0.66  목소리 · 마이크에 반응하는 가는 막대
+        //   보정 링  r0.56 점선 · r0.50 잔눈금 · r0.45 실선
+        //   가운데   점 + 가는 십자선 + 작은 표적 꺾쇠
+        // 선 굵기는 1~3u, 빛은 고리 둘레에만 낮은 투명도의 겹선으로 깐다 (흐림 효과 없이 → 성능 부담 없음).
+        Item {
+            id: sc
+            visible: false
+            readonly property color ice: "#e6f7ff"      // 가장 밝음: 핵심 점 · 강조 마디
+            readonly property color light: "#93d9ff"    // 주 선
+            readonly property color mid: "#3ea6f2"      // 보조 선 · 빛
+            readonly property color deep: "#1d68bd"     // 가는 실선 · 바탕 눈금
+            readonly property color ink: Qt.rgba(0.0, 0.025, 0.075, 0.86)   // 선 밑 어두운 테 (흰 화면 위에서도 읽히게)
+            // 상태에 따른 밝기 (색 대신 밝기 · 속도로 상태를 드러냄)
+            property real heat: ov.st === "speaking" || ov.st === "thinking" ? 1 : ov.st === "listening" ? 0.8
+                              : ov.st === "offline" ? 0.15 : 0.45
+            Behavior on heat { NumberAnimation { duration: 600; easing.type: Easing.OutCubic } }
+            property real think: ov.st === "thinking" ? 1 : 0
+            Behavior on think { NumberAnimation { duration: 500 } }
+            function a(col, al) { return Qt.rgba(col.r, col.g, col.b, al) }
+            function lw(v) { return Math.max(1, v * ov.u) }
+            // 중심 (c, c) 둘레의 방사형 눈금: n 등분 중 keep(i) 인 것만, r0 → r1
+            function radial(c, n, r0, r1, keep, upto) {
+                const out = []
+                for (let i = 0; i < n; i++) {
+                    if (!keep(i) || i >= n * upto) continue
+                    const t = (i * 360 / n - 90) * Math.PI / 180, cs = Math.cos(t), sn = Math.sin(t)
+                    out.push([Qt.point(c + cs * r0, c + sn * r0), Qt.point(c + cs * r1, c + sn * r1)])
+                }
+                return out
+            }
+        }
+
         Item {
             id: reticle
             readonly property real rr: 120 * ov.u
             readonly property real e: ov.seg(0.05, 0.45)
             readonly property real draw: ov.seg(0.2, 0.7) * (1 - ov.dlin(0.12, 0.34))     // 고리가 그려지는 / 풀리는 진행도
+            readonly property real glow: 0.55 + 0.45 * sc.heat * (0.75 + 0.25 * ov.pulse)  // 고리 둘레 빛의 세기
             width: rr * 2; height: rr * 2
             x: ov.cx - rr; y: ov.cy - rr
             visible: e > 0
             opacity: Math.min(1, e * 1.4)
             scale: 0.15 + 0.85 * e + Math.sin(e * Math.PI) * 0.14
 
-            // 바깥 눈금: 네 토막 (천천히 돎)
-            Item {
+            // ---- 고리 둘레의 빛: 넓고 옅은 선 → 좁고 진한 선 겹침 (바깥 베젤 · 분절 호 궤도에만) ----
+            Shape {
                 anchors.fill: parent
-                rotation: -ov.spin * 0.25
-                Repeater {
-                    model: 72
-                    Rectangle {
-                        readonly property real a: index * 5
-                        readonly property bool inArc: (a % 90) >= 15 && (a % 90) <= 75
-                        visible: inArc && index < 72 * reticle.draw
-                        width: (index % 6 === 0 ? 3.5 : 2) * ov.u
-                        height: index % 6 === 0 ? 14 * ov.u : 6 * ov.u
-                        x: reticle.rr - width / 2; y: 0
-                        color: index % 6 === 0 ? ov.hot : ov.c(0.75)
-                        border.color: ov.outline; border.width: index % 6 === 0 ? 1 * ov.u : 0
-                        transform: Rotation { origin.x: width / 2; origin.y: reticle.rr; angle: a }
+                preferredRendererType: Shape.CurveRenderer
+                opacity: reticle.draw * reticle.glow
+                ShapePath {
+                    strokeColor: sc.a(sc.mid, 0.06); strokeWidth: 12 * ov.u; fillColor: "transparent"
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.97; radiusY: reticle.rr * 0.97; startAngle: 0; sweepAngle: 360 }
+                }
+                ShapePath {
+                    strokeColor: sc.a(sc.mid, 0.10); strokeWidth: 5 * ov.u; fillColor: "transparent"
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.97; radiusY: reticle.rr * 0.97; startAngle: 0; sweepAngle: 360 }
+                }
+                ShapePath {
+                    strokeColor: sc.a(sc.mid, 0.07); strokeWidth: 9 * ov.u; fillColor: "transparent"
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.80; radiusY: reticle.rr * 0.80; startAngle: 0; sweepAngle: 360 }
+                }
+            }
+
+            // ---- 바깥 베젤: 정방위에 홈을 둔 네 토막 호 (고정) ----
+            Shape {
+                anchors.fill: parent
+                preferredRendererType: Shape.CurveRenderer
+                readonly property real r: reticle.rr * 0.97
+                readonly property real sw: 78 * reticle.draw
+                id: bezel
+                ShapePath {
+                    strokeColor: sc.ink; strokeWidth: 4.5 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: bezel.r; radiusY: bezel.r; startAngle: -84; sweepAngle: bezel.sw }
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: bezel.r; radiusY: bezel.r; startAngle: 6; sweepAngle: bezel.sw }
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: bezel.r; radiusY: bezel.r; startAngle: 96; sweepAngle: bezel.sw }
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: bezel.r; radiusY: bezel.r; startAngle: 186; sweepAngle: bezel.sw }
+                }
+                ShapePath {
+                    strokeColor: sc.light; strokeWidth: sc.lw(2); fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: bezel.r; radiusY: bezel.r; startAngle: -84; sweepAngle: bezel.sw }
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: bezel.r; radiusY: bezel.r; startAngle: 6; sweepAngle: bezel.sw }
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: bezel.r; radiusY: bezel.r; startAngle: 96; sweepAngle: bezel.sw }
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: bezel.r; radiusY: bezel.r; startAngle: 186; sweepAngle: bezel.sw }
+                }
+                ShapePath {   // 바깥 미세 호: 대각선 쪽에만 (정밀 눈금자 느낌)
+                    strokeColor: sc.a(sc.deep, 0.95); strokeWidth: sc.lw(1); fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 1.035; radiusY: reticle.rr * 1.035; startAngle: -72; sweepAngle: 54 * reticle.draw }
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 1.035; radiusY: reticle.rr * 1.035; startAngle: 18; sweepAngle: 54 * reticle.draw }
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 1.035; radiusY: reticle.rr * 1.035; startAngle: 108; sweepAngle: 54 * reticle.draw }
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 1.035; radiusY: reticle.rr * 1.035; startAngle: 198; sweepAngle: 54 * reticle.draw }
+                }
+                ShapePath {   // 토막 끝의 짧은 끝막이
+                    strokeColor: sc.light; strokeWidth: sc.lw(1.2); fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                    PathMultiline {
+                        paths: sc.radial(reticle.rr, 60, reticle.rr * 0.935, reticle.rr * 1.0, i => i % 15 === 1 || i % 15 === 14, reticle.draw)
                     }
                 }
-                Repeater {
-                    model: 4
-                    Item {
-                        x: reticle.rr; y: reticle.rr
-                        rotation: index * 90
-                        HText { plate: true;
-                            x: -width / 2; y: -reticle.rr - 20 * ov.u
-                            text: ("00" + index * 90).slice(-3)
-                            opacity: reticle.draw
-                            color: ov.gd(0.95); font.pixelSize: 11 * ov.u; font.weight: Font.Bold
+            }
+            // 정방위 홈: 바깥에서 안쪽을 가리키는 작은 삼각형 + 방위 숫자
+            Repeater {
+                model: 4
+                Item {
+                    x: reticle.rr; y: reticle.rr
+                    rotation: index * 90
+                    opacity: reticle.draw
+                    Shape {
+                        preferredRendererType: Shape.CurveRenderer
+                        ShapePath {
+                            strokeColor: sc.ink; strokeWidth: 1.5 * ov.u; fillColor: index === 0 ? sc.ice : sc.light
+                            joinStyle: ShapePath.MiterJoin
+                            PathPolyline { path: [Qt.point(-4 * ov.u, -reticle.rr * 1.02), Qt.point(4 * ov.u, -reticle.rr * 1.02),
+                                                  Qt.point(0, -reticle.rr * 0.94), Qt.point(-4 * ov.u, -reticle.rr * 1.02)] }
                         }
                     }
+                    SText {   // 방위 숫자는 위쪽에만 (옆은 사다리, 아래는 상태 표시 자리)
+                        visible: index === 0
+                        x: -width / 2; y: -reticle.rr * 1.04 - height - 2 * ov.u
+                        text: "000"
+                        color: sc.a(sc.light, 0.85)
+                        font.pixelSize: 9 * ov.u; font.letterSpacing: 1.5 * ov.u
+                    }
                 }
             }
-            // 소리 스펙트럼 고리 (목소리 · 마이크에 반응)
-            Repeater {
-                model: 48
-                Rectangle {
-                    readonly property real amp: (0.08 + ov.lvl * (0.35 + 0.65 * ov.rnd(index * 3.3 + ov.tick))) * (index < 48 * reticle.draw ? 1 : 0)
-                    width: 3.5 * ov.u; height: 3 * ov.u + 24 * ov.u * amp
-                    x: reticle.rr - width / 2
-                    y: reticle.rr - reticle.rr * 0.68 - height
-                    color: amp > 0.4 ? ov.hot : ov.c(0.55 + 0.45 * amp)
-                    border.color: ov.outline; border.width: 1 * ov.u
-                    transform: Rotation { origin.x: width / 2; origin.y: reticle.rr * 0.68 + height; angle: index * 7.5 }
+
+            // ---- 눈금 링: 3° 간격, 세 단계 길이 · 밝기 (천천히 반대로 돎) ----
+            Shape {
+                anchors.fill: parent
+                rotation: -ov.spin * 0.25
+                ShapePath {
+                    strokeColor: sc.a(sc.mid, 0.6); strokeWidth: sc.lw(1); fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                    PathMultiline { paths: sc.radial(reticle.rr, 120, reticle.rr * 0.90, reticle.rr * 0.925, i => i % 5 !== 0, reticle.draw) }
+                }
+                ShapePath {
+                    strokeColor: sc.light; strokeWidth: sc.lw(1.3); fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                    PathMultiline { paths: sc.radial(reticle.rr, 120, reticle.rr * 0.875, reticle.rr * 0.925, i => i % 5 === 0 && i % 10 !== 0, reticle.draw) }
+                }
+                ShapePath {
+                    strokeColor: sc.ice; strokeWidth: sc.lw(1.8); fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                    PathMultiline { paths: sc.radial(reticle.rr, 120, reticle.rr * 0.855, reticle.rr * 0.925, i => i % 10 === 0, reticle.draw) }
                 }
             }
-            // 분절 호 (시계 방향) + 아래 번짐
+
+            // ---- 분절 호: 가는 호 세 토막 + 밝은 마디 (천천히 돎) ----
             Shape {
                 anchors.fill: parent
                 rotation: ov.spin
                 preferredRendererType: Shape.CurveRenderer
-                ShapePath {
-                    strokeColor: ov.c(0.2); strokeWidth: 16 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
-                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.87; radiusY: reticle.rr * 0.87; startAngle: 10; sweepAngle: 60 * reticle.draw }
-                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.87; radiusY: reticle.rr * 0.87; startAngle: 215; sweepAngle: 85 * reticle.draw }
+                ShapePath {   // 궤도 실선 (아주 가늘게)
+                    strokeColor: sc.a(sc.deep, 0.75); strokeWidth: sc.lw(1); fillColor: "transparent"
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.765; radiusY: reticle.rr * 0.765; startAngle: 0; sweepAngle: 360 * reticle.draw }
                 }
                 ShapePath {
-                    strokeColor: ov.outline; strokeWidth: (6 * ov.u) + 3 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
-                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.87; radiusY: reticle.rr * 0.87; startAngle: 10; sweepAngle: 60 * reticle.draw }
-                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.87; radiusY: reticle.rr * 0.87; startAngle: 215; sweepAngle: 85 * reticle.draw }
+                    strokeColor: sc.ink; strokeWidth: 5 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.80; radiusY: reticle.rr * 0.80; startAngle: 10; sweepAngle: 62 * reticle.draw }
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.80; radiusY: reticle.rr * 0.80; startAngle: 100; sweepAngle: 62 * reticle.draw }
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.80; radiusY: reticle.rr * 0.80; startAngle: 215; sweepAngle: 92 * reticle.draw }
                 }
                 ShapePath {
-                    strokeColor: ov.accent; strokeWidth: 6 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
-                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.87; radiusY: reticle.rr * 0.87; startAngle: 10; sweepAngle: 60 * reticle.draw }
-                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.87; radiusY: reticle.rr * 0.87; startAngle: 215; sweepAngle: 85 * reticle.draw }
+                    strokeColor: sc.mid; strokeWidth: 2.6 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.80; radiusY: reticle.rr * 0.80; startAngle: 10; sweepAngle: 62 * reticle.draw }
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.80; radiusY: reticle.rr * 0.80; startAngle: 100; sweepAngle: 62 * reticle.draw }
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.80; radiusY: reticle.rr * 0.80; startAngle: 215; sweepAngle: 92 * reticle.draw }
                 }
-                ShapePath {
-                    strokeColor: ov.outline; strokeWidth: (6 * ov.u) + 3 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
-                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.87; radiusY: reticle.rr * 0.87; startAngle: 130; sweepAngle: 30 * reticle.draw }
-                }
-                ShapePath {
-                    strokeColor: ov.hot; strokeWidth: 6 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
-                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.87; radiusY: reticle.rr * 0.87; startAngle: 130; sweepAngle: 30 * reticle.draw }
+                ShapePath {   // 밝은 마디 (각 토막의 머리)
+                    strokeColor: sc.ice; strokeWidth: 2.6 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.80; radiusY: reticle.rr * 0.80; startAngle: 64; sweepAngle: 8 * reticle.draw }
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.80; radiusY: reticle.rr * 0.80; startAngle: 154; sweepAngle: 8 * reticle.draw }
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.80; radiusY: reticle.rr * 0.80; startAngle: 295; sweepAngle: 12 * reticle.draw }
                 }
             }
-            // 점선 고리 (반시계 방향)
+            // 스캔 표지: 분절 호 궤도를 반대 방향으로 훑는 작은 빛 + 짧게 흐려지는 꼬리. 생각 중에는 빠른 표지가 하나 더 돈다
+            Repeater {
+                model: 2
+                Shape {
+                    anchors.fill: parent
+                    preferredRendererType: Shape.CurveRenderer
+                    visible: index === 0 || sc.think > 0.01
+                    opacity: reticle.draw * (index === 0 ? 0.55 + 0.45 * sc.heat : sc.think)
+                    rotation: index === 0 ? -ov.t * 24 : ov.t * 110 + 180
+                    ShapePath {
+                        strokeColor: sc.a(sc.light, 0.18); strokeWidth: 2.6 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                        PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.80; radiusY: reticle.rr * 0.80
+                                       startAngle: index === 0 ? -90 : -114; sweepAngle: 24 }
+                    }
+                    ShapePath {
+                        strokeColor: sc.a(sc.light, 0.45); strokeWidth: 2.6 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                        PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.80; radiusY: reticle.rr * 0.80
+                                       startAngle: index === 0 ? -90 : -98; sweepAngle: 8 }
+                    }
+                    ShapePath {   // 머리: 짧은 방사선
+                        strokeColor: sc.ice; strokeWidth: sc.lw(1.6); fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                        PathMove { x: reticle.rr; y: reticle.rr - reticle.rr * 0.835 }
+                        PathLine { x: reticle.rr; y: reticle.rr - reticle.rr * 0.765 }
+                    }
+                }
+            }
+
+            // ---- 음성 링: 목소리 · 마이크에 반응하는 가는 막대 ----
+            Repeater {
+                model: 64
+                Rectangle {
+                    readonly property real amp: (0.06 + ov.lvl * (0.35 + 0.65 * ov.rnd(index * 3.3 + ov.tick))) * (index < 64 * reticle.draw ? 1 : 0)
+                    width: sc.lw(1.6); height: 2 * ov.u + 20 * ov.u * amp
+                    antialiasing: true
+                    x: reticle.rr - width / 2
+                    y: reticle.rr - reticle.rr * 0.66 - height
+                    color: amp > 0.45 ? sc.ice : amp < 0.15 ? sc.a(sc.mid, 0.45) : sc.a(sc.light, 0.45 + 0.55 * amp)
+                    transform: Rotation { origin.x: width / 2; origin.y: reticle.rr * 0.66 + height; angle: index * 5.625 }
+                }
+            }
+
+            // ---- 안쪽 보정 링: 점선 (반대로 돎) + 밝은 호 · 잔눈금 · 실선 ----
             Shape {
                 anchors.fill: parent
-                rotation: -ov.spin * 2.2
+                rotation: -ov.spin * 1.2
                 preferredRendererType: Shape.CurveRenderer
                 ShapePath {
-                    strokeColor: ov.outline; strokeWidth: (3 * ov.u) + 3 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
-                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.52; radiusY: reticle.rr * 0.52; startAngle: 0; sweepAngle: 300 * reticle.draw }
+                    strokeColor: sc.a(sc.light, 0.8); strokeWidth: sc.lw(1.8); fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                    strokeStyle: ShapePath.DashLine; dashPattern: [0.6, 2.6]
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.56; radiusY: reticle.rr * 0.56; startAngle: 0; sweepAngle: 300 * reticle.draw }
                 }
                 ShapePath {
-                    strokeColor: ov.c(0.75); strokeWidth: 3 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
-                    strokeStyle: ShapePath.DashLine; dashPattern: [2, 2.5]
-                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.52; radiusY: reticle.rr * 0.52; startAngle: 0; sweepAngle: 300 * reticle.draw }
+                    strokeColor: sc.ink; strokeWidth: 4 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.56; radiusY: reticle.rr * 0.56; startAngle: 312; sweepAngle: 36 * reticle.draw }
                 }
                 ShapePath {
-                    strokeColor: ov.outline; strokeWidth: (6 * ov.u) + 3 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
-                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.52; radiusY: reticle.rr * 0.52; startAngle: 310; sweepAngle: 40 * reticle.draw }
-                }
-                ShapePath {
-                    strokeColor: ov.hot; strokeWidth: 6 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
-                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.52; radiusY: reticle.rr * 0.52; startAngle: 310; sweepAngle: 40 * reticle.draw }
+                    strokeColor: sc.ice; strokeWidth: sc.lw(2); fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.56; radiusY: reticle.rr * 0.56; startAngle: 312; sweepAngle: 36 * reticle.draw }
                 }
             }
-            // 목소리 크기에 따라 늘어나는 호 (좌우)
             Shape {
                 anchors.fill: parent
                 preferredRendererType: Shape.CurveRenderer
                 ShapePath {
-                    strokeColor: ov.outline; strokeWidth: (4 * ov.u) + 3 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
-                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.4; radiusY: reticle.rr * 0.4
-                                   startAngle: 180 - (8 + 58 * ov.lvl) * reticle.draw; sweepAngle: 2 * (8 + 58 * ov.lvl) * reticle.draw }
-                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.4; radiusY: reticle.rr * 0.4
-                                   startAngle: -(8 + 58 * ov.lvl) * reticle.draw; sweepAngle: 2 * (8 + 58 * ov.lvl) * reticle.draw }
+                    strokeColor: sc.a(sc.mid, 0.5); strokeWidth: sc.lw(1); fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                    PathMultiline { paths: sc.radial(reticle.rr, 72, reticle.rr * 0.485, reticle.rr * 0.505, i => i % 9 !== 0, reticle.draw) }
                 }
                 ShapePath {
-                    strokeColor: ov.hot; strokeWidth: 4 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
-                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.4; radiusY: reticle.rr * 0.4
-                                   startAngle: 180 - (8 + 58 * ov.lvl) * reticle.draw; sweepAngle: 2 * (8 + 58 * ov.lvl) * reticle.draw }
-                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.4; radiusY: reticle.rr * 0.4
-                                   startAngle: -(8 + 58 * ov.lvl) * reticle.draw; sweepAngle: 2 * (8 + 58 * ov.lvl) * reticle.draw }
+                    strokeColor: sc.light; strokeWidth: sc.lw(1.2); fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                    PathMultiline { paths: sc.radial(reticle.rr, 72, reticle.rr * 0.465, reticle.rr * 0.515, i => i % 9 === 0, reticle.draw) }
+                }
+                ShapePath {
+                    strokeColor: sc.a(sc.deep, 0.9); strokeWidth: sc.lw(1); fillColor: "transparent"
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.45; radiusY: reticle.rr * 0.45; startAngle: -90; sweepAngle: 360 * reticle.draw }
                 }
             }
-            // 가장 가까운 타이머: 줄어드는 고리 + 남은 시간
+
+            // ---- 목소리 크기에 따라 좌우로 벌어지는 호 ----
+            Shape {
+                anchors.fill: parent
+                preferredRendererType: Shape.CurveRenderer
+                readonly property real half: (8 + 58 * ov.lvl) * reticle.draw
+                id: vox
+                ShapePath {
+                    strokeColor: sc.ink; strokeWidth: 4.5 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.40; radiusY: reticle.rr * 0.40; startAngle: 180 - vox.half; sweepAngle: 2 * vox.half }
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.40; radiusY: reticle.rr * 0.40; startAngle: -vox.half; sweepAngle: 2 * vox.half }
+                }
+                ShapePath {
+                    strokeColor: sc.light; strokeWidth: 2.2 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.40; radiusY: reticle.rr * 0.40; startAngle: 180 - vox.half; sweepAngle: 2 * vox.half }
+                    PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.40; radiusY: reticle.rr * 0.40; startAngle: -vox.half; sweepAngle: 2 * vox.half }
+                }
+            }
+
+            // ---- 가장 가까운 타이머: 줄어드는 고리 + 남은 시간 ----
             Item {
                 id: tmr
                 readonly property var t0: ov.timers.length ? ov.timers[0] : null
                 readonly property real frac: t0 ? ov.left(t0) / Math.max(1, t0.total) : 0
+                readonly property bool urgent: frac < 0.1
                 visible: t0 !== null
                 anchors.fill: parent
                 Shape {
                     anchors.fill: parent
                     preferredRendererType: Shape.CurveRenderer
                     ShapePath {
-                        strokeColor: ov.outline; strokeWidth: (5 * ov.u) + 3 * ov.u; fillColor: "transparent"
-                        PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.3; radiusY: reticle.rr * 0.3; startAngle: 0; sweepAngle: 360 }
+                        strokeColor: sc.a(sc.deep, 0.55); strokeWidth: 3 * ov.u; fillColor: "transparent"
+                        PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.30; radiusY: reticle.rr * 0.30; startAngle: 0; sweepAngle: 360 }
                     }
                     ShapePath {
-                        strokeColor: ov.c(0.25); strokeWidth: 5 * ov.u; fillColor: "transparent"
-                        PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.3; radiusY: reticle.rr * 0.3; startAngle: 0; sweepAngle: 360 }
-                    }
-                    ShapePath {
-                        strokeColor: ov.outline; strokeWidth: (5 * ov.u) + 3 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
-                        PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.3; radiusY: reticle.rr * 0.3
+                        strokeColor: sc.ink; strokeWidth: 5 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                        PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.30; radiusY: reticle.rr * 0.30
                                        startAngle: -90; sweepAngle: 360 * Math.max(0.002, tmr.frac) }
                     }
                     ShapePath {
-                        strokeColor: tmr.frac < 0.1 ? ov.red : ov.hot; strokeWidth: 5 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
-                        PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.3; radiusY: reticle.rr * 0.3
+                        strokeColor: tmr.urgent ? sc.a(sc.ice, 0.55 + 0.45 * ov.pulse) : sc.light; strokeWidth: 3 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                        PathAngleArc { centerX: reticle.rr; centerY: reticle.rr; radiusX: reticle.rr * 0.30; radiusY: reticle.rr * 0.30
                                        startAngle: -90; sweepAngle: 360 * Math.max(0.002, tmr.frac) }
                     }
                 }
-                HText { plate: true;
+                SText {
                     anchors.horizontalCenter: parent.horizontalCenter
                     y: reticle.rr + 14 * ov.u
                     text: tmr.t0 ? ov.hms(ov.left(tmr.t0)) : ""
-                    color: tmr.frac < 0.1 ? ov.red : ov.hot
-                    font.pixelSize: 15 * ov.u; font.weight: Font.Bold
-                }
-            }
-            // 가운데: 비행 경로 표시 (원 + 양 날개 + 꼬리)
-            Item {
-                x: reticle.rr; y: reticle.rr
-                opacity: reticle.draw
-                Rectangle {
-                    width: 18 * ov.u; height: width; radius: width / 2; x: -width / 2; y: -height / 2
-                    color: "transparent"; border.color: ov.hot; border.width: 3 * ov.u
-                    Rectangle { anchors.fill: parent; anchors.margins: -2 * ov.u; radius: width / 2; color: "transparent"; border.color: ov.outline; border.width: 2 * ov.u }
-                }
-                Rectangle { x: -9 * ov.u - 24 * ov.u; y: -3.5 * ov.u; width: 26 * ov.u; height: 7 * ov.u; color: ov.outline }
-                Rectangle { x: 7 * ov.u; y: -3.5 * ov.u; width: 26 * ov.u; height: 7 * ov.u; color: ov.outline }
-                Rectangle { x: -3.5 * ov.u; y: -9 * ov.u - 14 * ov.u; width: 7 * ov.u; height: 14 * ov.u; color: ov.outline }
-                Rectangle { x: -9 * ov.u - 22 * ov.u; y: -1.5 * ov.u; width: 22 * ov.u; height: 3 * ov.u; color: ov.hot }
-                Rectangle { x: 9 * ov.u; y: -1.5 * ov.u; width: 22 * ov.u; height: 3 * ov.u; color: ov.hot }
-                Rectangle { x: -1.5 * ov.u; y: -9 * ov.u - 12 * ov.u; width: 3 * ov.u; height: 12 * ov.u; color: ov.hot }
-                Rectangle {
-                    width: 5 * ov.u; height: width; radius: width / 2; x: -width / 2; y: -height / 2
-                    color: ov.gold; opacity: 0.5 + 0.5 * ov.pulse
-                }
-            }
-            Repeater {
-                model: 4
-                Item {
-                    x: reticle.rr; y: reticle.rr
-                    rotation: index * 90 + 45
-                    Rectangle {
-                        width: 10 * ov.u; height: 10 * ov.u; rotation: 45
-                        x: -width / 2; y: -reticle.rr - 12 * ov.u - 6 * ov.u * ov.pulse
-                        opacity: reticle.draw
-                        color: ov.accent
+                    color: tmr.urgent ? sc.ice : sc.light
+                    font.pixelSize: 14 * ov.u; font.letterSpacing: 1 * ov.u
+                    Rectangle {   // 십자선 위에 겹치므로 어두운 받침
+                        z: -1
+                        x: -4 * ov.u; y: 0
+                        width: parent.implicitWidth + 8 * ov.u; height: parent.implicitHeight
+                        color: Qt.rgba(0.0, 0.035, 0.09, 0.85)
+                        border.color: sc.a(sc.mid, 0.45); border.width: sc.lw(1)
                     }
                 }
             }
+
+            // ---- 가운데 표적: 점 + 가는 십자선 + 표적 꺾쇠 ----
+            Shape {
+                id: cross
+                x: reticle.rr; y: reticle.rr
+                opacity: reticle.draw
+                preferredRendererType: Shape.CurveRenderer
+                readonly property real i0: 15 * ov.u                 // 십자선 안쪽 끝
+                readonly property real i1: reticle.rr * 0.355       // 십자선 바깥 끝 (보정 링 안쪽)
+                readonly property real b: 24 * ov.u                  // 표적 꺾쇠 위치
+                readonly property real bl: 7 * ov.u                  // 꺾쇠 팔 길이
+                readonly property var lines: [
+                    [Qt.point(-i1, 0), Qt.point(-i0, 0)], [Qt.point(i0, 0), Qt.point(i1, 0)],
+                    [Qt.point(0, -i1), Qt.point(0, -i0)], [Qt.point(0, i0), Qt.point(0, i1)],
+                    // 십자선 끝막이 + 가운데 눈금
+                    [Qt.point(-i1, -4 * ov.u), Qt.point(-i1, 4 * ov.u)], [Qt.point(i1, -4 * ov.u), Qt.point(i1, 4 * ov.u)],
+                    [Qt.point(-4 * ov.u, -i1), Qt.point(4 * ov.u, -i1)], [Qt.point(-4 * ov.u, i1), Qt.point(4 * ov.u, i1)],
+                    [Qt.point(-(i0 + i1) / 2, -2.5 * ov.u), Qt.point(-(i0 + i1) / 2, 2.5 * ov.u)],
+                    [Qt.point((i0 + i1) / 2, -2.5 * ov.u), Qt.point((i0 + i1) / 2, 2.5 * ov.u)],
+                    [Qt.point(-2.5 * ov.u, -(i0 + i1) / 2), Qt.point(2.5 * ov.u, -(i0 + i1) / 2)],
+                    [Qt.point(-2.5 * ov.u, (i0 + i1) / 2), Qt.point(2.5 * ov.u, (i0 + i1) / 2)]]
+                readonly property var corners: [
+                    [Qt.point(-b, -b + bl), Qt.point(-b, -b), Qt.point(-b + bl, -b)],
+                    [Qt.point(b - bl, -b), Qt.point(b, -b), Qt.point(b, -b + bl)],
+                    [Qt.point(b, b - bl), Qt.point(b, b), Qt.point(b - bl, b)],
+                    [Qt.point(-b + bl, b), Qt.point(-b, b), Qt.point(-b, b - bl)]]
+                ShapePath {
+                    strokeColor: sc.ink; strokeWidth: 3.4 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                    PathMultiline { paths: cross.lines }
+                    PathMultiline { paths: cross.corners }
+                }
+                ShapePath {
+                    strokeColor: sc.light; strokeWidth: sc.lw(1.2); fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                    PathMultiline { paths: cross.lines }
+                }
+                ShapePath {
+                    strokeColor: sc.ice; strokeWidth: sc.lw(1.4); fillColor: "transparent"; capStyle: ShapePath.FlatCap
+                    joinStyle: ShapePath.MiterJoin
+                    PathMultiline { paths: cross.corners }
+                }
+                ShapePath {   // 가운데 작은 고리
+                    strokeColor: sc.a(sc.light, 0.9); strokeWidth: sc.lw(1.1); fillColor: "transparent"
+                    PathAngleArc { centerX: 0; centerY: 0; radiusX: 8 * ov.u; radiusY: 8 * ov.u; startAngle: 0; sweepAngle: 360 }
+                }
+            }
+            Rectangle {   // 조준점
+                x: reticle.rr - width / 2; y: reticle.rr - height / 2
+                width: 3.6 * ov.u; height: width; radius: width / 2
+                color: sc.ice
+                border.color: sc.ink; border.width: 0.8 * ov.u
+                opacity: reticle.draw * (0.7 + 0.3 * ov.pulse)
+            }
         }
 
-        // ---- 수평 사다리 (헬멧 기울기 · 오르내림): 조준경 바깥 양쪽 ----
+        // ---- 모서리 꺾쇠: 스캐너를 감싸는 정사각형의 네 모서리 (가늘고 대칭) ----
+        Shape {
+            id: frameBr
+            x: ov.cx; y: ov.cy
+            opacity: ov.seg(0.35, 0.7) * (1 - ov.dlin(0.1, 0.3))
+            visible: opacity > 0
+            preferredRendererType: Shape.CurveRenderer
+            readonly property real k: reticle.rr * 1.0
+            readonly property real l: 16 * ov.u
+            readonly property var arms: [
+                [Qt.point(-k, -k + l), Qt.point(-k, -k), Qt.point(-k + l, -k)],
+                [Qt.point(k - l, -k), Qt.point(k, -k), Qt.point(k, -k + l)],
+                [Qt.point(k, k - l), Qt.point(k, k), Qt.point(k - l, k)],
+                [Qt.point(-k + l, k), Qt.point(-k, k), Qt.point(-k, k - l)]]
+            ShapePath {
+                strokeColor: sc.ink; strokeWidth: 3.6 * ov.u; fillColor: "transparent"; capStyle: ShapePath.FlatCap; joinStyle: ShapePath.MiterJoin
+                PathMultiline { paths: frameBr.arms }
+            }
+            ShapePath {
+                strokeColor: sc.light; strokeWidth: sc.lw(1.5); fillColor: "transparent"; capStyle: ShapePath.FlatCap; joinStyle: ShapePath.MiterJoin
+                PathMultiline { paths: frameBr.arms }
+            }
+        }
+
+        // ---- 수평 사다리 (헬멧 기울기 · 오르내림): 스캐너 바깥 양쪽의 가는 선 ----
         Item {
             id: ladder
             x: ov.cx; y: ov.cy
             rotation: ov.roll * 1.6
             opacity: ov.seg(0.45, 0.8) * (1 - ov.dlin(0.1, 0.3))
             visible: opacity > 0
-            readonly property real gap: reticle.rr + 20 * ov.u
+            readonly property real gap: reticle.rr + 22 * ov.u
             Repeater {
                 model: [-2, -1, 0, 1, 2]
                 Item {
                     id: rung
                     readonly property int k: modelData
-                    readonly property real len: (k === 0 ? 70 : 40) * ov.u
+                    readonly property real len: (k === 0 ? 54 : 30) * ov.u
+                    readonly property real hook: k === 0 ? 0 : (k > 0 ? 5 : -5) * ov.u
                     y: -k * 44 * ov.u + ov.pitch * ov.u
                     Repeater {
                         model: 2
@@ -1206,34 +1401,35 @@ Window {
                             readonly property int sd: index === 0 ? -1 : 1
                             Shape {
                                 ShapePath {
-                                    strokeColor: ov.outline; strokeWidth: ((rung.k === 0 ? 4 : 3) * ov.u) + 3 * ov.u
+                                    strokeColor: sc.ink; strokeWidth: 3.4 * ov.u
                                     fillColor: "transparent"; capStyle: ShapePath.FlatCap; joinStyle: ShapePath.MiterJoin
                                     PathMove { x: sd * ladder.gap; y: 0 }
                                     PathLine { x: sd * (ladder.gap + rung.len); y: 0 }
-                                    PathLine { x: sd * (ladder.gap + rung.len); y: rung.k === 0 ? 0 : (rung.k > 0 ? 8 : -8) * ov.u }
+                                    PathLine { x: sd * (ladder.gap + rung.len); y: rung.hook }
                                 }
                                 ShapePath {
-                                    strokeColor: rung.k === 0 ? ov.hot : ov.gd(0.9); strokeWidth: (rung.k === 0 ? 4 : 3) * ov.u
+                                    strokeColor: rung.k === 0 ? sc.light : sc.a(sc.mid, 0.85); strokeWidth: sc.lw(rung.k === 0 ? 1.6 : 1.2)
                                     fillColor: "transparent"; capStyle: ShapePath.FlatCap; joinStyle: ShapePath.MiterJoin
-                                    strokeStyle: rung.k < 0 ? ShapePath.DashLine : ShapePath.SolidLine; dashPattern: [3, 2]
+                                    strokeStyle: rung.k < 0 ? ShapePath.DashLine : ShapePath.SolidLine; dashPattern: [4, 3]
                                     PathMove { x: sd * ladder.gap; y: 0 }
                                     PathLine { x: sd * (ladder.gap + rung.len); y: 0 }
-                                    PathLine { x: sd * (ladder.gap + rung.len); y: rung.k === 0 ? 0 : (rung.k > 0 ? 8 : -8) * ov.u }
+                                    PathLine { x: sd * (ladder.gap + rung.len); y: rung.hook }
                                 }
                             }
-                            HText { plate: true;
+                            SText {
                                 visible: rung.k !== 0
-                                x: sd < 0 ? -(ladder.gap + rung.len) - width - 6 * ov.u : ladder.gap + rung.len + 6 * ov.u
+                                x: sd < 0 ? -(ladder.gap + rung.len) - width - 5 * ov.u : ladder.gap + rung.len + 5 * ov.u
                                 y: -height / 2
                                 text: Math.abs(rung.k) * 10
-                                color: ov.gd(0.95); font.pixelSize: 11 * ov.u; font.weight: Font.Bold
+                                color: sc.a(sc.light, 0.8); font.pixelSize: 9 * ov.u
                             }
                         }
                     }
                 }
             }
         }
-        // 조준경 대각선 수치 — 모두 실제 값: 전원(배터리 · 충전) / 목소리 · 마이크 크기 / 내려받는 속도 / CPU · RAM
+        // 모서리 수치 — 모두 실제 값: 전원(배터리 · 충전) / 목소리 · 마이크 크기 / 내려받는 속도 / CPU · RAM
+        // 모서리 꺾쇠 바깥, 사다리와 겹치지 않는 높이에 둔다
         Repeater {
             model: [["PWR", ov.stats.bat === undefined || ov.stats.bat < 0 ? "AC LINE" : ov.stats.bat + " %" + (ov.stats.plugged ? " CHG" : "")],
                     ["VOX", Math.round(ov.lvl * 100) + " %"],
@@ -1241,39 +1437,99 @@ Window {
             Column {
                 readonly property bool onRight: index % 2 === 1
                 readonly property bool onBottom: index >= 2
-                readonly property real off: reticle.rr * 1.02
-                x: onRight ? ov.cx + off : ov.cx - off - width
-                y: onBottom ? ov.cy + off - height : ov.cy - off
+                x: onRight ? ov.cx + reticle.rr + 10 * ov.u : ov.cx - reticle.rr - 10 * ov.u - width
+                y: onBottom ? ov.cy + reticle.rr - 2 * ov.u : ov.cy - reticle.rr + 2 * ov.u - height
                 opacity: ov.seg(0.55, 0.85) * (1 - ov.dlin(0.1, 0.28))
                 spacing: 0
-                HText { plate: true; anchors.right: parent.onRight ? undefined : parent.right; text: modelData[0]
-                       color: ov.gd(0.95); font.pixelSize: 10 * ov.u; font.letterSpacing: 2 * ov.u; font.weight: Font.Bold }
-                HText { plate: true; anchors.right: parent.onRight ? undefined : parent.right; text: modelData[1]
-                       color: ov.hot; font.pixelSize: 16 * ov.u; font.weight: Font.Bold }
+                SText { anchors.right: parent.onRight ? undefined : parent.right; text: modelData[0]
+                        color: sc.a(sc.light, 0.75); font.pixelSize: 9 * ov.u; font.letterSpacing: 2.5 * ov.u }
+                SText { anchors.right: parent.onRight ? undefined : parent.right; text: modelData[1]
+                        color: sc.ice; font.pixelSize: 14 * ov.u; font.letterSpacing: 0.5 * ov.u }
             }
         }
 
-        // ---- 조준경 아래: 상태 글 + 턱선을 따라 휜 음성 파형 ----
-        Column {
-            anchors.horizontalCenter: parent.horizontalCenter
-            y: ov.cy + reticle.rr + 24 * ov.u
-            spacing: 4 * ov.u
+        // ---- 스캐너 아래: 상태 표시 (영문 상태 + 한국어 상태 글) ----
+        Item {
+            id: status
+            readonly property real padX: 18 * ov.u
+            readonly property real padY: 6 * ov.u
+            readonly property bool busy: ov.st === "speaking" || ov.st === "thinking" || ov.st === "listening"
+            width: Math.max(stCol.width, 120 * ov.u) + 2 * padX
+            height: stCol.height + 2 * padY
+            x: ov.cx - width / 2
+            y: ov.cy + reticle.rr + 18 * ov.u
             opacity: ov.seg(0.45, 0.7) * (1 - ov.dlin(0.06, 0.24))
-            Decode { plate: true;
-                anchors.horizontalCenter: parent.horizontalCenter
-                full: ov.down > 0 ? "DISENGAGING" : ov.p < 1 ? "ACTIVE MODE ENGAGED" : (ov.stateLabels[ov.st] || ov.st.toUpperCase())
-                t: ov.lin(0.45, 0.8); seed: 3
-                color: ov.down > 0 ? ov.ember : ov.hot
-                font.pixelSize: 20 * ov.u; font.letterSpacing: 9 * ov.u; font.weight: Font.Bold
+            visible: opacity > 0
+            Rectangle {   // 어두운 유리 판 + 가는 테
+                anchors.fill: parent
+                color: Qt.rgba(0.0, 0.035, 0.09, 0.72)
+                border.color: sc.a(sc.mid, 0.4); border.width: sc.lw(1)
             }
-            Decode { plate: true;
-                anchors.horizontalCenter: parent.horizontalCenter
-                full: jarvis.statusText
-                t: ov.lin(0.6, 0.92); seed: 5
-                color: ov.gd(0.95)
-                font.pixelSize: 12 * ov.u; font.letterSpacing: 1 * ov.u
+            Rectangle {   // 위쪽 빛 선 (가운데가 가장 밝음)
+                x: parent.width * 0.2; width: parent.width * 0.6; height: sc.lw(1)
+                gradient: Gradient {
+                    orientation: Gradient.Horizontal
+                    GradientStop { position: 0.0; color: sc.a(sc.light, 0) }
+                    GradientStop { position: 0.5; color: sc.a(sc.ice, 0.55 + 0.35 * sc.heat) }
+                    GradientStop { position: 1.0; color: sc.a(sc.light, 0) }
+                }
+            }
+            Shape {   // 네 모서리의 밝은 꺾쇠
+                anchors.fill: parent
+                readonly property real l: 6 * ov.u
+                id: stBr
+                ShapePath {
+                    strokeColor: sc.light; strokeWidth: sc.lw(1.4); fillColor: "transparent"; capStyle: ShapePath.FlatCap; joinStyle: ShapePath.MiterJoin
+                    PathMultiline { paths: [
+                        [Qt.point(0, stBr.l), Qt.point(0, 0), Qt.point(stBr.l, 0)],
+                        [Qt.point(status.width - stBr.l, 0), Qt.point(status.width, 0), Qt.point(status.width, stBr.l)],
+                        [Qt.point(status.width, status.height - stBr.l), Qt.point(status.width, status.height), Qt.point(status.width - stBr.l, status.height)],
+                        [Qt.point(stBr.l, status.height), Qt.point(0, status.height), Qt.point(0, status.height - stBr.l)]] }
+                }
+            }
+            Repeater {   // 양옆 상태 점: 응답 · 생각 · 듣는 중이면 맥박
+                model: 2
+                Rectangle {
+                    width: 5 * ov.u; height: width; rotation: 45
+                    x: index === 0 ? 7 * ov.u : status.width - 7 * ov.u - width
+                    y: status.padY + stEn.height / 2 - height / 2
+                    color: status.busy ? sc.ice : sc.a(sc.mid, 0.7)
+                    opacity: status.busy ? 0.45 + 0.55 * ov.pulse : 0.8
+                }
+            }
+            Column {
+                id: stCol
+                x: (status.width - width) / 2; y: status.padY
+                spacing: 3 * ov.u
+                Decode {
+                    id: stEn
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    full: ov.down > 0 ? "DISENGAGING" : ov.p < 1 ? "ACTIVE MODE ENGAGED" : (ov.stateLabels[ov.st] || ov.st.toUpperCase())
+                    t: ov.lin(0.45, 0.8); seed: 3
+                    color: ov.down > 0 ? sc.a(sc.light, 0.8) : sc.ice
+                    styleColor: sc.ink
+                    font.pixelSize: 16 * ov.u; font.letterSpacing: 7 * ov.u; font.weight: Font.DemiBold
+                    leftPadding: font.letterSpacing   // 글자 사이 간격이 오른쪽에만 남아 생기는 치우침을 맞춤
+                }
+                Rectangle {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    width: Math.max(40 * ov.u, stEn.width * 0.5); height: sc.lw(1)
+                    color: sc.a(sc.mid, 0.45)
+                }
+                Decode {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    full: jarvis.statusText
+                    t: ov.lin(0.6, 0.92); seed: 5
+                    width: Math.min(implicitWidth, 420 * ov.u)   // 긴 상태 글에 판이 한없이 넓어지지 않게
+                    elide: Text.ElideRight
+                    horizontalAlignment: Text.AlignHCenter
+                    color: sc.light
+                    styleColor: sc.ink
+                    font.pixelSize: 12 * ov.u; font.letterSpacing: 1 * ov.u; font.weight: Font.Normal
+                }
             }
         }
+        // ---- 턱선을 따라 휜 음성 파형 ----
         Item {
             id: wave
             readonly property real e: ov.seg(0.55, 0.85)
@@ -1290,18 +1546,18 @@ Window {
                     Rectangle {
                         x: -width / 2
                         y: wave.r
-                        width: 5 * ov.u
-                        height: Math.max(3 * ov.u, 40 * ov.u * parent.centerFade * (0.1 + ov.lvl * (0.5 + 0.5 * parent.wob)))
-                        color: parent.centerFade > 0.75 ? ov.hot : ov.c(0.5 + 0.5 * parent.centerFade)
-                        border.color: ov.outline; border.width: 1 * ov.u
+                        width: sc.lw(2.4)
+                        antialiasing: true
+                        height: Math.max(2 * ov.u, 36 * ov.u * parent.centerFade * (0.1 + ov.lvl * (0.5 + 0.5 * parent.wob)))
+                        color: parent.centerFade > 0.8 ? sc.ice : sc.a(sc.light, 0.35 + 0.6 * parent.centerFade)
                     }
                 }
             }
-            Repeater {   // 파형 양 끝의 굵은 괄호
+            Repeater {   // 파형 양 끝의 가는 괄호
                 model: 2
                 Item {
                     rotation: (index === 0 ? -1 : 1) * 30 * wave.e
-                    Rectangle { x: -2 * ov.u; y: wave.r - 6 * ov.u; width: 4 * ov.u; height: 26 * ov.u; color: ov.gold }
+                    Rectangle { x: -0.75 * ov.u; y: wave.r - 4 * ov.u; width: sc.lw(1.5); height: 20 * ov.u; color: sc.a(sc.mid, 0.9) }
                 }
             }
         }
