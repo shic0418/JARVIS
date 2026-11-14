@@ -337,6 +337,43 @@ class SpeakerGate:
             return s >= th - FOCUS_SLACK and cosine(voice.emb, session) >= FOCUS_SAME
         return False
 
+    def barge_ok(self, voice: Voice | None, strict: bool = False) -> bool:
+        """말 끊기: 확실히 다른 목소리(스피커에서 되돌아온 자비스 자신의 목소리 포함)만 막는다. 기준 목소리는 바꾸지 않는다.
+        주인 전용이면 주인 프로필과, 세션 잠금이면 방금 부른 사람과 비교한다. 판별할 수 없으면 통과.
+
+        strict=True 는 끼어든 말의 명령("자비스, …")을 실행해도 되는가 — 멈추기만 하는 것보다 엄격하게,
+        평소 명령의 check(wake=True) 와 같은 기준으로 본다 (세션·프로필은 바꾸지 않는다).
+        주인 전용에서 지문이 없으면(너무 짧음 · 계산 실패) 거부한다."""
+        if strict:
+            return self._barge_command_ok(voice)
+        if voice is None or not self.vid.ready:
+            return True
+        th = self.threshold()
+        if self.owner_mode():
+            return self._owner_score(voice) >= th - PREFILTER_MARGIN
+        if self.cfg["speaker_lock"] and self.session is not None:
+            return cosine(voice.emb, self.session) >= th - FOCUS_SLACK
+        return True
+
+    def _barge_command_ok(self, voice: Voice | None) -> bool:
+        """check(voice, wake=True) 의 주인 전용 통과 기준을 부작용 없이 그대로 따른다.
+        세션 잠금만 켜져 있으면 평소에도 호출어가 새 세션을 열므로 통과 (check 와 같다)."""
+        if not self.owner_mode() or not self.vid.ready:
+            return True
+        if voice is None:
+            return False
+        s = self._owner_score(voice)
+        th = self.threshold()
+        if round(s, 2) >= th:
+            return True
+        if self.session is not None:
+            same = cosine(voice.emb, self.session)
+            if self.focused and s >= th - FOCUS_SLACK and same >= FOCUS_SAME:
+                return True
+            if s >= th - OWNER_SLACK and same >= th + ABSORB_MARGIN:
+                return True
+        return False
+
     def best_voice(self, pcm: np.ndarray) -> Voice | None:
         """(인식 스레드) 발화를 2초 창으로 훑어 기준 목소리(주인 프로필)와 가장 닮은 창의 지문을 돌려준다.
         시끄러운 곳에서는 한 구간에 주인 말과 남의 큰 소리가 같이 들어간다 — 통째로 비교하면 주인도 낮게 나온다

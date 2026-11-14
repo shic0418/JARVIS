@@ -47,6 +47,7 @@ DEFAULTS: dict = {
     "beamforming": True,              # 마이크가 2개 이상이면 정면에서 온 목소리만 강조 (옆 사람·TV 소리 줄임)
     "agc": True,                      # 자동 음량 조절: 멀리서 작게 들어오는 목소리를 실시간으로 키움
     "follow_up_seconds": 7,           # 대답 후 호출어 없이 이어 말할 수 있는 시간
+    "barge_in": True,                 # 말 끊기: 자비스가 말하는 도중 "그만" · "자비스, …" 라고 하면 멈추고 듣는다 (오프라인 인식 필요)
     # --- 자유 대화 모드 ---
     "chat_idle_seconds": 40,          # 대화 모드에서 이 시간 동안 아무 말이 없으면 대화 모드 종료
     "chat_model": "",                 # 대화 모드 모델 (비우면 pro_model). Pro: haiku | sonnet | opus

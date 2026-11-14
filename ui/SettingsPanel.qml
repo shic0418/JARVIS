@@ -63,6 +63,7 @@ Item {
         voiceBox.currentIndex = Math.max(0, voices.findIndex(m => m.v === cfg.tts_voice))
         fxSw.checked = cfg.voice_fx !== false
         wakeSw.checked = !!cfg.wake_word_enabled
+        bargeSw.checked = cfg.barge_in !== false
         searchSw.checked = !!cfg.web_search
         approveSw.checked = !!cfg.auto_approve
         sens.value = cfg.mic_sensitivity || 1.0
@@ -99,6 +100,7 @@ Item {
             tts_voice: voices[voiceBox.currentIndex].v,
             voice_fx: fxSw.checked,
             wake_word_enabled: wakeSw.checked,
+            barge_in: bargeSw.checked,
             web_search: searchSw.checked,
             auto_approve: approveSw.checked,
             mic_sensitivity: Math.round(sens.value * 10) / 10,
@@ -300,6 +302,7 @@ Item {
                 Combo { id: sttBox; model: sp.sttEngines }
                 Hint { text: sp.cfg.stt_status || ""; font.pixelSize: 11 }
                 Toggle { id: wakeSw; text: "“자비스” 호출어 상시 대기" }
+                Toggle { id: bargeSw; text: "말 끊기 — 말하는 도중 “그만” · “자비스, …”로 멈추기" }
 
                 Label2 { text: "VOICE ID  ·  화자 인식"; Layout.topMargin: 10 }
                 Hint {

@@ -27,7 +27,7 @@ from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickWindow  # noqa: F401  (루트 객체를 QQuickWindow 로 받기 위해 필요)
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
-from . import agenda, approval, hearing, hud_feed, persona, proactive, winutil
+from . import agenda, approval, barge, hearing, hud_feed, persona, proactive, winutil
 from .brain import _SOURCES, Brain, situation_text
 from .config import DATA_DIR, ROOT, UI_DIR, Config
 from .hotkey import GlobalHotkey
@@ -222,6 +222,8 @@ class Jarvis(QObject):
     sig_timer_cancel = Signal()
     sig_point = Signal(int, int, int, int, str)   # 화면 위치 짚기 (실제 픽셀 x, y, w, h, 라벨)
     sig_proactive = Signal(str, bool)  # 먼저 말 걸기 (할 말, 소리 내어 말할지)
+    sig_barge_start = Signal()         # 말 끊기: 말하는 도중 사람 소리가 끼어들기 시작
+    sig_barge = Signal(object, object) # 말 끊기: 끼어든 말을 받아 적은 글 (못 받으면 None), 목소리 지문
 
     def __init__(self, app: QApplication, args) -> None:
         super().__init__()
@@ -276,7 +278,8 @@ class Jarvis(QObject):
                           (self.sig_stream, self._on_stream), (self.sig_mode, self._on_mode),
                           (self.sig_notify, self._on_notify), (self.sig_hud, self._on_hud),
                           (self.sig_feed, self._on_feed), (self.sig_timer_cancel, self._cancel_timers),
-                          (self.sig_point, self._on_point), (self.sig_proactive, self._on_proactive)):
+                          (self.sig_point, self._on_point), (self.sig_proactive, self._on_proactive),
+                          (self.sig_barge_start, self._on_barge_start), (self.sig_barge, self._on_barge)):
             sig.connect(slot)
 
         # ---- 음성 출력 ----
@@ -359,6 +362,14 @@ class Jarvis(QObject):
         # 주인이 불러서 확인된 대화 중에는 그 목소리에만 집중한다 (목소리 등록 중에는 쓰지 않음)
         self.listener.focus = lambda: self.gate.focused and not self._enroll
         self.listener.embedder_babble = self.gate.best_voice
+        # ---- 말 끊기 (barge.py) ----
+        self.listener.barge_enabled = self._barge_on
+        self.listener.echo_level = self.speaker.recent_level
+        self.listener.on_barge_start = self.sig_barge_start.emit
+        self.listener.on_barge = self.sig_barge.emit
+        self._last_said = ""
+        self._speak_n = 0                       # 말하기를 시작할 때마다 하나씩
+        self._barge_n = -1                      # 끼어든 소리가 시작될 때의 말하기 번호
         if self.cfg["owner_only"] and not self.profile.exists:
             self.cfg.update({"owner_only": False})
         self._on_voice_status()
@@ -804,14 +815,18 @@ class Jarvis(QObject):
             reply = f"오류가 발생했습니다: {e}"
         self.sig_reply.emit(reply, gen)
 
-    def _cancel_busy(self) -> None:
+    def _cancel_busy(self, speak: bool = True) -> None:
+        """하던 작업을 멈춘다. speak=False 면 '취소했습니다'를 말하지 않는다 (곧바로 다른 명령을 실행할 때)."""
         self._cancel.set()
         self._gen += 1
         self.busy = False
         for cid in list(self._confirms):
             self.answer_confirm(cid, False)
         self.bridge.set("replyText", "작업을 취소했습니다.")
-        self.say(persona.pick(persona.CANCELLED), follow_up=False)
+        if speak:
+            self.say(persona.pick(persona.CANCELLED), follow_up=False)
+        else:
+            self.tts.cancel()
 
     @Slot(int, str)
     def _on_stream(self, gen: int, delta: str) -> None:
@@ -822,6 +837,7 @@ class Jarvis(QObject):
             if not delta.strip():
                 return                      # 내용 없는 줄바꿈만 온 경우 아직 시작하지 않음
             self._stream_gen, self._stream_buf, self._stream_text = gen, "", ""
+            self._last_said = ""            # 말 끊기: 이제부터 읽는 글은 흘러 들어오는 답이다
             self._stream_cut = False
             self._follow_up = True
             self.tts.stream_begin()
@@ -829,6 +845,7 @@ class Jarvis(QObject):
             return                          # 출처 목록이 시작된 뒤의 글은 읽지도 보여 주지도 않는다
         self._stream_buf += delta
         self._stream_text += delta
+        self._last_said += delta
         m = _SOURCES.search(self._stream_text)
         if m:
             drop = len(self._stream_text) - m.start()
@@ -858,6 +875,7 @@ class Jarvis(QObject):
                 for sent in split_sentences(reply, final=True)[0]:
                     self.tts.stream_feed(sent)
                 spoken = f"{spoken} {reply}".strip()
+                self._last_said = f"{self._last_said} {reply}"      # 말 끊기의 에코 판단에도 넣는다
             self.tts.stream_end()
             self.bridge.set("replyText", spoken or (reply or ""))
             return
@@ -870,6 +888,7 @@ class Jarvis(QObject):
     # ================================================================== 말하기
     def say(self, text: str, follow_up: bool = True) -> None:
         self._follow_up = follow_up
+        self._last_said = text or ""
         sentences, _ = split_sentences(text, final=True)
         if len(sentences) <= 1:
             self.tts.say(text)
@@ -882,6 +901,7 @@ class Jarvis(QObject):
 
     @Slot()
     def _on_speak_start(self) -> None:
+        self._speak_n += 1                      # 말 끊기: 몇 번째 말하기인가 (늦게 온 결과가 다음 말을 끊지 않게)
         self.listener.muted = True
         self._set_state("speaking")
 
@@ -908,6 +928,83 @@ class Jarvis(QObject):
     def _unmute(self) -> None:
         if not self.speaker.playing:
             self.listener.muted = False
+
+    # ================================================================== 말 끊기
+    def _barge_on(self) -> bool:
+        """(VAD 스레드) 지금 말하는 도중의 끼어들기를 들을 것인가."""
+        return (self.cfg["barge_in"] is not False and self.speaker.playing and self.local_stt.ready
+                and not self._enroll and self.mic_ok)
+
+    def _spoken_now(self) -> str:
+        """지금 읽고 있는 글 — 끼어든 말이 이 안에 있으면 스피커에서 되돌아온 에코로 본다."""
+        return self._last_said
+
+    @Slot()
+    def _on_barge_start(self) -> None:
+        self._barge_n = self._speak_n
+        if self.speaker.playing:
+            self.speaker.duck(True)
+
+    @Slot(object, object)
+    def _on_barge(self, text, voice) -> None:
+        same = self._barge_n == self._speak_n          # 끼어든 소리가 시작될 때 읽던 그 말인가
+        spoken = self._spoken_now()
+        # 승인 카드 · 되물음을 읽는 중의 거부("취소" · "아니")는 대답으로 넘긴다. 승인은 받지 않는다 — 카드를 읽는 자비스
+        # 목소리(에코)로 저절로 승인될 수 있으므로, 다 읽은 뒤 평소처럼 대답받는다
+        if text and same and self.speaker.playing and (self._pending_confirm or self._pending_ask is not None):
+            verdict = approval.answer(self._strip_wake(text) or text)
+            if verdict is False and not barge.is_echo(text, spoken) and self.gate.barge_ok(voice):
+                log.info("말 끊기 → 거부로 대답")
+                self.tts.cancel()
+                if self._pending_confirm:
+                    self.answer_confirm(self._pending_confirm, False)
+                else:
+                    self._answer_ask(text, voice)
+                return
+        hit = barge.classify(text, spoken, tuple(self.cfg["wake_words"] or ("자비스",))) if text else None
+        ok = hit is not None and same and self.gate.barge_ok(voice)
+        if hit is not None and not self.gate.barge_ok(voice):
+            log.info("말 끊기: 다른 목소리라 무시")
+        command, dropped = "", False
+        if ok and hit[0] == "wake" and hit[1] and not self._is_fragment(hit[1]):
+            # 멈추기는 느슨하게 받지만, 명령 실행은 평소 명령과 같은 기준으로 주인 목소리를 확인한다
+            # (말하는 중에는 평소 인식이 꺼져 있다 — 이 입구로 남의 "자비스, …" 가 들어오지 않게)
+            if self.gate.barge_ok(voice, strict=True):
+                command = hit[1]
+            else:
+                log.info("말 끊기: 목소리를 확인하지 못해 명령은 받지 않음")
+                dropped = True
+        if not ok or not self.speaker.playing:
+            self.speaker.duck(False)
+            # 받아 적는 사이에 자비스가 말을 마쳤다 — '자비스, 볼륨 줄여' 의 명령은 버리지 않는다 (듣기를 멈춘 사이의 말이다)
+            if command and not self.busy:
+                self.run_command(command)
+            if dropped:
+                self._barge_dropped_notice()
+            return
+        log.info("말 끊기 → %s", "멈추고 명령" if command else "멈춤")
+        if self.busy:
+            self._cancel_busy(speak=not command)      # 답을 만들며 읽는 중이었다 — 작업까지 멈춘다
+            if command:
+                self.run_command(command)
+            if dropped:
+                self._barge_dropped_notice()
+            return
+        self.tts.cancel()
+        if command:
+            self.run_command(command)
+        else:
+            self._arm()
+            if dropped:
+                self._barge_dropped_notice()
+
+    def _barge_dropped_notice(self) -> None:
+        """끼어든 명령을 목소리 확인 때문에 버렸다 — 조용히 사라지지 않게 다시 말해 달라고 알린다."""
+        msg = "목소리를 확인하지 못해 명령은 실행하지 않았습니다. 다시 말씀해 주세요"
+        if self.bridge._state == "listening":
+            self.bridge.set("statusText", msg)
+        else:
+            self.bridge.toast.emit("warn", msg)
 
     # ================================================================== 도구 이벤트
     @Slot(str, str, str, str)

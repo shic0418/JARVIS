@@ -25,6 +25,7 @@ log = logging.getLogger("jarvis.speech")
 TMP = Path(tempfile.gettempdir()) / "jarvis_tts"
 TMP.mkdir(exist_ok=True)
 SR = 24000            # edge-tts 원음과 같은 표본율 (SAPI 음성도 이 값으로 맞춰 디코딩)
+DUCK_VOLUME = 0.25    # 말 끊기: 사람이 끼어든 것 같으면 자비스 목소리를 이만큼으로 줄인다
 
 
 def _try_unlink(p: Path) -> None:
@@ -284,9 +285,23 @@ class Speaker(QObject):
         self._session = False      # started 를 보낸 뒤 아직 finished 를 보내지 않음
         self._gap = 0.0            # 다음 조각 앞에 둘 쉼(초)
         self._out_lvl = 0.0
+        # 말 끊기용: 최근에 내보낸 소리 크기 [(시각, RMS int16 스케일)] — 마이크로 되돌아올 에코 크기를 짐작한다
+        self._sent: collections.deque[tuple[float, float]] = collections.deque(maxlen=120)
+        self._vol = 1.0            # 지금 음량 배율 (사람이 끼어들면 줄인다)
+        self._vol_target = 1.0
         self._timer = QTimer(self)
         self._timer.setInterval(33)
         self._timer.timeout.connect(self._tick)
+
+    def duck(self, on: bool) -> None:
+        """사람이 끼어든 것 같으면 자비스 목소리를 줄여 그 말이 잘 들리게 한다 (on=False 면 되돌림)."""
+        self._vol_target = DUCK_VOLUME if on else 1.0
+
+    def recent_level(self, window: float = 0.35) -> float:
+        """(아무 스레드) 지금 마이크에 되돌아오고 있을 에코의 원인 — 최근 window 초 + 출력 지연 동안 내보낸 소리의 최댓값."""
+        since = time.monotonic() - window - self._latency
+        with self._lock:
+            return max((lvl for t, lvl in self._sent if t >= since), default=0.0)
 
     @property
     def playing(self) -> bool:
@@ -376,6 +391,7 @@ class Speaker(QObject):
         self._close()
         self._timer.stop()
         self._session = False
+        self._vol = self._vol_target = 1.0
         self._out_lvl = 0.0
         self.level.emit(0.0)
         self.finished.emit()
@@ -401,8 +417,16 @@ class Speaker(QObject):
                     self._dry_since = time.monotonic()
         if filled:
             seg = out[:filled]
+            if self._vol != 1.0 or self._vol_target != 1.0:
+                # 한 번에 바꾸면 딱 소리가 난다 — 이 조각 안에서 목표 음량까지 부드럽게
+                target = self._vol_target
+                step = max(-0.25, min(0.25, target - self._vol))
+                seg *= np.linspace(self._vol, self._vol + step, filled, dtype=np.float32)
+                self._vol += step
             rms = float(np.sqrt(np.mean(seg * seg)))
             self._out_lvl = max(self._out_lvl * 0.6, min(1.0, rms * 2.8))
+        with self._lock:
+            self._sent.append((time.monotonic(), float(np.sqrt(np.mean(out * out))) * 32768.0 if frames else 0.0))
 
     def _tick(self) -> None:
         self.level.emit(self._out_lvl)

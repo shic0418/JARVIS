@@ -37,6 +37,7 @@ from typing import Any, Callable
 import numpy as np
 
 from .frontend import MAX_CHANNELS, Agc, Beamformer
+from .barge import FLOOR as BARGE_FLOOR, START_BLOCKS as BARGE_START_BLOCKS, BargeDetector
 from .local_stt import LocalSTT
 from .noise import NoiseModels, StreamVad, vad_threshold
 
@@ -49,6 +50,8 @@ MIN_SPEECH_BLOCKS = 7      # 실제 소리가 난 블록이 210ms 미만이면 �
 START_BLOCKS = 3           # 기준을 90ms 연속 넘으면 발화 시작
 SILENCE_END_BLOCKS = 27    # 810ms 무음이면 발화 종료
 MAX_UTTER_BLOCKS = 500     # 최대 15초
+BARGE_ONSET_BLOCKS = BARGE_START_BLOCKS + 2  # 말 끊기: 미리 담은 앞 구간 중 감지에 걸린 블록 + 약한 첫소리 60ms 만 지문에 넣는다 (그 앞은 자비스 에코)
+BARGE_EMBED_MIN = RATE // 2  # 지문은 0.5초 이상이어야 잰다 (voiceid.MIN_SECONDS 와 같은 값) — 앞 구간은 이만큼 남는 데까지만 뺀다
 
 # VAD 기준 (음성 대역 RMS, int16 스케일)
 NOISE_FACTOR = 2.5         # 소음 대비 이 배수를 넘으면 말소리로 봄 (감도로 나눔)
@@ -156,6 +159,14 @@ def voice_part(pcm: np.ndarray, tail: int, near: np.ndarray | None) -> np.ndarra
     return pcm[:max(0, len(pcm) - tail)]
 
 
+def barge_voice_part(pcm: np.ndarray, lead: int) -> np.ndarray:
+    """말 끊기 구간에서 목소리 지문을 잴 부분 — 앞에 미리 담은 소리(스피커에서 되돌아온 자비스 목소리)를 뺀다.
+    받아 적기에는 말 첫소리가 잘리지 않게 통째로 쓰지만, 지문에 에코가 섞이면 주인도 낮게 나와 명령이 거부된다.
+    짧은 "그만" 처럼 다 빼면 0.5초가 안 되면, 판별할 수 있는 길이가 남는 데까지만 뺀다."""
+    cut = min(lead, len(pcm) - BARGE_EMBED_MIN)
+    return pcm[cut:] if cut > 0 else pcm
+
+
 class Listener:
     """백그라운드에서 계속 마이크를 듣는다.
 
@@ -221,6 +232,16 @@ class Listener:
         self.focus: Callable[[], bool] = lambda: False
         self._ignored: collections.Counter = collections.Counter()
         self._ignored_at = time.monotonic()
+        # ---- 말 끊기 (barge.py): 자비스가 말하는 동안(muted)에도 끼어든 짧은 말만 PC 안에서 받아 적는다 ----
+        self.barge_enabled: Callable[[], bool] = lambda: False   # 지금 말 끊기를 들을 것인가 (app)
+        self.echo_level: Callable[[], float] = lambda: 0.0        # 지금 되돌아올 에코의 원인 크기 (speaker.recent_level)
+        self.on_barge_start: Callable[[], None] = lambda: None    # 끼어든 소리 시작 (app 이 자비스 목소리를 줄인다)
+        self.on_barge: Callable[[str | None, Any], None] = lambda text, voice: None   # 받아 적은 글 (못 받으면 None)
+        self._barge = BargeDetector()
+        self._barge_pre: collections.deque = collections.deque(maxlen=10)
+        self._barge_buf: list[np.ndarray] = []
+        self._barge_lead = 0       # 잘라 낸 구간 앞에 붙은 '감지 전' 소리의 길이 (샘플) — 목소리 지문에서는 뺀다
+        self._barge_q: queue.Queue = queue.Queue(maxsize=4)
 
     # ---------- lifecycle ----------
     def start(self) -> bool:
@@ -234,6 +255,7 @@ class Listener:
             return False
         threading.Thread(target=self._vad_loop, daemon=True, name="vad").start()
         threading.Thread(target=self._stt_loop, daemon=True, name="stt").start()
+        threading.Thread(target=self._barge_loop, daemon=True, name="barge").start()
         return True
 
     def _open(self, sd):
@@ -332,7 +354,9 @@ class Listener:
                 in_speech, speech, loud_run, silent_run = False, [], 0, 0
                 pre_roll.clear()
                 was_muted = True
+                self._barge_feed(block if self.muted and self.enabled else None)
                 continue
+            self._barge_feed(None)
 
             # ---- 음성 감지 AI 준비/갱신 ----
             nm = self.noise_models if self.noise_robust else None
@@ -439,6 +463,69 @@ class Listener:
                         self.last_miss = ""
                         self.on_utterance(None, None)
                     speech = []
+
+    # ---------- 말 끊기 ----------
+    def _barge_feed(self, block: np.ndarray | None) -> None:
+        """(VAD 스레드) 자비스가 말하는 동안의 마이크 블록. 예상 에코보다 확실히 큰 소리 구간을 잘라 인식 대기열에 넣는다."""
+        det = self._barge
+        try:
+            on = block is not None and bool(self.barge_enabled())
+        except Exception:
+            on = False
+        if not on:
+            if det.active:
+                self.on_barge(None, None)                 # 말하기가 끝났다 — 줄인 소리를 되돌릴 일도 없지만 상태를 닫는다
+            det.reset()
+            self._barge_pre.clear()
+            self._barge_buf = []
+            return
+        e = band_rms(block)
+        try:
+            ref = float(self.echo_level())
+        except Exception:
+            ref = 0.0
+        self._barge_pre.append(block)
+        ev = det.feed(e, ref, max(BARGE_FLOOR, ABS_FLOOR / self.sensitivity))
+        if ev == "start":
+            self._barge_buf = list(self._barge_pre)
+            self._barge_lead = max(0, len(self._barge_pre) - BARGE_ONSET_BLOCKS) * BLOCK
+            log.info("말 끊기 후보: 소리 %.0f / 예상 에코 기준 %.0f", e, det.th)
+            self.on_barge_start()
+        elif det.active:
+            self._barge_buf.append(block)
+        elif ev == "end":
+            self._barge_buf.append(block)
+            try:
+                self._barge_q.put_nowait((np.concatenate(self._barge_buf), self._barge_lead))
+            except queue.Full:
+                self.on_barge(None, None)                 # 받아 적지 못한다 — 줄인 목소리를 되돌리게 알린다
+            self._barge_buf = []
+        elif ev == "drop":
+            self._barge_buf = []
+            self.on_barge(None, None)
+
+    def _barge_loop(self) -> None:
+        """(말 끊기 인식 스레드) 잘라 낸 구간을 오프라인으로 받아 적고 목소리 지문을 계산해 앱에 넘긴다.
+        말하는 동안의 소리는 Google 로 보내지 않는다."""
+        while not self._stop.is_set():
+            try:
+                item = self._barge_q.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            pcm, lead = item if isinstance(item, tuple) else (item, 0)
+            text, voice = None, None
+            try:
+                stt = self.local_stt
+                text = stt.recognize(prepare_for_stt(pcm)) if stt is not None and stt.ready else None
+            except Exception as e:
+                log.warning("말 끊기 인식 실패: %s", e)
+            if text and self.embedder is not None:
+                try:
+                    voice = self.embedder(barge_voice_part(pcm, lead))
+                except Exception as e:
+                    log.warning("말 끊기 목소리 지문 실패: %s", e)
+            log.info("말 끊기 후보 %.1f초 · %s", len(pcm) / RATE, f"{len(text)}자" if text else "인식 안 됨")
+            self.on_barge(text.strip() if text else None, voice)
 
     # ---------- STT ----------
     def _recognize(self, rec, sr, pcm: np.ndarray) -> str | None:
