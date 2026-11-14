@@ -300,8 +300,14 @@ class Speaker(QObject):
     def recent_level(self, window: float = 0.35) -> float:
         """(아무 스레드) 지금 마이크에 되돌아오고 있을 에코의 원인 — 최근 window 초 + 출력 지연 동안 내보낸 소리의 최댓값."""
         since = time.monotonic() - window - self._latency
+        best = 0.0
         with self._lock:
-            return max((lvl for t, lvl in self._sent if t >= since), default=0.0)
+            for t, lvl in reversed(self._sent):        # 시각 순으로 쌓이니 오래된 쪽을 만나면 멈춘다 (30ms 마다 불린다)
+                if t < since:
+                    break
+                if lvl > best:
+                    best = lvl
+        return best
 
     @property
     def playing(self) -> bool:

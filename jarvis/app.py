@@ -962,8 +962,9 @@ class Jarvis(QObject):
                     self._answer_ask(text, voice)
                 return
         hit = barge.classify(text, spoken, tuple(self.cfg["wake_words"] or ("자비스",))) if text else None
-        ok = hit is not None and same and self.gate.barge_ok(voice)
-        if hit is not None and not self.gate.barge_ok(voice):
+        voice_ok = hit is not None and self.gate.barge_ok(voice)
+        ok = voice_ok and same
+        if hit is not None and not voice_ok:
             log.info("말 끊기: 다른 목소리라 무시")
         command, dropped = "", False
         if ok and hit[0] == "wake" and hit[1] and not self._is_fragment(hit[1]):
