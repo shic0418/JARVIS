@@ -853,7 +853,10 @@ class Jarvis(QObject):
                 self.tts.stream_feed(sent)
             spoken = re.sub(r"\s*\n\s*", " ", self._stream_text).strip()
             if reply and reply.strip() and reply.strip()[:20] not in spoken:
-                self.tts.stream_feed(reply)        # 스트리밍 뒤 다른 답(오류 안내 등)이 온 경우
+                # 스트리밍 뒤 다른 답(오류 안내 · 클래스룸 정리처럼 먼저 한마디 한 뒤의 답)이 온 경우 — 길 수 있으니
+                # 문장마다 나눠 합성한다 (한 덩어리로 합성하면 첫 소리가 늦고 뒷부분이 잘릴 수 있다)
+                for sent in split_sentences(reply, final=True)[0]:
+                    self.tts.stream_feed(sent)
                 spoken = f"{spoken} {reply}".strip()
             self.tts.stream_end()
             self.bridge.set("replyText", spoken or (reply or ""))

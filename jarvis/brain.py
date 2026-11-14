@@ -480,7 +480,7 @@ class Brain:
                     log.exception("브리핑 기록 실패")
             return "local", reply
         # 클래스룸이 먼저: '클래스룸 과제 할 일에 넣어 줘' 를 할 일 추가로 받지 않게
-        done = self._classroom(text) or self._todo(text) or self._agenda(text)
+        done = self._classroom(text, on_text) or self._todo(text) or self._agenda(text)
         if done:
             return "local", done
         self.local.chat = self.chat_mode
@@ -624,10 +624,12 @@ class Brain:
             log.exception("할 일 처리 실패")
             return None
 
-    def _classroom(self, text: str) -> str | None:
-        """'클래스룸 정리해 줘' · '클래스룸 과제 할 일에 넣어 줘' (classroom.py). 상관없는 말이면 None."""
+    def _classroom(self, text: str, on_text=None) -> str | None:
+        """'클래스룸 정리해 줘' · '클래스룸 과제 할 일에 넣어 줘' (classroom.py). 상관없는 말이면 None.
+        크롬을 열어 읽는 데 몇 초 걸리므로, 읽기 시작할 때 먼저 한마디 한다 (조용하면 안 듣는 줄 안다)."""
+        start = (lambda: on_text(persona.pick(persona.CLASSROOM_ACK) + "\n")) if on_text else None
         try:
-            return self.tools.classroom.handle(normalize(text) or text)
+            return self.tools.classroom.handle(normalize(text) or text, on_start=start)
         except Exception:
             log.exception("클래스룸 처리 실패")
             return None

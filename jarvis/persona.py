@@ -53,6 +53,9 @@ GREET_NO_CLAUDE = "Claude Code를 찾을 수 없어 기본 명령만 가능합�
 GREET_NO_KEY = "설정에서 Claude API 키를 등록해 주십시오."
 
 CANCELLED = ["취소했습니다.", "중단했습니다.", "알겠습니다. 멈추겠습니다."]
+# 클래스룸 알림을 읽기 시작할 때 (크롬을 열어 읽는 몇 초 동안 조용하지 않게 — classroom.py)
+CLASSROOM_ACK = ["클래스룸 알림을 확인하겠습니다.", "지메일에서 클래스룸 소식을 살펴보겠습니다.",
+                 "잠시만요. 클래스룸 알림을 읽어 오겠습니다."]
 MISHEARD = "죄송합니다. 잘 듣지 못했습니다. 다시 말씀해 주십시오"
 CLIPPED = "말씀이 끊겨 들렸습니다. 다시 말씀해 주십시오"
 MISHEARD_WHY = {   # 못 알아들은 원인을 짐작할 수 있을 때 (listener.miss_reason)

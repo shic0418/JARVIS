@@ -142,7 +142,7 @@ def test_short(s, want):
 # ---------------------------------------------------------------------------- 할 일에 넣기
 def test_import_todos_once(items, tmp_path):
     st = T.TodoStore(tmp_path / "todos.json")
-    cls = C.Classroom(Cfg(), reader=lambda url: [], path=tmp_path / "classroom.json")
+    cls = C.Classroom(Cfg(), reader=lambda url, *a: [], path=tmp_path / "classroom.json")
     added = cls.import_todos(items, SAT, st)
     got = {t.text: t.due for t in added}
     assert got == {
@@ -161,7 +161,7 @@ def test_handle_summary_import_and_cache(tmp_path, monkeypatch):
     calls = []
     clock = [0.0]
 
-    def reader(url):
+    def reader(url, *a):
         calls.append(url)
         return ROWS
     monkeypatch.setattr(T, "_store", T.TodoStore(tmp_path / "todos.json"))
@@ -180,12 +180,12 @@ def test_handle_summary_import_and_cache(tmp_path, monkeypatch):
 
 
 def test_handle_errors_are_speakable(tmp_path):
-    def broken(url):
+    def broken(url, *a):
         raise RuntimeError("uia exploded")
     cls = C.Classroom(Cfg(), reader=broken, path=tmp_path / "c.json")
     assert "지메일 목록을 읽지 못했습니다" in cls.handle("클래스룸 정리해 줘", today=SAT)
 
-    def missing(url):
+    def missing(url, *a):
         raise C.ClassroomError("크롬에서 지메일 검색 화면을 열지 못했습니다.")
     cls = C.Classroom(Cfg(), reader=missing, path=tmp_path / "c.json")
     assert cls.handle("클래스룸 정리해 줘", today=SAT) == "크롬에서 지메일 검색 화면을 열지 못했습니다."
@@ -216,7 +216,7 @@ def test_brain_routes_classroom_before_todos():
         def __init__(self):
             self.seen = []
 
-        def handle(self, text, dry=False):
+        def handle(self, text, dry=False, on_start=None):
             self.seen.append(text)
             return "정리" if C.parse_command(text) else None
     br = Brain.__new__(Brain)
@@ -252,7 +252,7 @@ def test_same_title_in_two_classes_stays_two_notices():
 
 def test_deadline_that_arrives_later_fills_the_todo(tmp_path):
     st = T.TodoStore(tmp_path / "todos.json")
-    cls = C.Classroom(Cfg(), reader=lambda url: [], path=tmp_path / "classroom.json")
+    cls = C.Classroom(Cfg(), reader=lambda url, *a: [], path=tmp_path / "classroom.json")
     task = row("가선생", "새 과제: '보고서'", "11월 13일", "과학", "새 과제", "보고서")
     assert [t.due for t in cls.import_todos(C.parse_rows([task], SAT), SAT, st)] == [""]
     remind = row("가선생", "내일 기한: '보고서'", "오후 3:00", "과학", "내일 기한", "보고서")
@@ -265,7 +265,7 @@ def test_deadline_that_arrives_later_fills_the_todo(tmp_path):
 def test_failure_is_not_retried_for_a_minute(tmp_path):
     calls, clock = [], [0.0]
 
-    def missing(url):
+    def missing(url, *a):
         calls.append(url)
         raise C.ClassroomError("크롬에서 지메일 검색 화면을 열지 못했습니다.")
     cls = C.Classroom(Cfg(), reader=missing, clock=lambda: clock[0], path=tmp_path / "c.json")
@@ -375,3 +375,202 @@ def test_tab_is_left_open_when_the_user_moves_or_types(monkeypatch):
     d.install(monkeypatch)
     C.read_rows_in_browser("https://mail.google.com/x")
     assert d.keys == [] and d.focused == []             # 사용자가 이미 다른 창으로 갔으면 포커스도 건드리지 않는다
+
+
+# ---------------------------------------------------------------------------- 실제로 써 보고 고친 것
+@pytest.mark.parametrize("text", ["클래스 룸 정리해 줘", "클레스룸 정리해 줘", "클래스름 알림 확인", "글래스룸 정리해 줘",
+                                  "구글 클래스 정리해 줘", "구글 클래스 과제 할 일에 넣어 줘", "classroom 정리해 줘"])
+def test_misheard_spellings(text):
+    assert C.parse_command(text) is not None
+
+
+@pytest.mark.parametrize("text", ["클래스 정리해 줘", "클래스 회의 알려 줘", "구글 클래스룸 경제", "구글 클래스에서 경제 탭 들어가 줘"])
+def test_spellings_that_are_not_classroom_commands(text):
+    assert C.parse_command(text) is None
+
+
+def test_says_it_is_starting_before_the_slow_read(tmp_path):
+    order = []
+    cls = C.Classroom(Cfg(), reader=lambda url, *a: order.append("read") or ROWS, path=tmp_path / "c.json")
+    cls.handle("클래스룸 정리해 줘", today=SAT, on_start=lambda: order.append("ack"))
+    assert order == ["ack", "read"]
+    cls.handle("클래스룸 정리해 줘", today=SAT, on_start=lambda: order.append("ack"))    # 방금 읽었으면 바로 답한다
+    assert order == ["ack", "read"]
+    cls.handle("클래스룸", today=SAT, on_start=lambda: order.append("ack"))              # 상관없는 말
+    assert order == ["ack", "read"]
+
+
+def test_brain_streams_the_ack_then_answers(tmp_path):
+    from jarvis.brain import Brain
+    br = Brain.__new__(Brain)
+    br.tools = type("Tools", (), {})()
+    br.tools.classroom = C.Classroom(Cfg(), reader=lambda url, *a: ROWS, path=tmp_path / "c.json")
+    said = []
+    reply = br._classroom("자비스, 클래스룸 정리해 줘", said.append)
+    assert len(said) == 1 and "클래스룸" in said[0] and said[0].endswith("\n")
+    assert reply.startswith("최근 14일 클래스룸 알림은")
+    br.tools.classroom = C.Classroom(Cfg(), reader=lambda url, *a: ROWS, path=tmp_path / "d.json")
+    assert br._classroom("클래스룸 정리해 줘", None).startswith("최근 14일")      # 흘려보낼 곳이 없으면 안내 없이
+
+
+@pytest.mark.parametrize("text,want", [("Classroom 정리해 줘", "summary"), ("CLASSROOM 과제 가져와", "import"),
+                                       ("구글 글래스 알려 줘", None), ("구글 글래스룸 정리해 줘", "summary")])
+def test_case_and_google_glass(text, want):
+    assert C.parse_command(text) == want
+
+
+def test_fresh(tmp_path):
+    clock = [0.0]
+    cls = C.Classroom(Cfg(), reader=lambda url, *a: ROWS, clock=lambda: clock[0], path=tmp_path / "c.json")
+    assert not cls.fresh(SAT)
+    cls.notices(SAT)
+    assert cls.fresh(SAT) and not cls.fresh(SAT + dt.timedelta(days=1))
+    clock[0] += C.CACHE_SECONDS + 1
+    assert not cls.fresh(SAT)
+
+
+def test_ack_order_on_failure_and_no_ack_while_waiting(tmp_path):
+    order = []
+
+    def missing(url, *a):
+        order.append("read")
+        raise C.ClassroomError("열지 못했습니다.")
+    cls = C.Classroom(Cfg(), reader=missing, clock=lambda: 0.0, path=tmp_path / "c.json")
+    assert cls.handle("클래스룸 정리해 줘", today=SAT, on_start=lambda: order.append("ack")) == "열지 못했습니다."
+    assert order == ["ack", "read"]
+    cls.handle("클래스룸 정리해 줘", today=SAT, on_start=lambda: order.append("ack"))      # 1분 대기 중: 안내도 읽기도 없음
+    assert order == ["ack", "read"]
+
+
+def test_a_broken_ack_does_not_stop_the_answer(tmp_path):
+    def boom():
+        raise RuntimeError("tts gone")
+    cls = C.Classroom(Cfg(), reader=lambda url, *a: ROWS, path=tmp_path / "c.json")
+    assert cls.handle("클래스룸 정리해 줘", today=SAT, on_start=boom).startswith("최근 14일")
+
+
+# ---------------------------------------------------------------------------- 구글 계정 · 크롬 프로필이 여럿일 때
+PROFILES = [("Default", "me@gmail.com", ""), ("Profile 17", "kid@school.example.kr", "school.example.kr"),
+            ("Profile 18", "other@gmail.com", "")]
+
+
+def test_pick_account_prefers_the_setting_then_the_only_school_profile():
+    assert C.pick_account("", PROFILES) == C.Account("kid@school.example.kr", "Profile 17")
+    assert C.pick_account("other@gmail.com", PROFILES) == C.Account("other@gmail.com", "Profile 18")
+    assert C.pick_account("KID@school.example.kr", PROFILES).profile == "Profile 17"
+    assert C.pick_account("x@else.kr", PROFILES) == C.Account("x@else.kr", "")      # 프로필은 없지만 그 계정으로 연다
+    two = PROFILES + [("Profile 20", "t@work.example", "work.example")]
+    assert C.pick_account("", two) == C.Account()                                  # 학교 · 회사가 둘이면 고르지 않는다
+    assert C.pick_account("", []) == C.Account()
+
+
+def test_chrome_profiles_reads_local_state(tmp_path):
+    import json
+    path = tmp_path / "Local State"
+    path.write_text(json.dumps({"profile": {"info_cache": {
+        "Default": {"user_name": "me@gmail.com", "hosted_domain": "NO_HOSTED_DOMAIN"},
+        "Profile 17": {"user_name": "kid@school.example.kr", "hosted_domain": "school.example.kr"},
+        "Profile 3": {"user_name": ""}}}}), encoding="utf-8")
+    assert sorted(C.chrome_profiles(path)) == [("Default", "me@gmail.com", ""), ("Profile 17", "kid@school.example.kr",
+                                                                                   "school.example.kr"), ("Profile 3", "", "")]
+    assert C.chrome_profiles(tmp_path / "없음") == []
+
+
+def test_wrong_account():
+    acct = C.Account("kid@school.example.kr", "Profile 17")
+    assert C._wrong_account(acct, "검색결과 - me@gmail.com - Gmail") == "gmail.com"
+    assert C._wrong_account(acct, "검색결과 - Kid@School.example.kr - 학교 메일") is None
+    assert C._wrong_account(C.Account("kid+tag@school.example.kr"), "검색결과 - kid@school.example.kr - 학교") is None
+    assert C._wrong_account(acct, "받은편지함 - me@gmail.com - Gmail") is None            # 검색 결과 제목이 아니면 따지지 않는다
+    # 누구로 열지 정하지 못했으면 개인 지메일이 열렸을 때만 알린다
+    assert C._wrong_account(C.Account(), "검색결과 - me@gmail.com - Gmail") == "gmail.com"
+    assert C._wrong_account(C.Account(), "검색결과 - kid@school.example.kr - 학교") is None
+
+
+def test_top_row_ignores_tabs_inside_the_page():
+    strip = [(10, 0, False, ("a",)), (11, 200, True, ("b",))]
+    side_panel = [(300, 1800, False, ("cal",)), (360, 1800, False, ("keep",)), (420, 1800, False, ("tasks",))]
+    assert C.top_row(strip + side_panel, 0, 1000) == (2, ("b",))
+    assert C.top_row(side_panel, 0, 1000) == (0, None)                       # 맨 위 탭 줄이 없다 (전체 화면)
+    assert C.top_row([], 0, 1000) == (0, None)
+
+
+def test_school_profile_is_opened_and_url_names_the_account(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(C, "chrome_profiles", lambda path=None: PROFILES)
+    cls = C.Classroom(Cfg(), reader=lambda url, acct: seen.append((url, acct)) or ROWS, path=tmp_path / "c.json")
+    cls.notices(SAT)
+    url, acct = seen[0]
+    assert acct == C.Account("kid@school.example.kr", "Profile 17") and "authuser=kid%40school.example.kr" in url
+
+
+def test_open_uses_the_chrome_profile(monkeypatch):
+    calls = []
+    monkeypatch.setattr(C, "chrome_exe", lambda: r"C:\chrome.exe")
+    monkeypatch.setattr(C.subprocess, "Popen", lambda args, **kw: calls.append(args))
+    monkeypatch.setattr(C.webbrowser, "open", lambda url: calls.append(("default", url)))
+    C._open("https://x", C.Account("kid@school.example.kr", "Profile 17"))
+    C._open("https://y", C.Account("kid@school.example.kr", ""))
+    C._open("https://z", None)
+    assert calls == [[r"C:\chrome.exe", "--profile-directory=Profile 17", "https://x"], ("default", "https://y"),
+                     ("default", "https://z")]
+
+
+def test_other_account_is_reported_and_our_tab_closed(monkeypatch):
+    d = FakeDesk()
+    d.install(monkeypatch)
+    monkeypatch.setattr(C, "chrome_exe", lambda: None)
+    d.open_title = "검색결과 - me@gmail.com - Gmail - Chrome"
+    orig = d.open
+
+    def open_personal(url):
+        orig(url)
+        d.title = d.open_title
+    monkeypatch.setattr(C.webbrowser, "open", open_personal)
+    with pytest.raises(C.ClassroomError, match="gmail.com 계정"):
+        C.read_rows_in_browser("https://x", C.Account("kid@school.example.kr", "Profile 17"))
+    assert d.keys == [("ctrl+w", ("ours",))]                 # 우리가 연 탭이니 닫는다
+
+
+
+def test_top_row_edges():
+    assert C.top_row([(10, 0, True, ("a",)), (22, 100, False, ("b",)), (23, 200, False, ("c",))], 0, 1000) == (2, ("a",))
+    assert C.top_row([(10, 0, False, ("a",)), (40, 0, True, ("x",))], 0, 1000) == (1, None)    # 선택된 것이 줄 밖
+    assert C.top_row([(500, 0, True, ("a",))], None, None) == (1, ("a",))                      # 창 크기를 모르면 맨 위 줄
+
+
+def test_open_falls_back_when_chrome_cannot_start(monkeypatch):
+    calls = []
+
+    def broken(args, **kw):
+        raise OSError("gone")
+    monkeypatch.setattr(C, "chrome_exe", lambda: r"C:\old\chrome.exe")
+    monkeypatch.setattr(C.subprocess, "Popen", broken)
+    monkeypatch.setattr(C.webbrowser, "open", lambda url: calls.append(url))
+    C._open("https://x", C.Account("kid@school.example.kr", "Profile 17"))
+    assert calls == ["https://x"]
+
+
+def test_personal_gmail_opened_without_a_chosen_account(monkeypatch):
+    d = FakeDesk()
+    d.install(monkeypatch)
+    orig = d.open
+
+    def open_personal(url):
+        orig(url)
+        d.title = "검색결과 - me@gmail.com - Gmail - Chrome"
+    monkeypatch.setattr(C.webbrowser, "open", open_personal)
+    with pytest.raises(C.ClassroomError, match="개인 gmail.com 계정") as e:
+        C.read_rows_in_browser("https://x", C.Account())
+    assert "메일 주소 칸" in str(e.value)
+
+
+def test_why_the_tab_was_left_open_is_logged(monkeypatch, caplog):
+    def typing(d):
+        d.idle = 0.2
+    d = FakeDesk()
+    d.on_read = typing
+    d.install(monkeypatch)
+    with caplog.at_level("INFO", logger="jarvis.classroom"):
+        C.read_rows_in_browser("https://mail.google.com/x")
+    assert "방금 키보드 · 마우스 입력" in caplog.text

@@ -17,8 +17,10 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import json
+import os
 import logging
 import re
+import subprocess
 import threading
 import time
 import urllib.parse
@@ -271,23 +273,130 @@ def search_url(account: str = "", days: int = DAYS) -> str:
     return f"https://mail.google.com/mail/{who}#search/{q}"
 
 
-_SEARCH_TITLE = re.compile(r"^(?:검색결과|search results)\s*[-–—]\s*\S+@\S+", re.I)
+_SEARCH_TITLE = re.compile(r"^(?:검색결과|search results)\s*[-–—]\s*(?P<email>\S+@\S+)", re.I)
+
+
+# ---------------------------------------------------------------------------- 어느 계정 · 크롬 프로필로 열까
+@dataclass(frozen=True)
+class Account:
+    email: str = ""          # 이 계정의 지메일을 연다 (비면 그 프로필의 첫 계정)
+    profile: str = ""        # 크롬 프로필 폴더 이름 ('Profile 17'). 비면 기본 브라우저가 마지막으로 쓴 창
+
+    @property
+    def domain(self) -> str:
+        return self.email.rsplit("@", 1)[-1].lower() if "@" in self.email else ""
+
+
+def _local_state_path() -> Path:
+    return Path(os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data\Local State"))
+
+
+def chrome_profiles(path: Path | None = None) -> list[tuple[str, str, str]]:
+    """크롬 프로필들 [(폴더 이름, 로그인한 구글 계정, 조직 도메인)]. 조직 도메인은 학교 · 회사 계정에만 있다."""
+    try:
+        d = json.loads((path or _local_state_path()).read_text(encoding="utf-8"))
+        cache = dict(d.get("profile", {}).get("info_cache", {}))
+    except Exception:
+        return []
+    out = []
+    for folder, v in cache.items():
+        if not isinstance(v, dict):
+            continue
+        hosted = str(v.get("hosted_domain") or "")
+        out.append((str(folder), str(v.get("user_name") or ""), "" if hosted == "NO_HOSTED_DOMAIN" else hosted))
+    return out
+
+
+def pick_account(wanted: str = "", profiles: list[tuple[str, str, str]] | None = None) -> Account:
+    """설정의 메일 주소가 있으면 그 계정(그 계정으로 로그인한 크롬 프로필이 있으면 그 프로필),
+    없으면 학교 · 회사 계정으로 로그인한 크롬 프로필이 하나뿐일 때 그것. 모르겠으면 빈 Account (기본 브라우저)."""
+    profiles = chrome_profiles() if profiles is None else profiles
+    wanted = (wanted or "").strip()
+    if "@" in wanted:
+        hit = next((f for f, email, _ in profiles if email.lower() == wanted.lower()), "")
+        return Account(wanted, hit)
+    orgs = [(f, email) for f, email, hosted in profiles if hosted and email]
+    if len(orgs) == 1:
+        return Account(orgs[0][1], orgs[0][0])
+    return Account()
+
+
+def chrome_exe() -> str | None:
+    """크롬 실행 파일 경로 (설치 정보 → 흔한 위치)."""
+    try:
+        import winreg
+        for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+            try:
+                with winreg.OpenKey(root, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe") as k:
+                    path = winreg.QueryValue(k, None)
+                if path and Path(path).exists():
+                    return path
+            except OSError:
+                continue
+    except ImportError:
+        pass
+    for base in ("%ProgramFiles%", "%ProgramFiles(x86)%", "%LOCALAPPDATA%"):
+        path = Path(os.path.expandvars(base)) / "Google" / "Chrome" / "Application" / "chrome.exe"
+        if path.exists():
+            return str(path)
+    return None
+
+
+def _open(url: str, account: Account | None) -> None:
+    """그 계정의 크롬 프로필로 연다 (크롬 프로필이 여럿이면 기본 브라우저는 마지막으로 쓴 프로필 창에 연다)."""
+    exe = chrome_exe() if account and account.profile else None
+    if exe:
+        try:
+            subprocess.Popen([exe, f"--profile-directory={account.profile}", url], close_fds=True)
+            return
+        except OSError as e:                       # 크롬 경로가 낡았거나 실행할 수 없다 → 기본 브라우저로라도 연다
+            log.info("크롬 프로필로 열기 실패 (%s) — 기본 브라우저로 엽니다", type(e).__name__)
+    webbrowser.open(url)
+
+
+PERSONAL_DOMAINS = ("gmail.com", "googlemail.com")
+
+
+def _wrong_account(account: Account | None, title: str) -> str | None:
+    """열린 지메일이 원하는 계정이 아니면 그 계정의 도메인 (말할 때 주소 전체는 읽지 않는다).
+    도메인으로 비교한다 — 설정에 별칭 · '+태그' 주소를 적어도 같은 학교 · 회사면 같은 계정으로 본다.
+    누구로 열지 정하지 못했으면(학교 · 회사 프로필이 여럿이고 설정이 비었음) 개인 지메일이 열렸을 때만 알린다."""
+    m = _SEARCH_TITLE.match(title or "")
+    if not m:
+        return None
+    shown = m.group("email").lower().rsplit("@", 1)[-1]
+    if account and account.email:
+        return None if shown == account.domain else shown
+    return shown if shown in PERSONAL_DOMAINS else None
+
+
+def top_row(items: list[tuple[int, int, bool, tuple]], window_top: int | None, window_h: int | None) -> tuple[int, tuple | None]:
+    """탭 요소들 [(위 좌표, 왼쪽 좌표, 선택됨, 런타임 ID)] 중 창 맨 위 탭 줄에 있는 것만 → (탭 수, 선택된 탭 ID).
+    웹 페이지 안의 탭 모양 요소(지메일 오른쪽 패널의 Calendar · Keep · Tasks …)는 세지 않는다 —
+    페이지가 다 뜨면서 나타나므로, 함께 세면 '탭이 바뀌었다'고 잘못 판단한다."""
+    if not items:
+        return 0, None
+    top = min(t for t, _, _, _ in items)
+    if window_top is not None and window_h and top > window_top + window_h * 0.2:
+        return 0, None                                  # 맨 위쪽에 탭이 없다 (세로 탭 · 전체 화면)
+    row = [it for it in items if abs(it[0] - top) <= 12]
+    sel = next((rid for _, _, selected, rid in row if selected), None)
+    return len(row), sel
 
 
 def _tabs(hwnd: int) -> tuple[int, tuple | None]:
-    """브라우저 창의 (탭 수, 선택된 탭의 UIA 런타임 ID). 못 읽으면 (-1, None)."""
-    from . import uia
+    """브라우저 창 맨 위 탭 줄의 (탭 수, 선택된 탭의 UIA 런타임 ID). 못 읽으면 (-1, None)."""
+    from . import uia, winutil
     try:
         a = uia._uia()
         found = a.ElementFromHandle(hwnd).FindAll(4, a.CreatePropertyCondition(30003, UIA_TABITEM))
-        n = found.Length if found else 0
-        sel = None
-        for i in range(n):
+        items = []
+        for i in range(found.Length if found else 0):
             el = found.GetElement(i)
-            if el.GetCurrentPropertyValue(UIA_IS_SELECTED):
-                sel = tuple(el.GetRuntimeId())
-                break
-        return n, sel
+            r = el.CurrentBoundingRectangle
+            items.append((r.top, r.left, bool(el.GetCurrentPropertyValue(UIA_IS_SELECTED)), tuple(el.GetRuntimeId())))
+        wr = winutil.window_rect(hwnd)
+        return top_row(items, wr[1] if wr else None, (wr[3] - wr[1]) if wr else None)
     except Exception:
         return -1, None
 
@@ -304,18 +413,19 @@ def _wake(hwnd: int) -> None:
     uia._wake_chromium(hwnd)
 
 
-def read_rows_in_browser(url: str) -> list[str]:
+def read_rows_in_browser(url: str, account: Account | None = None) -> list[str]:
     """크롬(또는 엣지)에 url 을 새 탭으로 열고, 지메일 목록 줄의 이름들을 읽은 뒤 그 탭을 닫는다. 쓰던 창으로 포커스를 돌려준다.
 
     닫는 탭이 우리가 연 탭이라는 것은 이렇게 확인한다 — 하나라도 어긋나면 닫지 않고 그대로 둔다:
     · 열기 전보다 그 창의 탭이 정확히 하나 늘었고(새 창이면 새로 생긴 창), 그 탭이 앞에 있으며 제목이 지메일 검색 결과다
       (사용자가 원래 열어 두었던 검색 결과 탭은 탭 수가 늘지 않으므로 고르지 않는다)
     · 닫기 직전에도 같은 창이 앞에 있고, 탭 수가 그대로이며, 선택된 탭이 그때 그 탭이고, 방금(1초 안) 사용자가 키보드 · 마우스를 쓰지 않았다
-    지메일 탭이 뜨지 않으면 ClassroomError (그때 열린 탭 — 로그인 화면 등 — 은 남는다)."""
+    지메일 탭이 뜨지 않으면 ClassroomError (그때 열린 탭 — 로그인 화면 등 — 은 남는다).
+    account 를 주면 그 크롬 프로필로 열고, 다른 계정의 지메일이 열렸으면 읽지 않고(그 탭은 닫고) ClassroomError."""
     from . import winutil
     before = winutil.foreground()
     counts = {w["hwnd"]: _tabs(w["hwnd"])[0] for w in winutil.list_windows() if w["exe"].lower() in BROWSER_EXES}
-    webbrowser.open(url)
+    _open(url, account)
     hwnd, mine = 0, None
     end = time.monotonic() + LOAD_TIMEOUT
     while time.monotonic() < end and not hwnd:
@@ -332,6 +442,12 @@ def read_rows_in_browser(url: str) -> list[str]:
         raise ClassroomError("크롬에서 지메일 검색 화면을 열지 못했습니다. 크롬이 기본 브라우저이고 학교 계정으로 "
                              "지메일에 로그인돼 있는지 확인해 주십시오.")
     try:
+        other = _wrong_account(account, winutil.window_title(hwnd) or "")
+        if other:
+            want = account.domain if account and account.email else ""
+            what = f"{want} 계정이 아닌 {other}" if want else f"개인 {other}"
+            raise ClassroomError(f"크롬이 {what} 계정의 지메일을 열었습니다. 크롬에서 학교 계정 프로필로 지메일에 "
+                                 "로그인해 두시거나, 설정의 메일 주소 칸에 학교 메일 주소를 적어 주십시오.")
         _wake(hwnd)
         names: list[str] = []
         prev, end = -1, time.monotonic() + ROWS_TIMEOUT
@@ -346,12 +462,15 @@ def read_rows_in_browser(url: str) -> list[str]:
     finally:
         try:
             idle = winutil.idle_seconds()
-            if (winutil.foreground() == hwnd and _SEARCH_TITLE.match(winutil.window_title(hwnd) or "")
-                    and _tabs(hwnd) == mine and (idle is None or idle >= 1.0)):
+            why = ("다른 창이 앞에 있음" if winutil.foreground() != hwnd
+                   else "탭 제목이 검색 결과가 아님" if not _SEARCH_TITLE.match(winutil.window_title(hwnd) or "")
+                   else "탭 수나 선택된 탭이 바뀜" if _tabs(hwnd) != mine
+                   else "방금 키보드 · 마우스 입력" if idle is not None and idle < 1.0 else "")
+            if not why:
                 winutil.press_combo("ctrl+w")
                 time.sleep(0.2)
             else:
-                log.info("클래스룸 검색 탭을 닫지 않고 둡니다 (사용자가 창 · 탭을 옮겼거나 입력 중)")
+                log.info("클래스룸 검색 탭을 닫지 않고 둡니다 (%s)", why)
             if before and before != hwnd and winutil.foreground() == hwnd:
                 winutil.force_foreground(before)
         except Exception:
@@ -359,7 +478,7 @@ def read_rows_in_browser(url: str) -> list[str]:
 
 
 class Classroom:
-    def __init__(self, cfg, reader: Callable[[str], list[str]] = read_rows_in_browser,
+    def __init__(self, cfg, reader: Callable[[str, Account], list[str]] = read_rows_in_browser,
                  clock: Callable[[], float] = time.monotonic, path: Path = STATE_PATH) -> None:
         self.cfg = cfg
         self._reader = reader
@@ -377,9 +496,12 @@ class Classroom:
                 return c[2]
             if self._fail and self._clock() < self._fail[0]:
                 raise ClassroomError(self._fail[1])
-            url = search_url(str(self.cfg["mail_user"] or "").strip())
+            account = pick_account(str(self.cfg["mail_user"] or ""))
+            url = search_url(account.email)
+            log.info("클래스룸 알림 읽기: %s 계정%s", account.domain or "기본",
+                     f" (크롬 {account.profile})" if account.profile else "")
             try:
-                names = self._reader(url)
+                names = self._reader(url, account)
             except Exception as e:
                 if isinstance(e, ClassroomError):
                     why = str(e)
@@ -445,13 +567,27 @@ class Classroom:
         return added
 
     # ------------------------------------------------------------------ 바로 답하는 말 (토큰 0)
-    def handle(self, text: str, dry: bool = False, today: dt.date | None = None) -> str | None:
+    def fresh(self, today: dt.date | None = None) -> bool:
+        """방금 읽어 둔 목록이 있어 크롬을 다시 열 필요가 없다."""
+        today = today or dt.date.today()
+        c = self._cache
+        return bool(c and c[1] == today and self._clock() - c[0] < CACHE_SECONDS)
+
+    def handle(self, text: str, dry: bool = False, today: dt.date | None = None,
+               on_start: Callable[[], None] | None = None) -> str | None:
+        """on_start: 크롬을 열어 읽기 시작하기 직전에 부른다 (자비스가 '확인하겠습니다' 하고 먼저 말하게)."""
         cmd = parse_command(text)
         if cmd is None:
             return None
         if dry:
             return "ok"
         today = today or dt.date.today()
+        waiting = self._fail is not None and self._clock() < self._fail[0]      # 방금 실패해 다시 열지 않는 중
+        if on_start is not None and not self.fresh(today) and not waiting:
+            try:
+                on_start()
+            except Exception:
+                log.debug("시작 알림 실패", exc_info=True)
         try:
             items = self.notices(today)
         except ClassroomError as e:
@@ -468,7 +604,8 @@ class Classroom:
         return f"클래스룸 과제 {len(added)}개를 할 일에 넣었습니다. {names}{more}."
 
 
-_CLS = r"(?:구글\s*)?클래스\s*룸"
+# 음성 인식이 다르게 적는 모양도 받는다: '클래스 룸' · '클레스룸' · '클래스름' · '글래스룸', 그리고 '룸' 을 빼먹은 '구글 클래스'
+_CLS = r"(?:(?:구글\s*)?(?:[클글][래레]스\s*[룸름]|classroom)|구글\s*클[래레]스)"     # '구글 글래스'(Google Glass)는 받지 않는다
 _WHAT = r"(?:\s*(?:알림|공지(?:사항)?|과제|소식|메일|새\s*글|새\s*소식|올라온\s*거))?(?:\s*(?:을|를|은|는|좀))?"
 _SUMMARY = re.compile(r"^" + _CLS + _WHAT + r"\s*(?:정리|요약|확인|체크|알려|읽어|브리핑|뭐\s*(?:왔어|있어|올라왔어)|"
                       r"있어|왔어|올라왔어)(?:\s*(?:해|해\s*봐))?(?:\s*줘|\s*줄래|\s*주세요)?$"
@@ -481,7 +618,7 @@ _IMPORT = re.compile(r"^" + _CLS + r"(?:\s*(?:과제|마감|숙제|일정))?(?:\
 def parse_command(text: str) -> str | None:
     """'summary' · 'import' · None."""
     t = re.sub(r"[?!.~,]+", "", str(text or ""))
-    t = re.sub(r"\s+", " ", t).strip()
+    t = re.sub(r"\s+", " ", t).strip().lower()           # 음성 인식이 'Classroom' 처럼 대문자로 적기도 한다
     if _IMPORT.match(t):
         return "import"
     if _SUMMARY.match(t):
