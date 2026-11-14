@@ -25,6 +25,7 @@ log = logging.getLogger("jarvis.speech")
 TMP = Path(tempfile.gettempdir()) / "jarvis_tts"
 TMP.mkdir(exist_ok=True)
 SR = 24000            # edge-tts 원음과 같은 표본율 (SAPI 음성도 이 값으로 맞춰 디코딩)
+DUCK_VOLUME = 0.25    # 말 끊기: 사람이 끼어든 것 같으면 자비스 목소리를 이만큼으로 줄인다
 
 
 def _try_unlink(p: Path) -> None:
@@ -47,30 +48,41 @@ def clean_for_speech(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def synthesize(text: str, voice: str, rate: str) -> tuple[bytes, str]:
-    """(오디오 바이트, 확장자) 반환. 워커 스레드에서 호출."""
+EDGE_TIMEOUT_SEC = 8       # 보통 1~2초면 끝난다. 이보다 오래 걸리면 연결이 안 되는 것
+EDGE_RETRY_SEC = 90        # 실패한 뒤 이 시간 동안은 바로 오프라인 음성(SAPI)으로 읽는다
+_edge_down_until = 0.0
+
+
+def synthesize(text: str, voice: str, rate: str, pitch: str = "+0Hz") -> tuple[bytes, str]:
+    """(오디오 바이트, 확장자) 반환. 워커 스레드에서 호출.
+    edge-tts 가 실패하면 한동안은 시도하지 않고 바로 SAPI 로 읽는다
+    (기록: 인터넷이 불안할 때 문장마다 15초씩 기다린 뒤에야 소리가 남)."""
+    global _edge_down_until
     text = clean_for_speech(text)
     if not text:
         return b"", ".mp3"
-    try:
-        return _edge_tts(text, voice, rate), ".mp3"
-    except Exception as e:
-        log.warning("edge-tts 실패, SAPI로 대체: %s", e)
+    if time.monotonic() >= _edge_down_until:
+        try:
+            return _edge_tts(text, voice, rate, pitch), ".mp3"
+        except Exception as e:
+            _edge_down_until = time.monotonic() + EDGE_RETRY_SEC
+            log.warning("edge-tts 실패 (%s) — %d초 동안 오프라인 음성(SAPI)으로 읽습니다",
+                        str(e) or type(e).__name__, EDGE_RETRY_SEC)
     return _sapi(text), ".wav"
 
 
-def _edge_tts(text: str, voice: str, rate: str) -> bytes:
+def _edge_tts(text: str, voice: str, rate: str, pitch: str = "+0Hz") -> bytes:
     import edge_tts
 
     async def run() -> bytes:
-        comm = edge_tts.Communicate(text, voice, rate=rate)
+        comm = edge_tts.Communicate(text, voice, rate=rate, pitch=pitch or "+0Hz")
         buf = bytearray()
         async for chunk in comm.stream():
             if chunk.get("type") == "audio":
                 buf += chunk["data"]
         return bytes(buf)
 
-    data = asyncio.run(asyncio.wait_for(run(), timeout=15))
+    data = asyncio.run(asyncio.wait_for(run(), timeout=EDGE_TIMEOUT_SEC))
     if not data:
         raise RuntimeError("빈 오디오")
     return data
@@ -202,12 +214,56 @@ def pause_after(text: str) -> float:
     return 0.22
 
 
-def render(text: str, voice: str, rate: str) -> np.ndarray:
-    """텍스트 → 재생할 PCM (앞뒤 무음 정리 완료). 워커 스레드에서 호출."""
-    data, suffix = synthesize(text, voice, rate)
+def _delayed(x: np.ndarray, delay: np.ndarray) -> np.ndarray:
+    """x 를 표본마다 다른 길이(delay, 표본 수)만큼 늦춘 소리 (사이 값은 직선으로 잇는다)."""
+    pos = np.arange(x.size, dtype=np.float32) - delay
+    i0 = np.floor(pos).astype(np.int64)
+    frac = (pos - i0).astype(np.float32)
+    ok = i0 >= 0
+    i0 = np.clip(i0, 0, x.size - 2)
+    return np.where(ok, x[i0] * (1.0 - frac) + x[i0 + 1] * frac, 0.0).astype(np.float32)
+
+
+def _tone_curve(n: int) -> np.ndarray:
+    """주파수별 음량 배율 (rfft 칸 n 개): 120Hz 아래 웅웅거림은 걷고, 2.5~6kHz(또렷함)와 9kHz 위(공기감)를 살짝 올린다."""
+    f = np.fft.rfftfreq(2 * (n - 1), 1.0 / SR)
+    low = 1.0 / np.sqrt(1.0 + (110.0 / np.maximum(f, 1.0)) ** 4)                # 2차 고역 통과 (110Hz)
+    presence = 1.0 + 0.32 * np.exp(-0.5 * ((f - 4000.0) / 1400.0) ** 2)          # 약 +2.4dB
+    air = 1.0 + 0.18 / (1.0 + np.exp(-(f - 9000.0) / 900.0))                     # 약 +1.4dB
+    return (low * presence * air).astype(np.float32)
+
+
+def jarvis_tone(a: np.ndarray, amount: float) -> np.ndarray:
+    """자비스 음색: 영화 속 자비스처럼 깨끗하고 정돈된, 살짝 디지털로 다듬어진 목소리.
+      · 음색 정리 — 저음 웅웅거림을 걷고 발음이 또렷한 대역과 공기감을 조금 올린다
+      · 디지털 광택 — 7ms 남짓 늦춘 같은 목소리를 아주 옅게 겹친다 (지연이 천천히 미세하게 흔들려 금속성 없이 매끈해진다)
+      · 공간감 — 작은 작업실 같은 짧은 반사 몇 개. 꼬리는 짧게 (말이 뭉개지지 않게)
+    로봇 · 무전기 같은 거친 효과는 넣지 않는다. amount 0 이면 원음 그대로, 음량(최대값)은 원음과 같게 맞춘다."""
+    if amount <= 0 or a.size < 2048:
+        return a
+    amount = min(float(amount), 1.0)
+    x = np.concatenate([a.astype(np.float32), np.zeros(int(0.08 * SR), np.float32)])
+    peak = float(np.max(np.abs(a))) or 1.0
+    spec = np.fft.rfft(x)
+    shaped = np.fft.irfft(spec * _tone_curve(spec.size), n=x.size).astype(np.float32)
+    y = x + amount * (shaped - x)
+    t = np.arange(y.size, dtype=np.float32) / SR
+    delay = (7.0 + 0.35 * np.sin(2 * np.pi * 0.23 * t)) * SR / 1000.0
+    y = y + 0.16 * amount * _delayed(y, delay.astype(np.float32))
+    dry = y.copy()
+    for delay_ms, gain in ((11.0, 0.10), (17.0, 0.07), (26.0, 0.05), (38.0, 0.03)):
+        d = int(SR * delay_ms / 1000)
+        y[d:] += gain * amount * dry[:-d]
+    y *= peak / (float(np.max(np.abs(y))) or 1.0)
+    return y.astype(np.float32)
+
+
+def render(text: str, voice: str, rate: str, pitch: str = "+0Hz", fx: float = 0.0) -> np.ndarray:
+    """텍스트 → 재생할 PCM (앞뒤 무음 정리 + 자비스 음색). 워커 스레드에서 호출."""
+    data, suffix = synthesize(text, voice, rate, pitch)
     if not data:
         return np.zeros(0, np.float32)
-    return trim_silence(decode(data, suffix))
+    return jarvis_tone(trim_silence(decode(data, suffix)), fx)
 
 
 class Speaker(QObject):
@@ -229,9 +285,29 @@ class Speaker(QObject):
         self._session = False      # started 를 보낸 뒤 아직 finished 를 보내지 않음
         self._gap = 0.0            # 다음 조각 앞에 둘 쉼(초)
         self._out_lvl = 0.0
+        # 말 끊기용: 최근에 내보낸 소리 크기 [(시각, RMS int16 스케일)] — 마이크로 되돌아올 에코 크기를 짐작한다
+        self._sent: collections.deque[tuple[float, float]] = collections.deque(maxlen=120)
+        self._vol = 1.0            # 지금 음량 배율 (사람이 끼어들면 줄인다)
+        self._vol_target = 1.0
         self._timer = QTimer(self)
         self._timer.setInterval(33)
         self._timer.timeout.connect(self._tick)
+
+    def duck(self, on: bool) -> None:
+        """사람이 끼어든 것 같으면 자비스 목소리를 줄여 그 말이 잘 들리게 한다 (on=False 면 되돌림)."""
+        self._vol_target = DUCK_VOLUME if on else 1.0
+
+    def recent_level(self, window: float = 0.35) -> float:
+        """(아무 스레드) 지금 마이크에 되돌아오고 있을 에코의 원인 — 최근 window 초 + 출력 지연 동안 내보낸 소리의 최댓값."""
+        since = time.monotonic() - window - self._latency
+        best = 0.0
+        with self._lock:
+            for t, lvl in reversed(self._sent):        # 시각 순으로 쌓이니 오래된 쪽을 만나면 멈춘다 (30ms 마다 불린다)
+                if t < since:
+                    break
+                if lvl > best:
+                    best = lvl
+        return best
 
     @property
     def playing(self) -> bool:
@@ -321,6 +397,7 @@ class Speaker(QObject):
         self._close()
         self._timer.stop()
         self._session = False
+        self._vol = self._vol_target = 1.0
         self._out_lvl = 0.0
         self.level.emit(0.0)
         self.finished.emit()
@@ -346,8 +423,16 @@ class Speaker(QObject):
                     self._dry_since = time.monotonic()
         if filled:
             seg = out[:filled]
+            if self._vol != 1.0 or self._vol_target != 1.0:
+                # 한 번에 바꾸면 딱 소리가 난다 — 이 조각 안에서 목표 음량까지 부드럽게
+                target = self._vol_target
+                step = max(-0.25, min(0.25, target - self._vol))
+                seg *= np.linspace(self._vol, self._vol + step, filled, dtype=np.float32)
+                self._vol += step
             rms = float(np.sqrt(np.mean(seg * seg)))
             self._out_lvl = max(self._out_lvl * 0.6, min(1.0, rms * 2.8))
+        with self._lock:
+            self._sent.append((time.monotonic(), float(np.sqrt(np.mean(out * out))) * 32768.0 if frames else 0.0))
 
     def _tick(self) -> None:
         self.level.emit(self._out_lvl)
@@ -378,7 +463,7 @@ class TTS(QObject):
     def __init__(self, speaker: Speaker, voice_getter, parent=None) -> None:
         super().__init__(parent)
         self.speaker = speaker
-        self.voice_getter = voice_getter   # () -> (voice, rate)
+        self.voice_getter = voice_getter   # () -> (voice, rate, pitch, fx)
         self._ready.connect(self.speaker.play)
         self._chunk.connect(self._on_chunk)
         self._chunks_done.connect(self._on_chunks_done)
@@ -393,7 +478,7 @@ class TTS(QObject):
         self.speaker.begin_stream()
         q: queue.Queue = queue.Queue()
         self._sq = q
-        voice, rate = self.voice_getter()
+        opts = self.voice_getter()
 
         def work():
             while gen == self._gen:
@@ -405,7 +490,7 @@ class TTS(QObject):
                     self._chunks_done.emit(gen)
                     return
                 try:
-                    pcm = render(text, voice, rate)
+                    pcm = render(text, *opts)
                 except Exception as e:
                     log.exception("TTS 실패: %s", e)
                     continue
@@ -441,11 +526,11 @@ class TTS(QObject):
         self._sq = None
         self._gen += 1
         gen = self._gen
-        voice, rate = self.voice_getter()
+        opts = self.voice_getter()
 
         def work():
             try:
-                pcm = render(text, voice, rate)
+                pcm = render(text, *opts)
             except Exception as e:
                 log.exception("TTS 실패: %s", e)
                 pcm = np.zeros(0, np.float32)

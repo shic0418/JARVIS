@@ -23,6 +23,11 @@ import numpy as np
 
 from .noise import MODELS_DIR, _short_path
 
+# 인식에 쓰는 스레드 수. 1 이어야 한다 — 2 이상이면 onnx 런타임의 작업 스레드들이 인식이 끝난 뒤에도 쉬지 않고 헛돌아
+# (측정: 4스레드로 한 번 인식한 뒤 아무 일도 안 하는 2초 동안 CPU 1.5초를 썼다 · 1스레드는 0) 대기 중에도 코어 하나 이상을
+# 계속 태웠다. 4초짜리 발화 인식 시간은 0.16초 → 0.30초로 조금 늘 뿐이다.
+STT_THREADS = 1
+
 log = logging.getLogger("jarvis.local_stt")
 
 RATE = 16000
@@ -89,6 +94,8 @@ class LocalSTT:
         self.state = "off"          # off | loading | ready | error
         self.error = ""
         self.last_ms = 0
+        # 마지막으로 받아 적은 글 조각과 각 조각이 시작된 시각(초, 넘겨받은 소리 기준) — 호출어가 어디서 끝났는지 볼 때 쓴다
+        self.last: tuple[list[str], list[float]] = ([], [])
         self._rec = None
         self._lock = threading.Lock()
 
@@ -110,7 +117,7 @@ class LocalSTT:
                 _download()
             self._rec = sherpa_onnx.OfflineRecognizer.from_sense_voice(
                 model=_short_path(_DIR / "model.int8.onnx"), tokens=_short_path(_DIR / "tokens.txt"),
-                language=self.language, use_itn=True, num_threads=4)
+                language=self.language, use_itn=True, num_threads=STT_THREADS)
             self.recognize(np.zeros(RATE // 2, np.int16))      # 예열
             self.state = "ready"
             log.info("오프라인 음성 인식 준비 완료 (SenseVoice)")
@@ -125,13 +132,18 @@ class LocalSTT:
             return None
         t0 = time.perf_counter()
         # 앞뒤 무음을 조금 붙이면 첫 글자·끝 글자를 덜 놓친다
-        x = np.concatenate([np.zeros(RATE // 8, np.float32), pcm.astype(np.float32) / 32768.0,
-                            np.zeros(RATE // 8, np.float32)])
+        pad = RATE // 8
+        x = np.concatenate([np.zeros(pad, np.float32), pcm.astype(np.float32) / 32768.0,
+                            np.zeros(pad, np.float32)])
         with self._lock:
             s = rec.create_stream()
             s.accept_waveform(RATE, x)
             rec.decode_stream(s)
             text = s.result.text
+            try:
+                self.last = (list(s.result.tokens), [float(t) - pad / RATE for t in s.result.timestamps])
+            except Exception:
+                self.last = ([], [])
         self.last_ms = int((time.perf_counter() - t0) * 1000)
         return clean(text)
 

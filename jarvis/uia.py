@@ -18,6 +18,8 @@ import threading
 import time
 from dataclasses import dataclass
 
+from . import winutil
+
 log = logging.getLogger("jarvis.uia")
 user32 = ctypes.windll.user32
 
@@ -35,6 +37,8 @@ UIA_SelectionItemPatternId = 10010
 UIA_TogglePatternId = 10015
 UIA_ExpandCollapsePatternId = 10005
 UIA_LegacyIAccessiblePatternId = 10018
+UIA_TextPatternId = 10014
+UIA_ScrollItemPatternId = 10017
 TreeScope_Descendants = 4
 
 CONTROL_TYPES = {
@@ -47,6 +51,9 @@ RISKY = re.compile(r"결제|구매|주문|송금|이체|삭제|탈퇴|해지|전
                    r"\b(pay|buy|purchase|order|checkout|delete|remove|send|submit|post|publish|upload|format|reset)\b",
                    re.I)
 MAX_ITEMS = 150
+# 글자 읽기(read_text)에서 보는 종류: 글(50020) · 입력칸(50004) · 문서(50030)
+TEXT_TYPES = (50020, 50004, 50030)
+MAX_TEXT = 6000            # 한 번에 돌려주는 글자 수 상한
 
 
 @dataclass
@@ -97,7 +104,39 @@ class Screen:
         self.hwnd = 0
         self.title = ""
         self._woken: set[int] = set()     # 접근성을 깨운 Chromium 창
+        self.url = ""                     # read_text 가 마지막으로 읽은 웹 문서의 주소 (브라우저가 아니면 빈 값)
         self._lock = threading.Lock()
+        self._hidden = False              # True 인 동안 _collect 가 화면 밖(스크롤해야 보이는) 요소만 모은다
+
+    # ------------------------------------------------------------------ 화면 밖 요소
+    def find_hidden(self, hwnd: int, name: str) -> list[Item]:
+        """스크롤해야 보이는 요소 중 이름이 맞는 것들 (가장 비슷한 것부터). 못 읽으면 빈 목록."""
+        q = _norm(name)
+        if not q:
+            return []
+        with self._lock:
+            self._hidden = True
+            try:
+                items = self._collect(_uia(), _U(), _uia().ElementFromHandle(hwnd))
+            except Exception as e:
+                log.debug("화면 밖 요소 읽기 실패: %s", e)
+                return []
+            finally:
+                self._hidden = False
+        hits = [it for it in items if q in _norm(it.name)]
+        return sorted(hits, key=lambda it: (_norm(it.name) != q, len(it.name)))
+
+    def reveal(self, it: Item) -> bool:
+        """화면 밖 요소가 보이도록 스크롤한다 (요소가 스스로 스크롤하는 기능을 지원할 때)."""
+        try:
+            p = it.el.GetCurrentPattern(UIA_ScrollItemPatternId)
+            if not p:
+                return False
+            p.QueryInterface(_U().IUIAutomationScrollItemPattern).ScrollIntoView()
+            return True
+        except Exception as e:
+            log.debug("요소로 스크롤 실패: %s", e)
+            return False
 
     # ------------------------------------------------------------------ 읽기
     def read(self, hwnd: int, query: str = "") -> str:
@@ -151,11 +190,11 @@ class Screen:
         for i in range(found.Length if found else 0):
             el = found.GetElement(i)
             try:
-                if el.CachedIsOffscreen or not el.CachedIsEnabled:
+                if bool(el.CachedIsOffscreen) != self._hidden or not el.CachedIsEnabled:
                     continue
                 r = el.CachedBoundingRectangle
                 rect = (r.left, r.top, r.right, r.bottom)
-                if rect[2] - rect[0] < 2 or rect[3] - rect[1] < 2:
+                if not self._hidden and (rect[2] - rect[0] < 2 or rect[3] - rect[1] < 2):
                     continue
                 ct = el.CachedControlType
                 name = (el.CachedName or el.CachedHelpText or "").strip()
@@ -176,6 +215,73 @@ class Screen:
                 continue
         # 위→아래, 왼→오 순서 (사람이 읽는 순서)
         out.sort(key=lambda it: (it.rect[1] // 12, it.rect[0]))
+        return out
+
+    # ------------------------------------------------------------------ 글자 읽기
+    def read_text(self, hwnd: int, include_offscreen: bool = False, limit: int = MAX_TEXT) -> str:
+        """창에 보이는 글을 읽는 순서대로 돌려준다 (웹 페이지 본문 · 문서 · 라벨).
+        include_offscreen=True 면 웹 페이지에서 스크롤해야 보이는 부분까지 읽는다."""
+        with self._lock:
+            a, U = _uia(), _U()
+            root = a.ElementFromHandle(hwnd)
+            title = _title(hwnd)
+            self.url = ""
+            if _is_browser(hwnd) and hwnd not in self._woken and _wake_chromium(hwnd):
+                self._woken.add(hwnd)
+                prev = -1
+                for _ in range(6):          # 접근성 트리가 다 만들어질 때까지 (글 조각 수가 더 늘지 않을 때까지)
+                    time.sleep(0.35)
+                    pieces = self._collect_text(a, U, root, include_offscreen)
+                    if len(pieces) == prev:
+                        break
+                    prev = len(pieces)
+            else:
+                pieces = self._collect_text(a, U, root, include_offscreen)
+            body = layout_text(pieces, limit)
+            if not body:
+                return (f"'{title}' 창에서 읽을 수 있는 글을 찾지 못했습니다. "
+                        "look_at_screen 으로 화면을 보세요 (그림 · 게임 · 일부 앱은 글자를 내보내지 않습니다).")
+            scope = "스크롤해야 보이는 부분 포함" if include_offscreen else "지금 보이는 부분"
+            where = f"\n주소: {self.url}" if self.url else ""
+            return f"창: {title} ({scope}){where}\n{body}"
+
+    def _collect_text(self, a, U, root, include_offscreen: bool) -> list[tuple[tuple[int, int, int, int], str]]:
+        """[(화면 좌표 사각형, 글)] — 글 조각 · 입력칸 값 · 문서 본문."""
+        cache = a.CreateCacheRequest()
+        for pid in (UIA_ControlTypePropertyId, UIA_NamePropertyId, UIA_BoundingRectanglePropertyId,
+                    UIA_IsOffscreenPropertyId, UIA_ValueValuePropertyId):
+            cache.AddProperty(pid)
+        cond = a.CreateOrConditionFromArray([a.CreatePropertyCondition(UIA_ControlTypePropertyId, ct) for ct in TEXT_TYPES])
+        found = root.FindAllBuildCache(TreeScope_Descendants, cond, cache)
+        out: list[tuple[tuple[int, int, int, int], str]] = []
+        for i in range(found.Length if found else 0):
+            el = found.GetElement(i)
+            try:
+                if el.CachedIsOffscreen and not include_offscreen:
+                    continue
+                r = el.CachedBoundingRectangle
+                rect = (r.left, r.top, r.right, r.bottom)
+                ct = el.CachedControlType
+                text = ""
+                if ct in (50004, 50030):
+                    v = el.GetCachedPropertyValue(UIA_ValueValuePropertyId)
+                    text = v if isinstance(v, str) else ""
+                    if ct == 50030 and re.match(r"^[a-z][a-z0-9+.-]*:", text.strip(), re.I):
+                        self.url = text.strip()[:300]         # 크롬 · 엣지: 웹 문서의 값은 지금 탭의 주소
+                        continue
+                    if not text.strip() and (rect[2] - rect[0]) * (rect[3] - rect[1]) > 4000:
+                        text = _pattern_text(el, U)          # 메모장 · 워드 같은 문서 영역
+                    if not text.strip() and ct == 50030:
+                        continue                              # 웹 문서 뿌리: 이름은 창 제목과 같다 (본문은 글 조각으로 읽는다)
+                    if not text.strip():
+                        text = el.CachedName or ""
+                else:
+                    text = el.CachedName or ""
+                text = text.strip()
+                if text:
+                    out.append((rect, text))
+            except Exception:
+                continue
         return out
 
     # ------------------------------------------------------------------ 찾기
@@ -215,27 +321,74 @@ class Screen:
 # ---------------------------------------------------------------------- 마우스
 MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP = 0x0002, 0x0004
 MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP = 0x0008, 0x0010
+MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP = 0x0020, 0x0040
 MOUSEEVENTF_WHEEL = 0x0800
 
 
-def click_at(x: int, y: int, double: bool = False, right: bool = False, hwnd: int = 0) -> None:
-    """물리 픽셀 좌표 클릭. 대상 창을 먼저 앞으로 가져온다."""
+def cursor_pos() -> tuple[int, int] | None:
+    """지금 마우스 위치 (모르면 None)."""
+    try:
+        p = wt.POINT()
+        return (p.x, p.y) if user32.GetCursorPos(ctypes.byref(p)) else None
+    except Exception:
+        return None
+
+
+def set_cursor(pos: tuple[int, int] | None) -> None:
+    if pos:
+        try:
+            user32.SetCursorPos(int(pos[0]), int(pos[1]))
+        except Exception:
+            pass
+
+
+def click_at(x: int, y: int, double: bool = False, right: bool = False, hwnd: int = 0, hold: str = "",
+             middle: bool = False) -> None:
+    """물리 픽셀 좌표 클릭. 대상 창을 먼저 앞으로 가져온다. hold = 누른 채로 있을 키 ('ctrl' · 'shift' · 'alt').
+    middle = 가운데 단추(휠) 클릭 — 브라우저 탭을 그 탭으로 옮겨 가지 않고 닫을 때 쓴다."""
+    from .winutil import force_foreground, held
     if hwnd:
-        from .winutil import force_foreground
         force_foreground(hwnd)
         time.sleep(0.08)
     user32.SetCursorPos(int(x), int(y))
     time.sleep(0.03)
-    down, up = (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP) if right else (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP)
-    for _ in range(2 if double else 1):
-        user32.mouse_event(down, 0, 0, 0, 0)
-        user32.mouse_event(up, 0, 0, 0, 0)
-        time.sleep(0.06)
+    down, up = ((MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP) if middle else
+                (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP) if right else (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP))
+    with held(hold):
+        for _ in range(2 if double else 1):
+            user32.mouse_event(down, 0, 0, 0, 0)
+            user32.mouse_event(up, 0, 0, 0, 0)
+            time.sleep(0.06)
 
 
-def scroll(hwnd: int, direction: str, amount: int = 5) -> None:
+def move_to(x: int, y: int) -> None:
+    """마우스를 그 자리로 옮긴다 (누르지 않음). 조금씩 움직여서 '올려놓으면 펼쳐지는' 메뉴가 반응하게 한다."""
+    user32.SetCursorPos(int(x) - 3, int(y) - 3)
+    time.sleep(0.03)
+    user32.SetCursorPos(int(x), int(y))
+    time.sleep(0.05)
+
+
+def drag(x1: int, y1: int, x2: int, y2: int, steps: int = 14) -> None:
+    """(x1, y1) 에서 누른 채 (x2, y2) 까지 끌고 가서 놓는다 (슬라이더 · 파일 옮기기 · 범위 선택)."""
+    user32.SetCursorPos(int(x1), int(y1))
+    time.sleep(0.05)
+    user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    time.sleep(0.08)
+    for i in range(1, steps + 1):                 # 한 번에 건너뛰면 끌기를 알아채지 못하는 앱이 많다
+        user32.SetCursorPos(round(x1 + (x2 - x1) * i / steps), round(y1 + (y2 - y1) * i / steps))
+        time.sleep(0.015)
+    time.sleep(0.08)
+    user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+
+
+def scroll(hwnd: int, direction: str, amount: int = 5, at: tuple[int, int] | None = None) -> None:
+    """창 한가운데(또는 at 자리)에서 마우스 휠을 굴린다."""
     rect = wt.RECT()
-    if hwnd and user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+    if at is not None:
+        user32.SetCursorPos(int(at[0]), int(at[1]))
+        time.sleep(0.05)
+    elif hwnd and user32.GetWindowRect(hwnd, ctypes.byref(rect)):
         from .winutil import force_foreground
         force_foreground(hwnd)
         user32.SetCursorPos((rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2)
@@ -244,16 +397,83 @@ def scroll(hwnd: int, direction: str, amount: int = 5) -> None:
     user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, ctypes.c_uint32(delta & 0xFFFFFFFF).value, 0)
 
 
+# ---------------------------------------------------------------------- 글자 · 위치
+def _pattern_text(el, U) -> str:
+    """문서/입력 영역의 본문 (TextPattern). 지원하지 않으면 빈 문자열."""
+    try:
+        p = el.GetCurrentPattern(UIA_TextPatternId)
+        if not p:
+            return ""
+        return p.QueryInterface(U.IUIAutomationTextPattern).DocumentRange.GetText(MAX_TEXT) or ""
+    except Exception as e:
+        log.debug("TextPattern 읽기 실패: %s", e)
+        return ""
+
+
+def layout_text(pieces: list[tuple[tuple[int, int, int, int], str]], limit: int = MAX_TEXT) -> str:
+    """[(사각형, 글)] → 사람이 읽는 순서의 글. 같은 높이의 조각은 왼쪽부터 한 줄로 잇고, 바로 앞과 같은 글은 한 번만 쓴다."""
+    rows: list[tuple[int, int, str]] = []
+    for (left, top, _right, bottom), text in pieces:
+        text = re.sub(r"[ \t\r\f\v]+", " ", text).strip()
+        if text:
+            rows.append(((top + bottom) // 2, left, text))
+    rows.sort(key=lambda r: r[0])
+    lines: list[str] = []
+    group: list[tuple[int, int, str]] = []
+
+    def flush() -> None:
+        if not group:
+            return
+        parts: list[str] = []
+        for _y, _x, text in sorted(group, key=lambda r: r[1]):
+            if not parts or parts[-1] != text:
+                parts.append(text)
+        joined = " ".join(parts)
+        if not lines or lines[-1] != joined:
+            lines.append(joined)
+        group.clear()
+
+    for row in rows:
+        # 여러 줄짜리 글(문서 본문)은 혼자 한 덩어리로 둔다
+        if group and (row[0] - group[0][0] > 6 or "\n" in row[2] or "\n" in group[0][2]):
+            flush()
+        group.append(row)
+    flush()
+    out = "\n".join(lines).strip()
+    if len(out) > limit:
+        out = out[:limit].rstrip() + f"\n…(이하 생략 — 전체 {len(out)}자 중 {limit}자)"
+    return out
+
+
+def element_at(x: int, y: int) -> tuple[str, str]:
+    """화면 좌표에 있는 요소의 (이름, 종류). 누를 수 있는 요소(버튼 · 링크 등)가 아니거나 알 수 없으면 ("", "").
+    버튼 안의 글자 · 아이콘을 짚은 경우를 위해 위로 세 단계까지 올라가며 찾는다."""
+    try:
+        a, U = _uia(), _U()
+        el = a.ElementFromPoint(U.tagPOINT(int(x), int(y)))
+        walker = a.ControlViewWalker
+        inner = ""
+        for _ in range(4):
+            if not el:
+                break
+            name = re.sub(r"\s+", " ", (el.CurrentName or "")).strip()
+            ct = el.CurrentControlType
+            if ct in CONTROL_TYPES:
+                return (name or inner)[:80], CONTROL_TYPES[ct]
+            inner = inner or name
+            el = walker.GetParentElement(el)
+    except Exception as e:
+        log.debug("좌표의 요소 확인 실패: %s", e)
+    return "", ""
+
+
 # ---------------------------------------------------------------------- 보조
+def _title(hwnd: int) -> str:
+    return winutil.window_title(hwnd)      # 부를 때마다 찾는다 (테스트가 winutil.window_title 을 바꿔 끼울 수 있게)
+
+
 def _norm(s: str) -> str:
     return re.sub(r"[\s\-_.()·:]+", "", (s or "").lower())
-
-
-def _title(hwnd: int) -> str:
-    n = user32.GetWindowTextLengthW(hwnd)
-    buf = ctypes.create_unicode_buffer(n + 1)
-    user32.GetWindowTextW(hwnd, buf, n + 1)
-    return buf.value
 
 
 def _is_browser(hwnd: int) -> bool:

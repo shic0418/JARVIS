@@ -21,6 +21,13 @@ DEFAULTS: dict = {
     "local_ai_model": "qwen2.5:1.5b", # Ollama 모델 이름 (이 PC 테스트에서 3b 보다 빠르고 정확)
     "local_ai_timeout": 12,           # 초. 넘기면 Claude 에게 넘김
     "pro_model": "haiku",             # Pro 모드 모델: haiku | sonnet | opus
+    "pro_screen_model": "sonnet",     # Pro 모드에서 화면을 보고 조작하는 요청에 쓸 모델 (비우면 pro_model 그대로)
+    "routines": {},                   # 루틴: {"아침 준비": ["크롬 열어", "볼륨 30", "오늘 날씨"]} — '루틴 추가 이름: 명령, 명령' 으로 만든다
+    "pro_keep_alive": 600,            # 초. 마지막 명령 뒤 이만큼 Claude Code 를 켜 둠 (다음 명령이 빨라짐, 메모리 수백 MB). 0 = 바로 닫음
+    "writers": 4,                     # 발표 자료 · 보고서를 나눠서 동시에 쓰는 작가 수 1~6 (0 = 끔: 혼자 조사하고 혼자 쓴다)
+    "writer_model": "",               # 작가가 쓸 모델 (비우면 평소 모델). Pro: haiku | sonnet | opus
+    "screen_follow": True,            # 누른 뒤 화면이 바뀌었으면 바뀐 화면(요소 목록 · 캡처)을 결과에 같이 보냄
+    "screen_detail": "auto",          # 화면 캡처 크기: auto(모델이 볼 수 있는 최대 크기) | standard(항상 작게 — 토큰 절약)
     "anthropic_api_key": "",          # 비워두면 ANTHROPIC_API_KEY 환경변수 사용
     "model": "claude-opus-5-5",
     "effort": "low",                  # low | medium | high  (음성 비서는 low 권장: 빠른 응답)
@@ -31,13 +38,16 @@ DEFAULTS: dict = {
     "stt_language": "ko-KR",
     "stt_engine": "auto",             # auto = 대기 중엔 오프라인 인식, 호출 후엔 Google | local = 항상 오프라인 | google
     "tts_voice": "ko-KR-InJoonNeural",
-    "tts_rate": "+8%",
+    "tts_rate": "+3%",               # 자비스는 서두르지 않지만 늘어지지도 않는다 — 또박또박 정확한 속도
+    "tts_pitch": "-3Hz",             # 조금 낮고 차분한 목소리 (edge-tts 음높이)
+    "voice_fx": True,                # 자비스 음색: 깨끗하게 다듬은 목소리 + 옅은 디지털 광택 + 짧은 공간감 (speech.jarvis_tone)
     "mic_device": None,               # None = 기본 마이크
     "mic_sensitivity": 1.0,           # 높을수록 작은 소리에도 반응
     "noise_robust": True,             # 소음 환경 모드: 음성 감지 AI + 소음 제거 AI (시끄러운 곳에서 작은 목소리)
     "beamforming": True,              # 마이크가 2개 이상이면 정면에서 온 목소리만 강조 (옆 사람·TV 소리 줄임)
     "agc": True,                      # 자동 음량 조절: 멀리서 작게 들어오는 목소리를 실시간으로 키움
     "follow_up_seconds": 7,           # 대답 후 호출어 없이 이어 말할 수 있는 시간
+    "barge_in": True,                 # 말 끊기: 자비스가 말하는 도중 "그만" · "자비스, …" 라고 하면 멈추고 듣는다 (오프라인 인식 필요)
     # --- 자유 대화 모드 ---
     "chat_idle_seconds": 40,          # 대화 모드에서 이 시간 동안 아무 말이 없으면 대화 모드 종료
     "chat_model": "",                 # 대화 모드 모델 (비우면 pro_model). Pro: haiku | sonnet | opus
@@ -45,17 +55,45 @@ DEFAULTS: dict = {
     "speaker_lock": True,             # 세션 잠금: '자비스'라고 부른 사람의 목소리만 이어서 인식
     "owner_only": False,              # 등록된 주인 목소리에만 반응 (목소리 등록 후 켜짐)
     "speaker_threshold": 0.40,        # 목소리 판별 기준 0.25~0.60 (높을수록 엄격)
+    "speaker_ask_borderline": True,   # 기준을 겨우 넘은 호출어 없는 말은 실행하지 않고 "부르셨습니까?" 하고 되묻기
     # --- 동작 ---
     "user_title": "주인님",
     "home_city": "Seoul",
+    "proactive": True,                # 먼저 말 걸기: 배터리 부족 · 할 일 마감 알림 (proactive.py)
+    "daily_briefing": True,           # 그날 처음 쓸 때(오전) 날짜 · 날씨 · 오늘 할 일 브리핑
+    "todo_reminders": True,           # 오늘 마감은 오전 9시 뒤에, 내일 마감은 저녁 7시 뒤에 알림
+    "quiet_hours": "23-7",            # 이 시간에는 먼저 말하지 않음 (화면 알림만). 비우면 없음
+    "battery_warn": 20,               # 충전기 없이 이 % 아래로 떨어지면 알림
+    # --- 일정 · 메일 (agenda.py) — 읽기 전용. 주소 · 비밀번호는 Windows 암호화(DPAPI)로 감싸 저장 ---
+    "calendar_ical_url": "",          # 구글 캘린더 설정의 '비공개 주소(iCal 형식)'. 설정 화면에서 넣으면 암호화해 저장
+    "mail_user": "",                  # 메일 주소 (예: name@gmail.com)
+    "mail_app_password": "",          # 메일 앱 비밀번호 (구글 계정 → 보안 → 앱 비밀번호). 설정 화면에서 넣으면 암호화해 저장
+    "mail_host": "",                  # IMAP 서버. 비우면 메일 주소로 정함 (gmail · naver · daum · kakao)
+    "event_reminders": True,          # 일정 시작 전에 먼저 알림
+    "event_remind_minutes": 10,       # 일정 몇 분 전에 알릴지 (1~120)
     "auto_approve": False,            # True면 위험 명령(PowerShell, 종료 등)을 확인 없이 실행
     "hotkey": "ctrl+alt+j",
     # --- 화면 ---
     "position": "bottom-right",       # bottom-right | top-right
     "compact": False,
+    "self_guard": True,               # 보안 프로토콜: 울트론에게 흡수되면 반격해 울트론을 자비스로 되돌린다 (guard.py · counter.py)
+    "counter_show": True,             # 반격 연출: 울트론 HUD 가 서서히 자비스로 바뀌는 장면 (끄면 조용히 되찾기만)
+    # --- Sentinel 웹 보안 분석기 (sentinel.py) ---
+    "sentinel_server": "http://127.0.0.1:8000",
+    "sentinel_api_key": "",           # 비워두면 SENTINEL_API_KEY 환경변수 사용
+    "sentinel_requester": "",         # Sentinel 감사 기록에 남는 요청자 이름 (비워두면 Windows 사용자 이름)
+    "sentinel_basis": "owner",        # 검사 근거 기본값: owner | written_permission | bug_bounty_scope | internal_lab
+    "hud_motion": "auto",             # 액티브 모드 회전 · 스캔 연출: auto = Windows '애니메이션 효과' 설정을 따름 | on | off
+    "cursor_tracking": "on",          # 액티브 모드 커서 고리: on = 마우스 커서를 따라감 | off
 }
 
 _lock = threading.Lock()
+
+
+# 예전 버전의 기본값 → 지금 기본값으로 옮겨도 되는 값들
+_OLD_DEFAULTS = {
+    "tts_rate": ("+8%",),
+}
 
 
 class Config:
@@ -67,6 +105,15 @@ class Config:
                 loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
                 if isinstance(loaded, dict):
                     self._data.update(loaded)
+                    # 예전 기본값을 그대로 쓰던 항목만 새 기본값(마블 자비스 목소리)으로 옮긴다 — 직접 바꾼 값은 건드리지 않는다
+                    for k, old in _OLD_DEFAULTS.items():
+                        if loaded.get(k) in old:
+                            self._data[k] = DEFAULTS[k]
+                    # 웹캠 시선 추적이 빠졌다: 고리를 꺼 두었던 설정만 새 키로 옮기고 옛 키는 지운다
+                    if "cursor_tracking" not in loaded and str(loaded.get("eye_tracking", "")).lower() == "off":
+                        self._data["cursor_tracking"] = "off"
+                    self._data.pop("eye_tracking", None)
+                    self._data.pop("eye_camera", None)
             except Exception:
                 pass
         self.save()
@@ -100,6 +147,11 @@ class Config:
         d["anthropic_api_key"] = ""
         d["has_api_key"] = bool(key)
         d["api_key_hint"] = (key[:7] + "…" + key[-4:]) if len(key) > 12 else ""
+        d["sentinel_api_key"] = ""
+        d["has_calendar"] = bool(str(self._data.get("calendar_ical_url") or "").strip())
+        d["has_mail"] = bool(str(self._data.get("mail_app_password") or "").strip())
+        d["calendar_ical_url"] = d["mail_app_password"] = ""
+        d["has_sentinel_key"] = bool((self._data.get("sentinel_api_key") or os.environ.get("SENTINEL_API_KEY") or "").strip())
         return d
 
 

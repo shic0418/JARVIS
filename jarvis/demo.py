@@ -8,6 +8,8 @@ import time
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QColor, QImage, QLinearGradient, QPainter
 
+from . import persona
+
 
 def run_demo(core, args) -> None:
     b = core.bridge
@@ -32,12 +34,12 @@ def run_demo(core, args) -> None:
             from PySide6.QtCore import QMetaObject, QObject
             obj = core.win.findChild(QObject, "settings")
             QMetaObject.invokeMethod(obj, "show")
-            core._set_state("standby", "“자비스”라고 불러주세요")
+            core._set_state("standby", persona.STANDBY_HINT)
         elif state == "confirm":
             b.confirmRequest.emit("democ", "PowerShell 실행", "임시 파일 정리\n\nRemove-Item $env:TEMP\\*.log -Force")
             core._set_state("speaking")
         else:
-            core._set_state(state, {"standby": "“자비스”라고 불러주세요"}.get(state))
+            core._set_state(state, {"standby": persona.STANDBY_HINT}.get(state))
 
     def wobble():
         t = time.monotonic() - t0

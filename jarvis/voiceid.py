@@ -44,6 +44,23 @@ SCAN_WINDOW_SECONDS = 2.0    # 주변 대화 상태: 발화를 이 길이 창으
 SCAN_HOP_SECONDS = 0.5
 OWNER_SLACK = 0.08           # 주인 전용: 같은 대화에서 확인된 목소리와 아주 비슷하면 기준보다 이만큼 낮아도 통과
 SHORT_WAKE_SECONDS = 1.2     # 이보다 짧은 "자비스" 한 마디는 주인 확인을 다음 명령으로 미룸
+# ---- 집중 듣기: 주인이 "자비스"라고 부른 뒤에는 그 목소리만 듣는다 ----
+FOCUS_SAME = 0.50            # 방금 부른 목소리와 이 정도 닮으면 같은 사람 (같은 마이크·같은 소음에서 잰 값이라 프로필보다 정확)
+FOCUS_SLACK = 0.12           # 집중 듣기 중: 방금 부른 목소리와 같으면 프로필 점수는 기준보다 이만큼 낮아도 통과
+FOCUS_OTHER = 0.25           # 집중 듣기 중: 방금 부른 목소리와 이보다 덜 닮으면 '다른 사람' — 인식조차 하지 않음
+SPAN_MIN_SECONDS = 3.5       # 이보다 긴 발화에서만 주인이 말한 부분을 잘라낸다
+SPAN_CUT = 0.12              # 기준보다 이만큼 넘게 낮은 창은 주인 목소리가 아닌 부분으로 본다
+SPAN_PAD_SECONDS = 0.4       # 잘라낼 때 앞뒤로 남겨 두는 여유 (말의 첫·끝 음절 보존)
+SPAN_KEEP_RATIO = 0.85       # 주인 부분이 발화의 이 비율을 넘으면 자르지 않는다 (거의 다 주인 말)
+# ---- 경계 점수: 기준을 겨우 넘은 호출어 없는 말은 실행하지 않고 "부르셨습니까?" 하고 되묻는다 ----
+# (기록: 주변 대화 중 혼잣말이 유사도 0.36 / 기준 0.35 로 통과해 Claude 가 대답함)
+BORDER_MARGIN = 0.05
+# ---- 프로필 적응: 확실한 주인 목소리로 프로필을 조금씩 보강한다 (마이크 · 목 상태가 바뀌어도 맞도록) ----
+ADAPT_MARGIN = 0.20          # 기준보다 이만큼 더 높게 일치한 호출 발화만 쓴다
+ADAPT_MIN_SECONDS = 2.0
+ADAPT_EVERY = 600.0          # 초. 이 간격보다 자주 보강하지 않는다 (한 대화가 프로필을 덮어쓰지 않게)
+ADAPT_KEEP = 10              # 보강 샘플은 최근 이만큼만 둔다
+ADAPT_WEIGHT = 0.30          # 프로필에서 보강 샘플이 차지하는 비중 (등록 샘플이 늘 70%)
 # 기준값 근거 (실제 녹음 3명으로 측정): 등록 프로필 vs 1.5초 발화 → 0.40에서 오거부 2%·오수락 1%,
 # 발화 1개 vs 발화 1개(세션 잠금) → 0.40에서 오거부 0~7%·오수락 1~5%. 실제 마이크·소음 환경에서는 달라질 수 있다.
 
@@ -60,6 +77,7 @@ ENROLL_SENTENCES = [
 class Voice:
     emb: np.ndarray      # 길이 1로 정규화된 임베딩
     seconds: float
+    span: tuple[int, int] | None = None   # (선택) 발화 안에서 받을 사람의 목소리가 들린 구간 (샘플 위치)
 
 
 def cosine(a: np.ndarray, b: np.ndarray) -> float:
@@ -117,7 +135,7 @@ class VoiceID:
             self._set("loading")
             import sherpa_onnx
             cfg = sherpa_onnx.SpeakerEmbeddingExtractorConfig(
-                model=_short_path(MODEL_PATH), num_threads=2)
+                model=_short_path(MODEL_PATH), num_threads=1)   # 2 이상이면 작업 스레드가 헛돈다 (local_stt.STT_THREADS 설명)
             if not cfg.validate():
                 raise RuntimeError("모델 설정이 올바르지 않습니다")
             self._ex = sherpa_onnx.SpeakerEmbeddingExtractor(cfg)
@@ -193,8 +211,10 @@ class VoiceProfile:
     def __init__(self, path: Path = PROFILE_PATH) -> None:
         self.path = path
         self.samples: list[np.ndarray] = []
+        self.adapted: list[np.ndarray] = []     # 사용하면서 보강한 샘플 (등록 샘플과 따로 둔다)
         self.created = ""
         self.centroid: np.ndarray | None = None
+        self._adapted_at = 0.0
         self.load()
 
     @property
@@ -202,7 +222,7 @@ class VoiceProfile:
         return self.centroid is not None
 
     def load(self) -> None:
-        self.samples, self.created, self.centroid = [], "", None
+        self.samples, self.adapted, self.created, self.centroid = [], [], "", None
         try:
             d = json.loads(self.path.read_text(encoding="utf-8"))
         except FileNotFoundError:
@@ -215,20 +235,50 @@ class VoiceProfile:
             return
         self.samples = [_normalize(np.asarray(s, dtype=np.float32)) for s in d.get("samples", [])]
         self.created = str(d.get("created", ""))
-        if self.samples:
-            self.centroid = _normalize(np.mean(self.samples, axis=0))
+        self.adapted = [_normalize(np.asarray(s, dtype=np.float32)) for s in d.get("adapted", [])][-ADAPT_KEEP:]
+        self._recompute()
 
-    def save(self, samples: list[np.ndarray]) -> None:
+    def _recompute(self) -> None:
+        if not self.samples:
+            self.centroid = None
+            return
+        base = _normalize(np.mean(self.samples, axis=0))
+        if self.adapted:
+            base = _normalize((1 - ADAPT_WEIGHT) * base + ADAPT_WEIGHT * _normalize(np.mean(self.adapted, axis=0)))
+        self.centroid = base
+
+    def _write(self, created: str) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "model": MODEL_NAME,
-            "created": time.strftime("%Y-%m-%d %H:%M"),
-            "samples": [[round(float(x), 5) for x in s] for s in samples],
+            "created": created,
+            "samples": [[round(float(x), 5) for x in s] for s in self.samples],
+            "adapted": [[round(float(x), 5) for x in s] for s in self.adapted],
         }
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data), encoding="utf-8")
         tmp.replace(self.path)
+
+    def save(self, samples: list[np.ndarray]) -> None:
+        """새로 등록 — 예전에 보강한 샘플은 버린다."""
+        self.samples, self.adapted = [_normalize(np.asarray(s, dtype=np.float32)) for s in samples], []
+        self._write(time.strftime("%Y-%m-%d %H:%M"))
         self.load()
+
+    def adapt(self, emb: np.ndarray, now: float | None = None) -> bool:
+        """확실한 주인 목소리 하나로 프로필을 조금 보강한다. 너무 자주 부르면 무시. 보강했으면 True."""
+        now = time.monotonic() if now is None else now
+        if not self.exists or (self._adapted_at and now - self._adapted_at < ADAPT_EVERY):
+            return False
+        self._adapted_at = now
+        self.adapted = (self.adapted + [_normalize(np.asarray(emb, dtype=np.float32))])[-ADAPT_KEEP:]
+        self._recompute()
+        try:
+            self._write(self.created)
+        except OSError as e:
+            log.warning("목소리 프로필 보강 저장 실패: %s", e)
+        log.info("목소리 프로필 보강 (보강 샘플 %d개)", len(self.adapted))
+        return True
 
     def clear(self) -> None:
         self.path.unlink(missing_ok=True)
@@ -246,6 +296,7 @@ class Verdict:
     reason: str = ""             # 거부 사유: owner | session | short
     score: float | None = None
     threshold: float | None = None
+    borderline: bool = False     # 통과는 했지만 기준을 겨우 넘었다 (호출어 없는 말이면 되묻는다)
 
 
 class SpeakerGate:
@@ -255,6 +306,7 @@ class SpeakerGate:
         self.cfg = cfg
         self.session: np.ndarray | None = None
         self._weight = 0.0
+        self.focused = False         # 주인이 "자비스"라고 불러 확인된 대화 중인가 (그동안은 그 목소리만 듣는다)
 
     def owner_mode(self) -> bool:
         return bool(self.cfg["owner_only"]) and self.profile.exists
@@ -265,38 +317,105 @@ class SpeakerGate:
         except (TypeError, ValueError):
             return 0.40
 
+    def _owner_score(self, voice: Voice) -> float:
+        return self.profile.score(voice)
+
     def maybe_allowed(self, voice: Voice | None) -> bool:
-        """(인식 스레드) 인식하기 전에 미리 보는 확인. 확실히 주인이 아닐 때만 False.
+        """(인식 스레드) 인식하기 전에 미리 보는 확인. 확실히 받지 않을 목소리일 때만 False.
         애매하면 True — 최종 판단은 check() 가 한다. 주인 전용 모드가 아니면 항상 True."""
         if not self.owner_mode() or not self.vid.ready or voice is None:
             return True
         if voice.seconds < SHORT_WAKE_SECONDS:
             return True              # 짧은 "자비스" 한 마디는 지문이 부정확하다 — check() 도 다음 명령으로 미룬다
-        return self.profile.score(voice) >= self.threshold() - PREFILTER_MARGIN
+        s = self._owner_score(voice)
+        th = self.threshold()
+        if s >= th - PREFILTER_MARGIN:
+            return True
+        session = self.session
+        if self.focused and session is not None:
+            # 집중 듣기: 방금 부른 주인 목소리와 같으면 프로필 점수가 낮아도 인식해 본다
+            return s >= th - FOCUS_SLACK and cosine(voice.emb, session) >= FOCUS_SAME
+        return False
+
+    def barge_ok(self, voice: Voice | None, strict: bool = False) -> bool:
+        """말 끊기: 확실히 다른 목소리(스피커에서 되돌아온 자비스 자신의 목소리 포함)만 막는다. 기준 목소리는 바꾸지 않는다.
+        주인 전용이면 주인 프로필과, 세션 잠금이면 방금 부른 사람과 비교한다. 판별할 수 없으면 통과.
+
+        strict=True 는 끼어든 말의 명령("자비스, …")을 실행해도 되는가 — 멈추기만 하는 것보다 엄격하게,
+        평소 명령의 check(wake=True) 와 같은 기준으로 본다 (세션·프로필은 바꾸지 않는다).
+        주인 전용에서 지문이 없으면(너무 짧음 · 계산 실패) 거부한다."""
+        if strict:
+            return self._barge_command_ok(voice)
+        if voice is None or not self.vid.ready:
+            return True
+        th = self.threshold()
+        if self.owner_mode():
+            return self._owner_score(voice) >= th - PREFILTER_MARGIN
+        if self.cfg["speaker_lock"] and self.session is not None:
+            return cosine(voice.emb, self.session) >= th - FOCUS_SLACK
+        return True
+
+    def _barge_command_ok(self, voice: Voice | None) -> bool:
+        """check(voice, wake=True) 의 주인 전용 통과 기준을 부작용 없이 그대로 따른다.
+        세션 잠금만 켜져 있으면 평소에도 호출어가 새 세션을 열므로 통과 (check 와 같다)."""
+        if not self.owner_mode() or not self.vid.ready:
+            return True
+        if voice is None:
+            return False
+        s = self._owner_score(voice)
+        th = self.threshold()
+        if round(s, 2) >= th:
+            return True
+        if self.session is not None:
+            same = cosine(voice.emb, self.session)
+            if self.focused and s >= th - FOCUS_SLACK and same >= FOCUS_SAME:
+                return True
+            if s >= th - OWNER_SLACK and same >= th + ABSORB_MARGIN:
+                return True
+        return False
 
     def best_voice(self, pcm: np.ndarray) -> Voice | None:
-        """(인식 스레드) 주변 대화 상태용: 발화를 2초 창으로 훑어 주인 프로필과 가장 닮은 창의 지문을 돌려준다.
+        """(인식 스레드) 발화를 2초 창으로 훑어 기준 목소리(주인 프로필)와 가장 닮은 창의 지문을 돌려준다.
         시끄러운 곳에서는 한 구간에 주인 말과 남의 큰 소리가 같이 들어간다 — 통째로 비교하면 주인도 낮게 나온다
         (기록: 교실에서 "자비스 액티브 모드" 가 0.05, 같은 사람의 바로 다음 말은 0.50).
         '이 구간 어딘가에서 주인이 말했는가'를 보는 것이므로, 주인이 말하는 중에 옆 사람이 한 말이 통과할 수 있다.
+        → 돌려주는 Voice.span 에 주인 목소리가 들린 구간을 적어 준다. 듣는 쪽이 그 부분만 인식하면 남의 말은 빠진다.
         주인 전용 모드가 아니면 None (호출한 쪽이 평소 방식으로 계산)."""
         if not self.owner_mode() or not self.vid.ready:
             return None
         win, hop = int(SCAN_WINDOW_SECONDS * RATE), int(SCAN_HOP_SECONDS * RATE)
         if len(pcm) < win + hop:
             return self.vid.embed(pcm)
-        best, best_s = None, -2.0
+        best, best_s, scored = None, -2.0, []
         for i in range(0, len(pcm) - win + 1, hop):
             v = self.vid.embed(pcm[i:i + win])
             if v is not None:
-                s = self.profile.score(v)
+                s = self._owner_score(v)
+                scored.append((i, s))
                 if s > best_s:
                     best, best_s = v, s
+        if best is not None:
+            best.span = self._span(scored, best_s, len(pcm), win)
         return best
+
+    def _span(self, scored: list[tuple[int, float]], best_s: float, n: int, win: int) -> tuple[int, int] | None:
+        """창별 점수 → 받을 사람의 목소리가 들린 구간. 자를 만큼 뚜렷하지 않으면 None (통째로 인식)."""
+        th = self.threshold()
+        if n < SPAN_MIN_SECONDS * RATE or best_s < th:
+            return None              # 짧거나, 주인이 있는지조차 확실하지 않으면 자르지 않는다
+        keep = [i for i, s in scored if s >= th - SPAN_CUT]
+        if not keep:
+            return None
+        pad = int(SPAN_PAD_SECONDS * RATE)
+        a, b = max(0, keep[0] - pad), min(n, keep[-1] + win + pad)
+        if b - a >= n * SPAN_KEEP_RATIO:
+            return None
+        return a, b
 
     def reset(self) -> None:
         """세션 종료 (대기 상태로 돌아가면 호출)."""
         self.session, self._weight = None, 0.0
+        self.focused = False
 
     def _absorb(self, voice: Voice) -> None:
         """세션 기준에 같은 사람의 발화를 더해 점점 정확하게 만든다."""
@@ -321,16 +440,32 @@ class SpeakerGate:
                 return Verdict(True, "owner")
             if voice is None:
                 return Verdict(False, "owner", "short")
-            s = self.profile.score(voice)
-            if s >= th:
-                if s >= th + ABSORB_MARGIN:
+            s = self._owner_score(voice)
+            # 화면·로그에는 소수 둘째 자리로 보인다 — 0.3999 가 '0.40 / 기준 0.40 → 거부' 로 보이지 않게 같은 자리에서 비교
+            if round(s, 2) >= th:
+                same_session = self.session is not None and cosine(voice.emb, self.session) >= FOCUS_SAME
+                borderline = not wake and s < th + BORDER_MARGIN and not same_session
+                adapt = getattr(self.profile, "adapt", None)
+                if adapt and wake and voice.seconds >= ADAPT_MIN_SECONDS and s >= th + ADAPT_MARGIN:
+                    adapt(voice.emb)
+                if wake and voice.seconds >= SHORT_WAKE_SECONDS:
+                    # 주인이 불렀다 → 지금 이 마이크·이 소음에서의 주인 목소리를 새 기준으로 삼고 집중 듣기 시작
+                    if not self.focused:
+                        self.session, self._weight = None, 0.0
+                    self._absorb(voice)
+                    self.focused = True
+                elif s >= th + ABSORB_MARGIN or (self.focused and self.session is not None
+                                                 and cosine(voice.emb, self.session) >= FOCUS_SAME):
                     self._absorb(voice)          # 이번 대화에서 확실히 주인이었던 목소리
-                return Verdict(True, "owner", "", s, th)
-            # 기준에 아슬아슬하게 못 미쳐도, 같은 대화에서 이미 확인된 주인 목소리와 아주 비슷하면 통과
-            # (기록: 주인 점수는 0.47~0.89 인데 대화 중 0.37·0.40 으로 거부되어 명령이 무시됨)
-            if self.session is not None and s >= th - OWNER_SLACK:
+                    self.focused = True
+                return Verdict(True, "owner", "", s, th, borderline)
+            # 기준에 못 미쳐도, 같은 대화에서 이미 확인된 주인 목소리와 아주 비슷하면 통과
+            # (기록: 주인 점수는 0.47~0.89 인데 대화 중 0.32~0.39 로 거부되어 명령이 무시됨)
+            if self.session is not None:
                 same = cosine(voice.emb, self.session)
-                if same >= th + ABSORB_MARGIN:
+                if self.focused and s >= th - FOCUS_SLACK and same >= FOCUS_SAME:
+                    return Verdict(True, "owner", "", s, th)
+                if s >= th - OWNER_SLACK and same >= th + ABSORB_MARGIN:
                     return Verdict(True, "owner", "", s, th)
             return Verdict(False, "owner", "owner", s, th)
         # ---- 세션 잠금 (주인 미등록) ----
@@ -341,12 +476,12 @@ class SpeakerGate:
             self._absorb(voice)                   # 이 사람이 이번 대화의 주인
             return Verdict(True, "session")
         s = cosine(voice.emb, self.session)
-        if s < th:
+        if round(s, 2) < th:
             return Verdict(False, "session", "session", s, th)
         if s >= th + ABSORB_MARGIN:
             # 확실히 같은 사람일 때만 기준에 더한다 — 아슬아슬하게 통과한 다른 사람이 섞이면 기준이 오염된다
             self._absorb(voice)
-        return Verdict(True, "session", "", s, th)
+        return Verdict(True, "session", "", s, th, s < th + BORDER_MARGIN)
 
 
 # ============================================================================ 등록 절차

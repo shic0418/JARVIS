@@ -16,7 +16,7 @@ from logging.handlers import RotatingFileHandler
 os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
 os.environ.setdefault("QSG_RHI_BACKEND", "d3d11")
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QtMsgType, QTimer, Qt, qInstallMessageHandler
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication
@@ -33,6 +33,12 @@ def setup_logging() -> None:
         handlers.append(logging.StreamHandler())
     logging.basicConfig(level=logging.INFO, handlers=handlers,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # Qt · QML 경고도 로그 파일에 남긴다 (pythonw 로 켜면 콘솔이 없어 QML 오류 원인을 볼 수 없음)
+    qt_log = logging.getLogger("qt")
+    levels = {QtMsgType.QtDebugMsg: logging.DEBUG, QtMsgType.QtInfoMsg: logging.INFO,
+              QtMsgType.QtWarningMsg: logging.WARNING, QtMsgType.QtCriticalMsg: logging.ERROR,
+              QtMsgType.QtFatalMsg: logging.CRITICAL}
+    qInstallMessageHandler(lambda mode, ctx, msg: qt_log.log(levels.get(mode, logging.WARNING), "%s", msg))
 
 
 def already_running() -> bool:
@@ -54,6 +60,9 @@ def main() -> int:
     parser.add_argument("--shot", metavar="PNG", help="(개발용) N초 후 HUD 화면을 PNG로 저장하고 종료")
     parser.add_argument("--shot-delay", type=float, default=4.0)
     parser.add_argument("--demo", action="store_true", help="(개발용) 상태 데모")
+    # 감시 프로세스가 다시 켰음 (guard.py): 보안 프로토콜로 울트론을 되돌림(counter) · 오류 뒤 다시 켜짐(other) · 몇 번째인지
+    parser.add_argument("--revived", choices=("counter", "other"), help=argparse.SUPPRESS)
+    parser.add_argument("--revive-count", type=int, default=0, help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     setup_logging()
@@ -74,11 +83,16 @@ def main() -> int:
     server.listen(INSTANCE_KEY)
     server.newConnection.connect(lambda: (server.nextPendingConnection(), core.show_external()))
 
+    from jarvis import guard
     if args.demo or args.shot:
         from jarvis.demo import run_demo
         run_demo(core, args)
+    elif core.cfg["self_guard"] is not False:
+        # 보안 프로토콜: 울트론에게 흡수되면 반격하고, 오류로 꺼지면 다시 켜 주는 창 없는 감시 프로세스 (guard.py)
+        guard.spawn(os.getpid(), sys.argv[1:])       # (--revived 같은 표시는 다시 켤 때 guard 가 바꿔 단다)
 
     code = app.exec()
+    guard.mark_clean_exit()          # 정상 종료 — 감시 프로세스가 다시 켜지 않는다
     # QML 화면을 먼저 정리해야 종료 시 'jarvis is null' 경고가 나지 않는다
     import shiboken6
     core.win.hide()

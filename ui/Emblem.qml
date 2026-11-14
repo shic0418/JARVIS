@@ -52,10 +52,30 @@ Item {
     readonly property real breath: 0.5 + 0.5 * Math.sin(t * 1.15)
     readonly property real sway: 2.2 * Math.sin(t * 0.21) + 1.1 * Math.sin(t * 0.13 + 1.3)
 
-    FrameAnimation {
-        running: e.visible
+    // 갱신 박자 — 모니터 주사율(60~144Hz)이 아니라 상태에 맞춘 박자로 움직인다.
+    //   FrameAnimation 은 쉬는 프레임에도 매 주사마다 깨어나 애니메이션 구동기를 돌리므로, 대기 중에도 CPU 를 계속 썼다.
+    //   Timer 는 정해진 박자에만 깨어나고, 그 사이에는 장면이 바뀌지 않아 다시 그리지도 않는다.
+    //   · 등장 연출: 60fps (짧고, 매끄러워야 한다)
+    //   · 듣기 · 생각 · 말하기 (또는 그 상태에서 막 빠져나오는 중): 30fps
+    //   · 대기 · 오프라인: 20fps (움직임이 느려 차이가 보이지 않는다)
+    //   · 창이 숨었거나 최소화됐거나 paused: 멈춤 (트레이로 숨겨도 계속 그리던 것을 없앤다)
+    // dt 는 실제 흐른 시간으로 잰다 — 타이머가 늦게 와도 움직임 빠르기가 박자에 따라 달라지지 않는다.
+    property bool paused: false
+    readonly property bool onScreen: e.visible && !e.paused && e.Window.window !== null
+                                     && e.Window.window.visible && e.Window.window.visibility !== Window.Minimized
+    readonly property bool calm: (mode === "standby" || mode === "offline") && intro >= 1
+                                 && listenAmt < 0.02 && thinkAmt < 0.02 && amp < 0.02
+    property real lastMs: 0
+    onOnScreenChanged: lastMs = 0          // 다시 보일 때 멈춰 있던 시간을 한 번에 몰아 움직이지 않게
+    Timer {
+        id: beat
+        interval: e.intro < 1 ? 16 : e.calm ? 50 : 33
+        repeat: true
+        running: e.onScreen
         onTriggered: {
-            const dt = Math.min(frameTime, 0.05)
+            const now = Date.now()
+            const dt = e.lastMs > 0 ? Math.min((now - e.lastMs) / 1000, 0.1) : interval / 1000
+            e.lastMs = now
             const f = k => 1 - Math.exp(-dt * k)
             e.t += dt
             e.spd += (e.speedTarget - e.spd) * f(1.6)

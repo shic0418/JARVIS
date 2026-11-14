@@ -37,6 +37,7 @@ from typing import Any, Callable
 import numpy as np
 
 from .frontend import MAX_CHANNELS, Agc, Beamformer
+from .barge import FLOOR as BARGE_FLOOR, START_BLOCKS as BARGE_START_BLOCKS, BargeDetector
 from .local_stt import LocalSTT
 from .noise import NoiseModels, StreamVad, vad_threshold
 
@@ -49,11 +50,14 @@ MIN_SPEECH_BLOCKS = 7      # 실제 소리가 난 블록이 210ms 미만이면 �
 START_BLOCKS = 3           # 기준을 90ms 연속 넘으면 발화 시작
 SILENCE_END_BLOCKS = 27    # 810ms 무음이면 발화 종료
 MAX_UTTER_BLOCKS = 500     # 최대 15초
+BARGE_ONSET_BLOCKS = BARGE_START_BLOCKS + 2  # 말 끊기: 미리 담은 앞 구간 중 감지에 걸린 블록 + 약한 첫소리 60ms 만 지문에 넣는다 (그 앞은 자비스 에코)
+BARGE_EMBED_MIN = RATE // 2  # 지문은 0.5초 이상이어야 잰다 (voiceid.MIN_SECONDS 와 같은 값) — 앞 구간은 이만큼 남는 데까지만 뺀다
 
 # VAD 기준 (음성 대역 RMS, int16 스케일)
 NOISE_FACTOR = 2.5         # 소음 대비 이 배수를 넘으면 말소리로 봄 (감도로 나눔)
 NOISE_FACTOR_ACTIVE = 1.8  # 호출 직후/이어 말하기 중에는 더 낮은 기준
 ABS_FLOOR = 60.0           # 아주 조용한 방에서도 이 밑은 말소리로 보지 않음 (감도로 나눔)
+QUIET_RATIO = 0.5          # 음성 대역 크기가 ABS_FLOOR 의 이 비율보다 작으면 소음 제거 갈래를 돌리지 않는다 (조용한 방의 대기 부하 절감)
 END_RATIO = 0.55           # 시작 기준의 이 비율 밑으로 내려가야 무음으로 봄 (말끝 흐림 보존)
 NOISE_MIN = 15.0
 NOISE_WIN_BLOCKS = 80      # 소음 추정 창 2.4초
@@ -78,6 +82,36 @@ STT_HPF_HZ = 80            # 이 아래 저주파(험·진동) 제거
 STT_TARGET_PEAK = 16000.0  # 약 -6dBFS 까지 증폭
 STT_MAX_GAIN = 10.0        # 최대 +20dB (잡음만 과하게 키우지 않도록 제한)
 GOOGLE_RETRY_SEC = 30      # Google 연결 실패 후 이 시간 동안은 오프라인 인식만 사용
+IGNORED_LOG_SEC = 60       # 호출어 없이 지나간 주변 소리는 한 줄씩 적지 않고 이 간격으로 묶어서 적는다
+MIN_SPAN_SECONDS = 1.0     # 주인 목소리 구간이 이보다 짧게 잡히면 자르지 않고 통째로 인식
+# 못 알아들었을 때 원인 짐작 (HUD 안내 문구용). 기록 1,929건: 인식 성공 · 실패의 크기 분포는 거의 같아서
+# 크기만으로는 원인을 가릴 수 없다 — 분명한 경우만 원인을 말하고 나머지는 평범하게 "다시 말씀해 주십시오"
+MISS_LONG_SECONDS = 9.0    # 이보다 긴 발화는 끝까지 받아 적지 못하는 일이 잦다
+MISS_NOISY_RATIO = 1.4     # 말소리 크기가 배경의 이 배수에 못 미치면 소음에 묻힌 것
+MISS_QUIET_LEVEL = 300     # 배경이 조용한데 말소리 크기가 이보다 작으면 목소리가 작은 것
+
+
+def miss_reason(seconds: float, level: float, bg: float, babble: bool, online: bool = True) -> str:
+    """못 알아들은 발화의 원인 짐작: offline | long | noisy | quiet | "" (모름)."""
+    if not online:
+        return "offline"
+    if seconds >= MISS_LONG_SECONDS:
+        return "long"
+    if babble or (bg > 0 and level < bg * MISS_NOISY_RATIO):
+        return "noisy"
+    if level < MISS_QUIET_LEVEL:
+        return "quiet"
+    return ""
+
+
+class _Filtered:
+    """on_utterance 의 voice 자리에 넣는 표시: 목소리가 달라 인식하지 않고 버린 소리 (못 알아들은 것과 구분)."""
+
+    def __repr__(self) -> str:
+        return "FILTERED"
+
+
+FILTERED = _Filtered()
 
 _WIN = np.hanning(BLOCK).astype(np.float32)
 _WIN_POW = float(np.mean(_WIN ** 2))
@@ -123,6 +157,14 @@ def voice_part(pcm: np.ndarray, tail: int, near: np.ndarray | None) -> np.ndarra
         if len(idx) * BLOCK >= RATE * 0.8:
             return pcm.reshape(-1, BLOCK)[idx].ravel()
     return pcm[:max(0, len(pcm) - tail)]
+
+
+def barge_voice_part(pcm: np.ndarray, lead: int) -> np.ndarray:
+    """말 끊기 구간에서 목소리 지문을 잴 부분 — 앞에 미리 담은 소리(스피커에서 되돌아온 자비스 목소리)를 뺀다.
+    받아 적기에는 말 첫소리가 잘리지 않게 통째로 쓰지만, 지문에 에코가 섞이면 주인도 낮게 나와 명령이 거부된다.
+    짧은 "그만" 처럼 다 빼면 0.5초가 안 되면, 판별할 수 있는 길이가 남는 데까지만 뺀다."""
+    cut = min(lead, len(pcm) - BARGE_EMBED_MIN)
+    return pcm[cut:] if cut > 0 else pcm
 
 
 class Listener:
@@ -175,9 +217,31 @@ class Listener:
         self.has_wake: Callable[[str], bool] = lambda t: True   # 텍스트에 호출어가 있는가
         self.wake_prefix = "자비스"
         self.last_engine = ""         # 마지막 발화를 인식한 엔진 (HUD 표시·로그용)
+        self.last_miss = ""           # 마지막으로 못 알아들은 발화의 원인 짐작 (miss_reason) — app 이 안내 문구로 쓴다
+        self._online = True           # 마지막 인식 때 Google 에 연결되었는가 (오프라인 인식이 없을 때만 의미)
         # Google 이 준 인식 후보들 중 하나를 고른다 (기본: 첫 번째). app 이 '알아들을 수 있는 명령'을 고르게 바꾼다
         self.pick: Callable[[list[str]], str] = lambda alts: alts[0]
+        # (선택) 오프라인 인식 결과를 그대로 쓰게 될 때, 호출어 뒤쪽만 다시 받아 적어 볼지 정한다 (_second_look)
+        #   retry_cut(글, 글 조각, 조각 시각) -> 호출어가 끝나는 시각(초). 다시 볼 필요가 없으면 None
+        #   understands(명령) -> 바로 처리할 수 있는 명령인가
+        self.retry_cut: Callable[[str, list, list], float | None] | None = None
+        self.understands: Callable[[str], bool] | None = None
         self._google_down_until = 0.0
+        # 집중 듣기 중인가 (주인이 불러서 확인된 대화 중) — 그동안은 주변이 조용해도 목소리 지문을 먼저 보고,
+        # 다른 사람의 소리는 인식하지 않으며, 한 구간에 섞인 남의 말은 잘라내고 주인 부분만 인식한다
+        self.focus: Callable[[], bool] = lambda: False
+        self._ignored: collections.Counter = collections.Counter()
+        self._ignored_at = time.monotonic()
+        # ---- 말 끊기 (barge.py): 자비스가 말하는 동안(muted)에도 끼어든 짧은 말만 PC 안에서 받아 적는다 ----
+        self.barge_enabled: Callable[[], bool] = lambda: False   # 지금 말 끊기를 들을 것인가 (app)
+        self.echo_level: Callable[[], float] = lambda: 0.0        # 지금 되돌아올 에코의 원인 크기 (speaker.recent_level)
+        self.on_barge_start: Callable[[], None] = lambda: None    # 끼어든 소리 시작 (app 이 자비스 목소리를 줄인다)
+        self.on_barge: Callable[[str | None, Any], None] = lambda text, voice: None   # 받아 적은 글 (못 받으면 None)
+        self._barge = BargeDetector()
+        self._barge_pre: collections.deque = collections.deque(maxlen=10)
+        self._barge_buf: list[np.ndarray] = []
+        self._barge_lead = 0       # 잘라 낸 구간 앞에 붙은 '감지 전' 소리의 길이 (샘플) — 목소리 지문에서는 뺀다
+        self._barge_q: queue.Queue = queue.Queue(maxsize=4)
 
     # ---------- lifecycle ----------
     def start(self) -> bool:
@@ -191,6 +255,7 @@ class Listener:
             return False
         threading.Thread(target=self._vad_loop, daemon=True, name="vad").start()
         threading.Thread(target=self._stt_loop, daemon=True, name="stt").start()
+        threading.Thread(target=self._barge_loop, daemon=True, name="barge").start()
         return True
 
     def _open(self, sd):
@@ -289,7 +354,9 @@ class Listener:
                 in_speech, speech, loud_run, silent_run = False, [], 0, 0
                 pre_roll.clear()
                 was_muted = True
+                self._barge_feed(block if self.muted and self.enabled else None)
                 continue
+            self._barge_feed(None)
 
             # ---- 음성 감지 AI 준비/갱신 ----
             nm = self.noise_models if self.noise_robust else None
@@ -308,6 +375,7 @@ class Listener:
                     svad.reset()          # 자기 목소리(TTS) 들은 상태를 끌고 오지 않도록
             was_muted = False
             e = band_rms(block)
+            hush = e < QUIET_RATIO * ABS_FLOOR / self.sensitivity and not in_speech
             # 자동 음량 조절: 감지 AI·인식·화자 판별에는 키운 소리를 쓴다.
             # 에너지 기준(e, noise)은 키우기 전 소리로 계산한다 — 증폭이 바뀔 때 기준이 흔들리지 않게
             if self.agc:
@@ -315,7 +383,7 @@ class Listener:
             ai = False
             if svad is not None:
                 try:
-                    ai = svad.feed(block)
+                    ai = svad.feed(block, quiet=hush)
                 except Exception as ex:
                     log.warning("음성 감지 AI 오류 — 기존 방식으로 전환: %s", ex)
                     self.noise_robust = False
@@ -392,8 +460,72 @@ class Listener:
                                             ai_voiced >= MIN_SPEECH_BLOCKS // 2, self._utt_info,
                                             np.array(near, dtype=np.float32) if self._utt_info[2] else None))
                     else:
+                        self.last_miss = ""
                         self.on_utterance(None, None)
                     speech = []
+
+    # ---------- 말 끊기 ----------
+    def _barge_feed(self, block: np.ndarray | None) -> None:
+        """(VAD 스레드) 자비스가 말하는 동안의 마이크 블록. 예상 에코보다 확실히 큰 소리 구간을 잘라 인식 대기열에 넣는다."""
+        det = self._barge
+        try:
+            on = block is not None and bool(self.barge_enabled())
+        except Exception:
+            on = False
+        if not on:
+            if det.active:
+                self.on_barge(None, None)                 # 말하기가 끝났다 — 줄인 소리를 되돌릴 일도 없지만 상태를 닫는다
+            det.reset()
+            self._barge_pre.clear()
+            self._barge_buf = []
+            return
+        e = band_rms(block)
+        try:
+            ref = float(self.echo_level())
+        except Exception:
+            ref = 0.0
+        self._barge_pre.append(block)
+        ev = det.feed(e, ref, max(BARGE_FLOOR, ABS_FLOOR / self.sensitivity))
+        if ev == "start":
+            self._barge_buf = list(self._barge_pre)
+            self._barge_lead = max(0, len(self._barge_pre) - BARGE_ONSET_BLOCKS) * BLOCK
+            log.info("말 끊기 후보: 소리 %.0f / 예상 에코 기준 %.0f", e, det.th)
+            self.on_barge_start()
+        elif det.active:
+            self._barge_buf.append(block)
+        elif ev == "end":
+            self._barge_buf.append(block)
+            try:
+                self._barge_q.put_nowait((np.concatenate(self._barge_buf), self._barge_lead))
+            except queue.Full:
+                self.on_barge(None, None)                 # 받아 적지 못한다 — 줄인 목소리를 되돌리게 알린다
+            self._barge_buf = []
+        elif ev == "drop":
+            self._barge_buf = []
+            self.on_barge(None, None)
+
+    def _barge_loop(self) -> None:
+        """(말 끊기 인식 스레드) 잘라 낸 구간을 오프라인으로 받아 적고 목소리 지문을 계산해 앱에 넘긴다.
+        말하는 동안의 소리는 Google 로 보내지 않는다."""
+        while not self._stop.is_set():
+            try:
+                item = self._barge_q.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            pcm, lead = item if isinstance(item, tuple) else (item, 0)
+            text, voice = None, None
+            try:
+                stt = self.local_stt
+                text = stt.recognize(prepare_for_stt(pcm)) if stt is not None and stt.ready else None
+            except Exception as e:
+                log.warning("말 끊기 인식 실패: %s", e)
+            if text and self.embedder is not None:
+                try:
+                    voice = self.embedder(barge_voice_part(pcm, lead))
+                except Exception as e:
+                    log.warning("말 끊기 목소리 지문 실패: %s", e)
+            log.info("말 끊기 후보 %.1f초 · %s", len(pcm) / RATE, f"{len(text)}자" if text else "인식 안 됨")
+            self.on_barge(text.strip() if text else None, voice)
 
     # ---------- STT ----------
     def _recognize(self, rec, sr, pcm: np.ndarray) -> str | None:
@@ -444,12 +576,35 @@ class Listener:
     def _local(self, pcm: np.ndarray, ai_heard: bool) -> str | None:
         return self._with_denoise(self.local_stt.recognize, pcm, ai_heard)
 
+    def _second_look(self, pcm: np.ndarray, text: str | None) -> str | None:
+        """오프라인 인식은 호출어 바로 뒤의 낱말을 통째로 빠뜨리곤 한다 ('자비스, 소리 좀 줄여 줘' → '자비스 줄여줘').
+        호출어는 들었는데 명령을 못 알아들었으면, 호출어 뒤쪽 소리만 잘라 한 번 더 받아 적고 알아들은 쪽을 쓴다.
+        오프라인 결과를 그대로 쓰게 될 때만 한다 — Google 이 받아 적은 글이 있으면 그것을 쓴다."""
+        stt = self.local_stt
+        tokens, stamps = getattr(stt, "last", None) or ([], [])
+        if not text or self.retry_cut is None or self.understands is None or not tokens:
+            return text
+        try:
+            cut = self.retry_cut(text, tokens, stamps)
+            if cut is None:
+                return text
+            rest = prepare_for_stt(pcm)[max(0, int(cut * RATE)):]
+            if len(rest) < RATE * 0.4:
+                return text
+            again = stt.recognize(rest)
+            if again and self.understands(again):
+                log.info("호출어 뒤쪽만 다시 받아 적어 명령을 알아들음 (%.1f초부터)", cut)
+                return f"{self.wake_prefix} {again}"
+        except Exception as e:
+            log.warning("호출어 뒤쪽 다시 받아 적기 실패: %s", e)
+        return text
+
     def _transcribe(self, rec, sr, pcm: np.ndarray, ai_heard: bool) -> str | None:
         engine = self.stt_engine
         local_ok = self.local_stt is not None and self.local_stt.ready
         if engine == "local" and local_ok:
             self.last_engine = "local"
-            return self._local(pcm, ai_heard)
+            return self._second_look(pcm, self._local(pcm, ai_heard))
         if engine == "auto" and local_ok and self.wake_needed():
             # 호출어 대기: 로컬로 먼저 듣고, 호출어가 없으면 여기서 끝 (외부 전송 없음)
             lt = self._local(pcm, ai_heard)
@@ -463,16 +618,44 @@ class Listener:
                 # 로컬은 '자비스'를 들었는데 Google 이 다르게 적었으면 호출어를 붙여 준다
                 return gt if self.has_wake(gt) else f"{self.wake_prefix} {gt}"
             self.last_engine = "local"
-            return lt
+            return self._second_look(pcm, lt)          # Google 이 못 받아 적었거나 인터넷이 끊김 → 오프라인 결과를 쓴다
         gt, online = self._google(rec, sr, pcm, ai_heard)
+        self._online = online or local_ok
+        if online and gt is None and engine == "auto" and local_ok and self.understands is not None:
+            # Google 이 받아 적지 못했다 → 오프라인 인식으로 한 번 더. 바로 처리할 수 있는 명령일 때만 쓴다
+            # (오프라인 인식은 엉뚱한 글을 적기도 해서, 아무 글이나 쓰면 수다·검색으로 잘못 넘어간다)
+            lt = self._local(pcm, ai_heard)
+            try:
+                ok = bool(lt) and self.understands(lt)
+            except Exception:
+                ok = False
+            if ok:
+                log.info("Google 이 못 받아 적은 말을 오프라인 인식으로 알아들음")
+                self.last_engine = "local"
+                return lt
         if online or not local_ok or engine == "google":
             self.last_engine = "google"
             return gt
         self.last_engine = "local"     # 인터넷 끊김 → 오프라인 인식으로 대체
-        return self._local(pcm, ai_heard)
+        return self._second_look(pcm, self._local(pcm, ai_heard))
 
-    def _embed(self, pcm: np.ndarray, tail: int, near: np.ndarray | None):
-        if near is not None and self.embedder_babble is not None:
+    def _note_ignored(self, kind: str) -> None:
+        """호출어 대기 중 그냥 지나간 소리 — 건수만 모아 두었다가 묶어서 적는다
+        (기록: 교실에서 2~4초마다 한 줄씩 쌓여 하루 로그의 대부분을 차지함)."""
+        self._ignored[kind] += 1
+        now = time.monotonic()
+        if now - self._ignored_at >= IGNORED_LOG_SEC:
+            self._flush_ignored(now)
+
+    def _flush_ignored(self, now: float | None = None) -> None:
+        if self._ignored:
+            log.info("호출어 대기 중 지나간 소리 %d건 (%s)", sum(self._ignored.values()),
+                     ", ".join(f"{k} {n}" for k, n in self._ignored.most_common()))
+            self._ignored.clear()
+        self._ignored_at = time.monotonic() if now is None else now
+
+    def _embed(self, pcm: np.ndarray, tail: int, near: np.ndarray | None, scan: bool = False):
+        if (near is not None or scan) and self.embedder_babble is not None:
             v = self.embedder_babble(pcm[:max(0, len(pcm) - tail)])
             if v is not None:
                 return v
@@ -488,23 +671,42 @@ class Listener:
                 continue
             self.last_note = ""
             emb_job = None
+            standby = self.wake_needed()
+            try:
+                focus = not standby and bool(self.focus())
+            except Exception:
+                focus = False
+            scan = near is not None or focus
+            stt_pcm = pcm
             if self.embedder is not None:
-                emb_job = self._emb_pool.submit(self._embed, pcm, tail, near)
-            if near is not None and emb_job is not None and self.prefilter is not None:
-                # 주변 대화 상태: 큰 소리마다 구간이 잘리므로, 인식(느림)보다 목소리 지문(빠름)을 먼저 본다.
+                emb_job = self._emb_pool.submit(self._embed, pcm, tail, near, scan)
+            if scan and emb_job is not None and self.prefilter is not None:
+                # 주변 대화 상태·집중 듣기: 인식(느림)보다 목소리 지문(빠름)을 먼저 본다.
                 # 확실히 받지 않을 목소리면 인식도, 외부 전송도 하지 않는다
                 # (기록: 교실에서 2~4초마다 남의 말이 인식기에 들어가 주인의 말이 몇 초씩 밀림)
                 try:
                     v = emb_job.result(timeout=5)
                     if not self.prefilter(v):
-                        log.info("발화 %.1f초 · 주변 대화 상태 · 받지 않는 목소리 → 인식 생략", len(pcm) / RATE)
-                        self.on_utterance(None, None)
+                        if standby:
+                            self._note_ignored("다른 목소리")
+                        else:
+                            log.info("발화 %.1f초%s · 받지 않는 목소리 → 인식 생략", len(pcm) / RATE,
+                                     " · 주변 대화 상태" if near is not None else " · 집중 듣기")
+                        self.on_utterance(None, FILTERED)
                         continue
+                    span = getattr(v, "span", None)
+                    if span and span[1] - span[0] >= MIN_SPAN_SECONDS * RATE:
+                        # 한 구간에 남의 말이 앞뒤로 붙어 있다 → 주인 목소리가 들린 부분만 인식한다
+                        stt_pcm = pcm[span[0]:span[1]]
+                        self.last_note = ""
+                        log.info("발화 %.1f초 중 주인 목소리 구간 %.1f~%.1f초만 인식", len(pcm) / RATE,
+                                 span[0] / RATE, span[1] / RATE)
                 except Exception as e:
                     log.warning("목소리 사전 확인 실패: %s", e)
             text = None
+            self._online = True
             try:
-                text = self._transcribe(rec, sr, pcm, ai_heard)
+                text = self._transcribe(rec, sr, stt_pcm, ai_heard)
             except Exception as e:
                 log.exception("STT 오류: %s", e)
                 text = None
@@ -515,7 +717,13 @@ class Listener:
                 except Exception as e:
                     log.warning("화자 임베딩 실패: %s", e)
             # 진단용 기록 — 말의 내용은 남기지 않는다 (주변 대화가 로그에 쌓이지 않게)
-            log.info("발화 %.1f초 · 크기 %.0f / 배경 %.0f%s · %s · %s", len(pcm) / RATE, info[0], info[1],
-                     " · 주변 대화 상태" if info[2] else "", self.last_engine or "-",
-                     (self.last_note or "인식 실패") if not text else ("호출어 있음" if self.has_wake(text) else f"호출어 없음({len(text)}자)"))
+            wake = bool(text) and self.has_wake(text)
+            self.last_miss = "" if text else miss_reason(len(stt_pcm) / RATE, info[0], info[1], info[2], self._online)
+            if standby and not wake:
+                self._note_ignored("인식 안 됨" if not text and not self.last_note else "호출어 없음")
+            else:
+                self._flush_ignored()
+                log.info("발화 %.1f초 · 크기 %.0f / 배경 %.0f%s · %s · %s", len(pcm) / RATE, info[0], info[1],
+                         " · 주변 대화 상태" if info[2] else "", self.last_engine or "-",
+                         (self.last_note or ("인식 실패" + (f"({self.last_miss})" if self.last_miss else ""))) if not text else ("호출어 있음" if wake else f"호출어 없음({len(text)}자)"))
             self.on_utterance(text.strip() if text else None, voice)
