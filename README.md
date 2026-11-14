@@ -651,3 +651,22 @@ python -m jarvis.selftest
 python -m pip install pytest
 python -m pytest            # 로컬 명령·로컬 AI 변환·음성 인식 엔진 선택 규칙 테스트
 ```
+
+### Claude Code 전문 에이전트 팀
+
+Claude Code 로 이 프로젝트를 개발할 때 쓰는 전문 서브에이전트가 `.claude/agents/` 에 있습니다.
+메인 Claude 는 요청을 나눠 맡기고 결과를 통합·검토하는 역할(Chief Architect & Orchestrator)이며,
+담당 파일 표와 자동 위임 조건은 [`CLAUDE.md`](CLAUDE.md) 에 있습니다.
+
+| 에이전트 | 하는 일 | 쓰기 권한 |
+|---|---|---|
+| `system-architect` | 구조 분석, 모듈 의존성, 새 기능을 어디에 붙일지 설계 | 읽기 전용 |
+| `ui-ux-engineer` | 홀로그램 HUD(QML) · 액티브 모드 · 애니메이션 · 화면 일관성 | 담당 파일만 |
+| `voice-engineer` | 음성 인식 · 호출어 · 화자 인식 · TTS · 말 끊기 · 명령 해석 · 대화 | 담당 파일만 |
+| `desktop-integration-engineer` | Win32 · 창 · 단축키 · UI 자동화 · PC 도구 · 도구 서버 · 감시 프로세스 | 담당 파일만 |
+| `memory-context-engineer` | 장기 기억 · 대화 기록 · 할 일 · 루틴 · 브리핑 · 일정 · 메일 | 담당 파일만 |
+| `security-engineer` | 승인 체계 · API 키 · 개인정보 · 프롬프트 인젝션 점검 | 읽기 전용 |
+| `qa-engineer` | 회귀 테스트 실행 · 오류 재현 · 테스트 공백 명세 | 테스트 실행만 (편집 도구 없음, 셸 쓰기는 지시로 금지) |
+
+새로 만든 에이전트는 Claude Code 세션을 새로 시작해야 목록에 나타납니다.
+어느 에이전트에 맡길지는 description 과 `CLAUDE.md` 를 보고 Claude 가 판단하므로, 원하는 에이전트가 있으면 이름으로 직접 지정하는 편이 확실합니다.
